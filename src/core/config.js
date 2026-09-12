@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 /**
  * Model registry. Adding a model is a config edit, never a code edit.
  *
@@ -142,4 +143,29 @@ export async function patchModel(userDataDir, alias, patch) {
   await fs.writeFile(tmp, `${JSON.stringify(raw, null, 2)}\n`, 'utf8');
   await fs.rename(tmp, file);
   return raw.models[alias];
+}
+
+/** Add a source without replacing an existing model or changing the default. */
+export async function addModel(userDataDir, { label, provider, model, baseUrl, apiKeyEnv }) {
+  const allowed = ['openai', 'openai-responses', 'anthropic', 'claude-cli', 'codex-cli'];
+  if (!allowed.includes(provider)) throw new Error('Choose a supported connection type.');
+  if (typeof label !== 'string' || !label.trim()) throw new Error('Enter a source name.');
+  if (typeof model !== 'string' || !model.trim()) throw new Error('Enter a model ID.');
+  if (baseUrl) {
+    const url = new URL(baseUrl);
+    if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) {
+      throw new Error('Use an HTTP or HTTPS endpoint without credentials in the URL.');
+    }
+  }
+  const file = await ensureConfig(userDataDir);
+  const raw = JSON.parse(await fs.readFile(file, 'utf8'));
+  raw.models ??= {};
+  const alias = 'source-' + crypto.randomUUID();
+  raw.models[alias] = { label: label.trim(), provider, model: model.trim(),
+    ...(baseUrl ? { baseUrl } : {}), ...(apiKeyEnv ? { apiKeyEnv } : {}) };
+  if (!raw.default) raw.default = alias;
+  const tmp = file + '.tmp';
+  await fs.writeFile(tmp, JSON.stringify(raw, null, 2) + '\n', 'utf8');
+  await fs.rename(tmp, file);
+  return alias;
 }

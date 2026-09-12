@@ -1083,7 +1083,7 @@ async function settingsSheet() {
     <h3>Harness</h3>
     <div class="rowlinks">
       <button class="rowlink" id="h-files"><span>Files</span><span class="chev">›</span></button>
-      <button class="rowlink" id="h-models"><span>Models &amp; keys</span><span class="chev">›</span></button>
+      <button class="rowlink" id="h-models"><span>AI sources</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-voice"><span>Voice setup</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-notify"><span>Notifications</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-email"><span>Email</span><span class="chev">›</span></button>
@@ -1198,13 +1198,69 @@ async function modelsSheet() {
       <div class="s">${esc(m.provider)} · ${esc(m.model)}</div></div>
       <span class="pill ${m.hasKey ? 'ready' : 'missing'}">${m.hasKey ? (m.keySource ?? 'ready') : 'no key'}</span>
     </div>`).join('');
-  openSheet(`<h2>Models &amp; keys</h2>
-    <p class="dim">Keys and endpoints — this edits what a model <em>is</em>, for every session. To switch what this session uses, go back and tap a model there.</p>
-    ${rows}${backToSettings}`);
+  openSheet(`<h2>AI sources</h2>
+    <p class="dim">Connect your own subscription login or API account. Each source adds a model to the session picker. Existing connections stay as they are when you add another.</p>
+    ${rows}<div class="actions"><button class="primary" id="source-add">add AI source</button></div>${backToSettings}`);
   $('sub-back').onclick = settingsSheet;
+  $('source-add').onclick = sourceSheet;
   $('sheet').querySelectorAll('[data-model]').forEach((el) => {
     el.onclick = () => modelSheet(el.dataset.model);
   });
+}
+
+
+function sourceSheet() {
+  const choices = [
+    ['Claude subscription (Claude Code)', 'claude-cli', '', ''],
+    ['OpenAI subscription (Codex)', 'codex-cli', '', ''],
+    ['OpenAI API', 'openai-responses', 'https://api.openai.com/v1', 'OPENAI_API_KEY'],
+    ['Anthropic API', 'anthropic', '', 'ANTHROPIC_API_KEY'],
+    ['Kimi / Moonshot API', 'openai', 'https://api.moonshot.ai/v1', 'MOONSHOT_API_KEY'],
+    ['Grok / xAI API', 'openai', 'https://api.x.ai/v1', 'XAI_API_KEY'],
+    ['Custom / local OpenAI-compatible API', 'openai', '', 'HARNESS_CUSTOM_API_KEY'],
+  ];
+  openSheet(`<h2>Add AI source</h2>
+    <label>Connection</label><select id="source-kind">${choices.map((c, i) => `<option value="${i}">${c[0]}</option>`).join('')}</select>
+    <p class="dim" id="source-help"></p>
+    <label>Name in Harness</label><input id="source-name" />
+    <label>Model ID</label><input id="source-model" spellcheck="false" placeholder="Exact model ID from your provider" />
+    <div id="source-api">
+      <label>API endpoint</label><input id="source-url" type="url" spellcheck="false" placeholder="https://your-provider.example/v1" />
+      <label>API key</label><input id="source-key" type="password" autocomplete="off" />
+      <p class="dim">API billing is separate from chat subscriptions. Local servers may not need a key. Keys are saved on the Harness server.</p>
+    </div>
+    <p class="dim" id="source-error" role="status"></p>
+    <div class="actions"><button class="ghost" id="source-back">back</button><button class="primary" id="source-save">add source</button></div>`);
+  const change = () => {
+    const [label, provider, base] = choices[$('source-kind').value];
+    const subscription = provider.endsWith('-cli');
+    $('source-name').value = label;
+    $('source-url').value = base;
+    $('source-api').hidden = subscription;
+    $('source-help').textContent = subscription
+      ? `Install ${provider === 'claude-cli' ? 'Claude Code and run claude' : 'Codex and run codex login'} on the computer hosting Harness, then sign in with your own account. Harness uses that computer’s CLI login. Adding this entry does not verify the login.`
+      : 'Enter the model ID available in your provider account. Custom endpoints must support OpenAI chat completions; agent sessions also require tool calling.';
+  };
+  $('source-kind').onchange = change;
+  change();
+  $('source-back').onclick = modelsSheet;
+  $('source-save').onclick = async () => {
+    const [, provider, , apiKeyEnv] = choices[$('source-kind').value];
+    $('source-save').disabled = true;
+    try {
+      await api('/api/models/add', { method: 'POST', body: JSON.stringify({
+        label: $('source-name').value, model: $('source-model').value, provider, apiKeyEnv,
+        baseUrl: provider.endsWith('-cli') ? '' : $('source-url').value.trim(),
+        apiKey: provider.endsWith('-cli') ? '' : $('source-key').value.trim(),
+      }) });
+      await modelsSheet();
+      showBanner('Source added. Select its model in session settings to use it.');
+    } catch (e) {
+      if ($('source-error')) $('source-error').textContent = e.message;
+    } finally {
+      if ($('source-save')) $('source-save').disabled = false;
+    }
+  };
 }
 
 function notifySheet() {
@@ -1497,6 +1553,27 @@ async function setProjectDir(dir) {
 
 function modelSheet(alias) {
   const m = state.models[alias];
+  if (['claude-cli', 'codex-cli'].includes(m.provider)) {
+    openSheet(`<h2>${esc(m.label ?? alias)}</h2>
+      <p class="dim">Uses the ${m.provider === 'claude-cli' ? 'Claude Code' : 'Codex'} login on the computer hosting Harness. No API key is needed here. Sign in on that computer before using this source.</p>
+      <label>Model ID</label><input id="subscription-model" spellcheck="false" />
+      <p id="subscription-error" class="dim" role="status"></p>
+      <div class="actions"><button class="ghost" id="subscription-back">back</button><button class="primary" id="subscription-save">save</button></div>`);
+    $('subscription-model').value = m.model ?? '';
+    $('subscription-back').onclick = modelsSheet;
+    $('subscription-save').onclick = async () => {
+      try {
+        const model = $('subscription-model').value.trim();
+        if (!model) throw new Error('Enter a model ID.');
+        await api('/api/models/patch', { method: 'POST', body: JSON.stringify({ alias, patch: { model } }) });
+        await modelsSheet();
+      } catch (e) {
+        if ($('subscription-error')) $('subscription-error').textContent = e.message;
+      }
+    };
+    return;
+  }
+
   openSheet(`<h2>${esc(m.label ?? alias)}</h2>
     <p class="dim">${esc(m.provider)} · key falls back to $${esc(m.keyEnv || 'none')}</p>
     <label>API key ${m.keySource === 'stored' ? '(a key is already saved)' : ''}</label>
@@ -1532,7 +1609,7 @@ function modelSheet(alias) {
     });
   };
 
-  $('m-cancel').onclick = settingsSheet;
+  $('m-cancel').onclick = modelsSheet;
   $('m-save').onclick = async () => {
     const key = $('m-key').value.trim();
     if (key) await api('/api/models/key', { method: 'POST', body: JSON.stringify({ alias, apiKey: key }) });

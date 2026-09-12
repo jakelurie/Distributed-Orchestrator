@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
 
 import { runTurn } from '../src/core/agent.js';
-import { loadConfig, patchModel } from '../src/core/config.js';
+import { loadConfig, patchModel, addModel } from '../src/core/config.js';
 import { resetClients } from '../src/core/providers/index.js';
 import { setSecret } from '../src/core/secrets.js';
 import { transcribe, transcriptionKey } from '../src/core/transcription.js';
@@ -425,6 +425,18 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { ok: true, base, count: ids.length, models: ids });
       } catch (e) {
         return json(res, 200, { ok: false, error: e?.message ?? String(e) });
+      }
+    }
+
+    if (req.method === 'POST' && pathname === '/api/models/add') {
+      const body = await readBody(req);
+      try {
+        const alias = await addModel(USER_DATA, body);
+        if (body.apiKey) await setSecret(USER_DATA, alias, body.apiKey);
+        resetClients();
+        return json(res, 200, { alias });
+      } catch (e) {
+        return json(res, 400, { error: e.message });
       }
     }
 
