@@ -2159,6 +2159,7 @@ function appEditSheet(app = null, draft = null) {
 
   openSheet(`<h2>${existing ? 'Edit project' : 'New project'}</h2>
     <label>Name</label><input id="ap-name" value="${esc(a.name ?? '')}" spellcheck="false" placeholder="what you're building" />
+    ${existing ? '<p class="dim">Renaming this project also renames its linked GitHub repository. Its folder stays in place.</p>' : ''}
     <label>Folder${existing ? '' : ' — made for you from the name'}</label>
     <div class="row"><input id="ap-dir" value="${esc(a.dir ?? '')}" spellcheck="false" ${existing ? 'disabled' : ''} />
       ${existing ? '' : '<button class="ghost" id="ap-browse" style="flex:0 0 80px">browse</button>'}</div>

@@ -18,6 +18,7 @@ import { createWriteStream } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { renameAppRepo } from './git.js';
 
 import { refuseAsProjectDir, isProtected, protectedRoots, HARNESS_ROOT, HARNESS_APP_ID } from './harness-guard.js';
 
@@ -279,6 +280,15 @@ export async function update(userDataDir, id, patch) {
       throw new Error(`another app already uses port ${port}`);
     }
     patch[key] = port;
+  }
+  if (patch.name !== undefined && patch.name !== app.name) {
+    if (typeof patch.name !== 'string' || !patch.name.trim()) throw new Error('Enter a project name.');
+    patch.name = patch.name.trim();
+    if (patch.repo !== undefined && patch.repo !== app.repo) {
+      throw new Error('Save repository changes separately before renaming the project.');
+    }
+    const repo = await renameAppRepo(app, patch.name);
+    if (repo) patch.repo = repo;
   }
   Object.assign(app, patch, { updatedAt: Date.now() });
   await persist(userDataDir, apps);

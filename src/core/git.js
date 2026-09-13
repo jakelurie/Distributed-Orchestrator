@@ -9,6 +9,7 @@
 
 import { execFile } from 'node:child_process';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import { loginPath } from './tools.js';
 
@@ -128,6 +129,32 @@ export async function commitAndPush(dir, { model, servedModel, push = true, auto
  */
 export function defaultRepoName(root, appName) {
   return String(appName || path.basename(root)).trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'project';
+}
+
+/** Rename the linked GitHub repository before changing the app's display name. */
+export async function renameAppRepo(app, name, execute = promisify(execFile)) {
+  const options = { cwd: app.dir, timeout: 30_000, env: { ...process.env, PATH: await loginPath() } };
+  let remote = '';
+  try { remote = (await execute('git', ['remote', 'get-url', 'origin'], options)).stdout.trim(); }
+  catch { /* A workspace may not have a local Git repository. */ }
+  const linked = app.repo || remote;
+  if (!linked) return null;
+  const parse = (url) => url.match(/^(?:git@github\.com:|https:\/\/github\.com\/)([^/]+)\/([^/]+?)(?:\.git)?$/);
+  const match = parse(linked);
+  if (!match) throw new Error('Automatic repository renaming requires a GitHub repository URL.');
+  const [, owner, oldName] = match;
+  const next = defaultRepoName(app.dir, name);
+  if (next !== oldName) {
+    await execute('gh', ['api', '--method', 'PATCH', `repos/${owner}/${oldName}`, '-f', `name=${next}`], options);
+  }
+  const url = `https://github.com/${owner}/${next}.git`;
+  const origin = parse(remote);
+  if (origin && `${origin[1]}/${origin[2]}`.toLowerCase() === `${owner}/${oldName}`.toLowerCase()) {
+    // GitHub redirects the old URL if a local configuration write fails.
+    await execute('git', ['remote', 'set-url', 'origin', remote.startsWith('git@')
+      ? `git@github.com:${owner}/${next}.git` : url], options);
+  }
+  return linked.startsWith('git@') ? `git@github.com:${owner}/${next}.git` : url;
 }
 
 async function createPrivateRepo(root, branch, appName) {
