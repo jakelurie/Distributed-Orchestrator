@@ -46,7 +46,7 @@ function harnessApp() {
     id: HARNESS_APP_ID,
     name: 'Harness',
     dir: HARNESS_ROOT,
-    repo: 'git@github.com:jakelurie/harness.git',
+    repo: 'git@github.com:jakelurie/Harness.git',
     start: '',                 // it is already running — it is the harness
     editsHarness: true,
     builtin: true,             // cannot be deleted

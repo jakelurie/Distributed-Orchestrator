@@ -1177,7 +1177,10 @@ const server = http.createServer(async (req, res) => {
                 // loose or scratch session (no app, e.g. a test run) commits
                 // locally or pushes to an existing remote, but never conjures a
                 // brand-new GitHub repo out of a temp folder.
+                const app = session.appId
+                  ? (await apps.load(USER_DATA)).find((a) => a.id === session.appId) : null;
                 const res = await git.commitAndPush(session.projectDir, {
+                  appName: app?.name,
                   model: session.model,
                   servedModel: last?.servedModel,
                   autoCreatePrivate: Boolean(session.appId),

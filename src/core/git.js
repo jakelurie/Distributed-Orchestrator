@@ -57,7 +57,7 @@ function pathsFrom(porcelain) {
  * @param model  recorded as a trailer, so the history shows which model made a
  *               change - the point of a harness that compares them.
  */
-export async function commitAndPush(dir, { model, servedModel, push = true, autoCreatePrivate = false } = {}) {
+export async function commitAndPush(dir, { model, servedModel, push = true, autoCreatePrivate = false, appName } = {}) {
   let st = await status(dir);
   if (!st.repo) {
     // With auto-create on, a brand-new project becomes a repo rather than being
@@ -99,7 +99,7 @@ export async function commitAndPush(dir, { model, servedModel, push = true, auto
     // No GitHub repo yet: create one, private by default, and push this commit.
     // Uses the gh login (found via the real PATH, since the server runs with a
     // minimal one). A failure leaves the commit safely on disk.
-    const created = await createPrivateRepo(st.root, branch);
+    const created = await createPrivateRepo(st.root, branch, appName);
     return {
       ok: true, committed: true, sha, files,
       pushed: created.ok,
@@ -122,12 +122,16 @@ export async function commitAndPush(dir, { model, servedModel, push = true, auto
 /**
  * Create a private GitHub repo for a folder and push its current branch.
  *
- * Named after the folder. Private is deliberate and non-negotiable here: a new
+ * Named after the app, preserving case. Private is deliberate here: a new
  * project should never become public by accident — making it public is a
  * separate, explicit step in the app's settings.
  */
-async function createPrivateRepo(root, branch) {
-  const name = path.basename(root);
+export function defaultRepoName(root, appName) {
+  return String(appName || path.basename(root)).trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'project';
+}
+
+async function createPrivateRepo(root, branch, appName) {
+  const name = defaultRepoName(root, appName);
   const PATH = await loginPath();
   const res = await new Promise((resolve) => {
     execFile('gh', ['repo', 'create', name, '--private', '--source', root, '--remote', 'origin', '--push'],
