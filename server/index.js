@@ -558,7 +558,16 @@ const server = http.createServer(async (req, res) => {
       }
       if (req.method === 'POST' && !appId) {
         const body = await readBody(req);
-        try { return json(res, 200, await apps.create(USER_DATA, body)); }
+        try {
+          const cfg = await loadConfig(USER_DATA);
+          if (!cfg.default) return json(res, 400, { error: 'Add an AI source before creating a project.' });
+          const app = await apps.create(USER_DATA, body);
+          const session = store.newSession({
+            name: app.name, model: cfg.default, projectDir: app.dir, appId: app.id,
+          });
+          await store.save(session);
+          return json(res, 200, { ...app, sessionId: session.id });
+        }
         catch (e) { return json(res, 400, { error: e.message }); }
       }
       if (req.method === 'PATCH' && appId) {

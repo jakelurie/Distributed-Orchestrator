@@ -65,6 +65,7 @@ Working on the project:
 - If a command fails, read the error and fix it rather than reporting the failure back verbatim.
 
 Serving an app the user can open from their phone:
+- For generated documents and other downloadable files, link the absolute file path in Markdown so Harness serves it through its existing file preview and download controls. Do not start a temporary web server just to deliver a file. A localhost link only works on the hosting laptop, never on the phone.
 - The harness itself runs on port 8787 and owns its Tailscale hostname on ports 80, 443 and 8787. Never take those over, never point a tailscale serve rule at them, and never bind 8787. The user needs the harness reachable at all times, including while your app is running.
 - Give your app its own port and its own Tailscale entry, choosing a port nothing else is using. For example, to expose a server on port 4320:
     tailscale --socket=$HOME/.tailscale-harness/tailscaled.sock serve --bg --https=8443 http://127.0.0.1:4320

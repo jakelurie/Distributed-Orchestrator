@@ -130,6 +130,19 @@ const session = await (await call('/api/sessions', {
 })).json();
 check('creates a session', Boolean(session.id));
 
+// Both launchable apps and workspaces start with a session using the default model.
+for (const [name, start] of [['Workspace test', ''], ['Launchable test', 'npm start']]) {
+  const created = await (await call('/api/apps', {
+    method: 'POST', body: JSON.stringify({ name, start, dir: path.join(projectDir, name) }),
+  })).json();
+  const initial = await (await call(`/api/sessions/${created.sessionId}`)).json();
+  check(`${name} gets its own same-name session`, initial.name === name && initial.appId === created.id);
+  check(`${name} session uses its folder and default model`, initial.projectDir === created.dir && initial.model === 'mock');
+  await call(`/api/apps/${created.id}`, { method: 'PATCH', body: JSON.stringify({ name: `${name} renamed` }) });
+  const listed = await (await call('/api/state')).json();
+  check('editing a project does not create another session', listed.sessions.filter((s) => s.appId === created.id).length === 1);
+}
+
 // ---- compression: the transcript is the big thing on the wire ----
 {
   const bulky = 'x'.repeat(40_000);

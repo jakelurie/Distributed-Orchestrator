@@ -2215,7 +2215,11 @@ function appEditSheet(app = null, draft = null) {
     if (!body.name && !existing) return showBanner('give the app a name');
     try {
       if (existing) await api(`/api/apps/${app.id}`, { method: 'PATCH', body: JSON.stringify(body) });
-      else await api('/api/apps', { method: 'POST', body: JSON.stringify({ ...body, dir: v.dir.trim() }) });
+      else {
+        const made = await api('/api/apps', { method: 'POST', body: JSON.stringify({ ...body, dir: v.dir.trim() }) });
+        expandedApps.add(made.id);
+        await refreshState();
+      }
       appsSheet();
     } catch (e) { showBanner(e.message, true); }
   };
