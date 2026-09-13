@@ -34,7 +34,7 @@ let cachedPath = null;
 
 export async function loginPath() {
   if (cachedPath) return cachedPath;
-  const shell = process.env.SHELL || '/bin/zsh';
+  const shell = process.env.SHELL || (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash');
   try {
     const { stdout } = await execAsync(
       `${shell} -lic 'printf %s "$PATH"' 2>/dev/null`,

@@ -754,6 +754,8 @@ button.primary.danger:active { background: #db5f78; }
   background: none; border: none; border-bottom: 1px solid var(--line);
   color: var(--fg); font-size: 14.5px; text-align: left;
 }
+.machine-choice { overflow-wrap: anywhere; min-width: 0; }
+.machine-choice > span:first-child { min-width: 0; }
 .rowlink:last-child { border-bottom: none; }
 .rowlink:active { background: var(--line); }
 .rowlink .chev { color: var(--fg-faint); font-size: 20px; line-height: 1; }

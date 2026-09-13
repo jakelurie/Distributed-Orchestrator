@@ -67,6 +67,14 @@ everything from the app's settings screen.
 `models.json`, mode 0600, or come from environment variables. Add them through
 the UI rather than editing files.
 
+## Connecting machines
+
+Use `npm run node:setup` on a new machine, then `npm run node:serve`.
+Pair nodes under **Settings → Machines**. Any number of nodes can be connected;
+remote sessions and file transfers stay on their owning machine.
+See [machine setup, Windows/WSL2, GPU models, and availability limits](docs/machines.md).
+This is execution-node federation, not replicated state or automatic failover.
+
 ## Using it from a phone
 
 `npm run serve` binds to your LAN and prints a URL. Set `HARNESS_TOKEN=auto` to

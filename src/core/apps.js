@@ -11,7 +11,7 @@
  * models: one app, two sessions, a different agent in each.
  */
 
-import { exec, spawn } from 'node:child_process';
+import { exec, execFile, spawn } from 'node:child_process';
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
@@ -29,7 +29,10 @@ const HARNESS_PORTS = new Set([80, 443, 8787]);
 const APP_PORT_RANGE = [4300, 4399];   // where an app's own server listens
 const SERVE_PORT_RANGE = [8443, 8542]; // the HTTPS port Tailscale publishes it on
 
-const TAILSCALE_SOCK = path.join(os.homedir(), '.tailscale-harness', 'tailscaled.sock');
+const TAILSCALE_SOCK = process.env.ORCHESTRATOR_TAILSCALE_SOCKET ??
+  (process.platform === 'darwin' ? path.join(os.homedir(), '.tailscale-harness', 'tailscaled.sock') : '');
+const tailscale = (args, timeout) => promisify(execFile)('tailscale',
+  [...(TAILSCALE_SOCK ? ['--socket', TAILSCALE_SOCK] : []), ...args], { timeout });
 
 export function appsPath(userDataDir) {
   return path.join(userDataDir, 'apps.json');
@@ -95,7 +98,7 @@ let cachedHost = null;
 export async function tailnetHost() {
   if (cachedHost !== null) return cachedHost;
   try {
-    const { stdout } = await execAsync(`tailscale --socket=${JSON.stringify(TAILSCALE_SOCK)} status --json`, { timeout: 5000 });
+    const { stdout } = await tailscale(['status', '--json'], 5000);
     cachedHost = JSON.parse(stdout)?.Self?.DNSName?.replace(/\.$/, '') ?? null;
   } catch {
     cachedHost = null;
@@ -306,10 +309,7 @@ export async function remove(userDataDir, id) {
 async function unserve(app) {
   if (!app.servePort || HARNESS_PORTS.has(app.servePort) || app.servePort === 8787) return false;
   try {
-    await execAsync(
-      `tailscale --socket=${JSON.stringify(TAILSCALE_SOCK)} serve --https=${app.servePort} off`,
-      { timeout: 15_000 },
-    );
+    await tailscale(['serve', `--https=${app.servePort}`, 'off'], 15_000);
     return true;
   } catch {
     return false;
@@ -394,10 +394,7 @@ async function ensureServe(app) {
     throw new Error(`refusing to publish on ${app.servePort}: that belongs to the harness`);
   }
   try {
-    await execAsync(
-      `tailscale --socket=${JSON.stringify(TAILSCALE_SOCK)} serve --bg --https=${app.servePort} http://127.0.0.1:${app.port}`,
-      { timeout: 15_000 },
-    );
+    await tailscale(['serve', '--bg', `--https=${app.servePort}`, `http://127.0.0.1:${app.port}`], 15_000);
     return true;
   } catch {
     return false;   // the app still works locally; say so rather than failing the start
@@ -557,8 +554,7 @@ export async function stop(userDataDir, id) {
  */
 export async function serveMap() {
   try {
-    const { stdout } = await execAsync(
-      `tailscale --socket=${JSON.stringify(TAILSCALE_SOCK)} serve status`, { timeout: 6000 });
+    const { stdout } = await tailscale(['serve', 'status'], 6000);
     const map = {};
     let port = null;
     for (const line of stdout.split('\n')) {

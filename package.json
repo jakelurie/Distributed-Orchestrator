@@ -9,7 +9,9 @@
     "build": "electron-builder --mac --dir",
     "dist": "electron-builder --mac",
     "test": "node test/run.mjs",
-    "serve": "node server/index.js"
+    "serve": "node server/index.js",
+    "node:setup": "node scripts/setup-node.mjs",
+    "node:serve": "node --env-file=.orchestrator-node.env server/index.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.124.0",
@@ -25,7 +27,10 @@
     "files": [
       "electron/**/*",
       "src/**/*",
-      "package.json"
+      "package.json",
+      "server/**/*",
+      "scripts/**/*",
+      "docs/**/*"
     ],
     "mac": {
       "category": "public.app-category.developer-tools",

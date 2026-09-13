@@ -7,7 +7,7 @@ const start = source.indexOf('  if (turn.files.length) {');
 const end = source.indexOf('\n  const sum = foldSummary', start);
 function render(files) {
   const context = { turn: { files }, bits: [], esc: String, humanSize: String,
-    FILE_ICON: {}, encodeURIComponent };
+    FILE_ICON: {}, nodeApi: (url) => url, encodeURIComponent };
   vm.runInNewContext(source.slice(start, end), context);
   return context.bits.join('');
 }

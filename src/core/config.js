@@ -95,7 +95,7 @@ export async function loadConfig(userDataDir) {
   for (const [alias, block] of Object.entries(raw.models ?? {})) {
     // A key set through the UI wins; the env var named by the config is the
     // fallback; failing both, the provider's own conventional variable.
-    const envName = block.apiKeyEnv || DEFAULT_KEY_ENV[block.provider] || '';
+    const envName = block.apiKeyOptional ? '' : block.apiKeyEnv || DEFAULT_KEY_ENV[block.provider] || '';
     const apiKey = secrets[alias] || (envName ? process.env[envName] || '' : '');
 
     // A local OpenAI-compatible server (Ollama, vLLM, LM Studio) needs no key,
@@ -111,7 +111,7 @@ export async function loadConfig(userDataDir) {
       apiKey,
       keyEnv: envName,
       keySource: selfAuth ? 'subscription' : secrets[alias] ? 'stored' : apiKey ? 'env' : null,
-      hasKey: Boolean(apiKey) || isLocal || selfAuth,
+      hasKey: Boolean(apiKey) || isLocal || selfAuth || (block.provider === 'openai' && block.apiKeyOptional === true),
     };
   }
 
@@ -146,7 +146,7 @@ export async function patchModel(userDataDir, alias, patch) {
 }
 
 /** Add a source without replacing an existing model or changing the default. */
-export async function addModel(userDataDir, { label, provider, model, baseUrl, apiKeyEnv }) {
+export async function addModel(userDataDir, { label, provider, model, baseUrl, apiKeyEnv, apiKeyOptional }) {
   const allowed = ['openai', 'openai-responses', 'anthropic', 'claude-cli', 'codex-cli'];
   if (!allowed.includes(provider)) throw new Error('Choose a supported connection type.');
   if (typeof label !== 'string' || !label.trim()) throw new Error('Enter a source name.');
@@ -162,6 +162,7 @@ export async function addModel(userDataDir, { label, provider, model, baseUrl, a
   raw.models ??= {};
   const alias = 'source-' + crypto.randomUUID();
   raw.models[alias] = { label: label.trim(), provider, model: model.trim(),
+    ...(apiKeyOptional === true && provider === 'openai' ? { apiKeyOptional: true } : {}),
     ...(baseUrl ? { baseUrl } : {}), ...(apiKeyEnv ? { apiKeyEnv } : {}) };
   if (!raw.default) raw.default = alias;
   const tmp = file + '.tmp';

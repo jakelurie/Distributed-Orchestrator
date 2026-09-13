@@ -21,6 +21,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
 
+import { createNodes } from '../src/core/nodes.js';
 import { runTurn } from '../src/core/agent.js';
 import { loadConfig, patchModel, addModel } from '../src/core/config.js';
 import { resetClients } from '../src/core/providers/index.js';
@@ -53,6 +54,8 @@ const PORT = Number(process.env.HARNESS_PORT ?? 8787);
 const USER_DATA =
   process.env.HARNESS_DATA_DIR ||
   path.join(os.homedir(), 'Library', 'Application Support', 'harness');
+
+const nodes = createNodes(USER_DATA);
 
 let TOKEN = '';              // resolved from disk at startup
 let usage = null;            // the usage ledger, loaded at startup
@@ -346,6 +349,24 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
+    if (req.method === 'GET' && pathname === '/api/node-info') {
+      return json(res, 200, { protocol: 1, name: process.env.ORCHESTRATOR_NODE_NAME || os.hostname(),
+        platform: process.platform, authenticated: Boolean(TOKEN), storage: 'node-owned' });
+    }
+    if (pathname === '/api/nodes' || pathname.startsWith('/api/nodes/')) {
+      if (!TOKEN) return json(res, 403, { error: 'Set HARNESS_TOKEN=auto and restart before connecting machines.' });
+      if (pathname === '/api/nodes' && req.method === 'GET') return json(res, 200, await nodes.catalog());
+      if (pathname === '/api/nodes' && req.method === 'POST') {
+        try { return json(res, 201, await nodes.add(await readBody(req))); }
+        catch (e) { return json(res, 400, { error: e.message }); }
+      }
+      const remote = pathname.match(/^\/api\/nodes\/([a-f0-9-]+)(\/api\/.*)?$/);
+      if (!remote) return json(res, 404, { error: 'Unknown node route' });
+      if (remote[2]) return await nodes.proxy(req, res, remote[1], remote[2] + url.search);
+      if (req.method === 'DELETE') { await nodes.remove(remote[1]); return json(res, 200, { ok: true }); }
+      return json(res, 405, { error: 'Method not allowed' });
+    }
+
     // ---- static
     if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
       return serveStatic(res, 'index.html');

@@ -1,5 +1,18 @@
 /* Distributed Orchestrator, phone edition. Talks to the same core the desktop app drives. */
 
+// Each page targets one execution machine. Never retry a mutation on another node.
+const executionNode = new URLSearchParams(location.search).get('node') || '';
+const nativeFetch = window.fetch.bind(window);
+const nodeApi = (url) => executionNode && url.startsWith('/api/') && !url.startsWith('/api/nodes')
+  ? `/api/nodes/${encodeURIComponent(executionNode)}${url}` : url;
+const fetch = (url, options) => nativeFetch(typeof url === 'string' ? nodeApi(url) : url, options);
+const sessionStorageKey = `lastSession${executionNode ? ':' + executionNode : ''}`;
+let executionName = executionNode ? 'remote machine' : '';
+if (executionNode) nativeFetch('/api/nodes').then((r) => r.json()).then((nodes) => {
+  executionName = nodes.find((n) => n.id === executionNode)?.name || 'remote machine';
+  paintHeader();
+}).catch(() => {});
+
 const $ = (id) => document.getElementById(id);
 
 // Anything that throws where nobody is catching used to vanish and leave a
@@ -111,7 +124,7 @@ function emphasis(t) {
         return `<a href="${href}" target="_blank" rel="noopener">${label}</a>`;
       }
       if (href.startsWith('/')) {
-        return `<a href="/api/file?path=${encodeURIComponent(href)}" target="_blank" rel="noopener">${label}</a>`;
+        return `<a href="${nodeApi('/api/file')}?path=${encodeURIComponent(href)}" target="_blank" rel="noopener">${label}</a>`;
       }
       return label;   // relative or unknown: show the words, drop the link
     })
@@ -430,7 +443,7 @@ function turnHtml(turn, i, running, number, isLast) {
            <span class="file-meta"><span class="file-name">${esc(a.name)}</span>
            <span class="file-sub">${humanSize(a.bytes ?? 0)}</span></span>
          </button>`
-      : `<img src="/api/file?path=${encodeURIComponent(a.path)}" alt="${esc(a.name)}">`)).join('')}</div>`
+      : `<img src="${nodeApi('/api/file')}?path=${encodeURIComponent(a.path)}" alt="${esc(a.name)}">`)).join('')}</div>`
     : ''}</div>
       ${cost.length ? `<div class="usage turn-cost">${cost.join(' · ')}</div>` : ''}</div>`);
   }
@@ -476,7 +489,7 @@ function turnHtml(turn, i, running, number, isLast) {
             <span class="file-name">${esc(f.rel || f.name)}</span>
             <span class="file-sub">${humanSize(f.size)}</span>
           </span>
-          <a class="file-dl" href="/api/file?path=${encodeURIComponent(f.path)}&download=1"
+          <a class="file-dl" href="${nodeApi('/api/file')}?path=${encodeURIComponent(f.path)}&download=1"
              download="${esc(f.name)}" aria-label="Download">⤓</a>
         </button>`).join('')}
       ${unique.length > shown.length
@@ -588,7 +601,7 @@ async function openSession(id) {
   tabs.monitor.session = null;          // loaded when the tab is first opened
   tabs.monitor.stream?.close();
   tabs.monitor.stream = null;
-  localStorage.setItem('lastSession', id);
+  localStorage.setItem(sessionStorageKey, id);
 
   clearLive('chat');
   clearLive('monitor');
@@ -654,7 +667,7 @@ function paintHeader() {
   const t = cur();
   $('title-name').textContent = s ? s.name : 'Distributed Orchestrator';
   $('title-sub').textContent = s
-    ? `${s.model}${s.mode === 'chat' ? ' · chat' : ''} · ${shortDir(s.projectDir)}`
+    ? `${executionName ? executionName + ' · ' : ''}${s.model}${s.mode === 'chat' ? ' · chat' : ''} · ${shortDir(s.projectDir)}`
     : 'pick a session';
   $('send').disabled = !t.session;
   $('input').placeholder = idlePlaceholder();
@@ -722,7 +735,7 @@ function stopClock() {
 function listen(tab, id) {
   const t = tabs[tab];
   t.stream?.close();
-  const es = new EventSource(`/api/sessions/${id}/events`);
+  const es = new EventSource(nodeApi(`/api/sessions/${id}/events`));
   t.stream = es;
 
   es.onmessage = (msg) => {
@@ -1033,7 +1046,7 @@ async function browseSheet(start, pick, back = newSheet) {
 }
 
 async function settingsSheet() {
-  await refreshState();
+  try { await refreshState(); } catch (e) { if (executionNode) return machinesSheet(); throw e; }
   const session = cur().session;
   openSheet(`
     ${session ? `<h2>This ${state.tab === 'monitor' ? 'monitoring ' : ''}session</h2>
@@ -1082,6 +1095,7 @@ async function settingsSheet() {
 
     <h3>Distributed Orchestrator</h3>
     <div class="rowlinks">
+      <button class="rowlink" id="h-machines"><span>Machines</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-files"><span>Files</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-models"><span>AI sources</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-voice"><span>Voice setup</span><span class="chev">›</span></button>
@@ -1090,6 +1104,7 @@ async function settingsSheet() {
     </div>
     <div class="actions"><button class="primary" id="s-close">done</button></div>`);
 
+  $('h-machines').onclick = machinesSheet;
   $('h-files').onclick = () => filesSheet();
   $('h-models').onclick = modelsSheet;
   $('h-voice').onclick = () => window.voiceSetup();
@@ -1190,6 +1205,51 @@ async function settingsSheet() {
  */
 const backToSettings = '<div class="actions"><button class="ghost" id="sub-back">‹ settings</button></div>';
 
+async function machinesSheet() {
+  openSheet(`<h2>Machines</h2>
+    <p class="dim">Choose where your sessions run. Each machine owns its projects, files, and logins. Offline work stays on that machine.</p>
+    <div id="machine-list"><p class="dim">loading…</p></div>
+    <h3>Connect a machine</h3>
+    <label>Name</label><input id="machine-name" placeholder="Desktop PC" />
+    <label>Node address</label><input id="machine-url" type="url" placeholder="https://desktop.example:8443" />
+    <label>Node access token</label><input id="machine-token" type="password" autocomplete="off" />
+    <p class="dim">Use the token configured on that machine. Connections grant access to its tools and files. Pair machines in both directions to access either from the other.</p>
+    <p id="machine-error" class="dim" role="status"></p>
+    <div class="actions"><button class="primary" id="machine-add">connect</button></div>${backToSettings}`);
+  $('sub-back').onclick = settingsSheet;
+  const list = $('machine-list');
+  try {
+    const response = await nativeFetch('/api/nodes');
+    const nodes = await response.json();
+    if (!response.ok) throw new Error(nodes.error);
+    if ($('machine-list') !== list) return;
+    list.innerHTML = `<button class="rowlink machine-choice" data-machine=""><span>This machine</span><span class="chev">›</span></button>` + nodes.map((n) =>
+      `<div class="item"><div class="grow"><button class="rowlink machine-choice" data-machine="${esc(n.id)}" ${n.online ? '' : 'disabled'}>${esc(n.name)}</button>
+        <div class="s">${n.online ? 'online' : 'offline'} · ${n.sessions?.length ?? 0} sessions</div></div>
+        <button class="ghost" data-unpair="${esc(n.id)}">disconnect</button></div>`).join('');
+    list.querySelectorAll('[data-machine]').forEach((button) => { button.onclick = () => {
+      location.href = button.dataset.machine ? `/?node=${encodeURIComponent(button.dataset.machine)}` : '/';
+    }; });
+    list.querySelectorAll('[data-unpair]').forEach((button) => { button.onclick = async () => {
+      const r = await nativeFetch(`/api/nodes/${button.dataset.unpair}`, { method: 'DELETE' });
+      if (!r.ok) return showBanner('Could not disconnect machine.');
+      machinesSheet();
+    }; });
+  } catch (e) { if ($('machine-list') === list) list.textContent = e.message; }
+  if (!$('machine-add')) return;
+  $('machine-add').onclick = async () => {
+    const button = $('machine-add'); button.disabled = true;
+    try {
+      const response = await nativeFetch('/api/nodes', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: $('machine-name').value, url: $('machine-url').value.trim(), token: $('machine-token').value.trim() }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error);
+      machinesSheet();
+    } catch (e) { if ($('machine-error')) $('machine-error').textContent = e.message; }
+    finally { button.disabled = false; }
+  };
+}
+
 async function modelsSheet() {
   await refreshState();
   const rows = Object.values(state.models).map((m) => `
@@ -1226,6 +1286,7 @@ function sourceSheet() {
     <label>Model ID</label><input id="source-model" spellcheck="false" placeholder="Exact model ID from your provider" />
     <div id="source-api">
       <label>API endpoint</label><input id="source-url" type="url" spellcheck="false" placeholder="https://your-provider.example/v1" />
+      <div id="source-auth"><label>Endpoint authentication</label><select id="source-auth-mode"><option value="key">API key</option><option value="none">No key (my private model server)</option></select></div>
       <label>API key</label><input id="source-key" type="password" autocomplete="off" />
       <p class="dim">API billing is separate from chat subscriptions. Local servers may not need a key. Keys are saved on the Distributed Orchestrator server.</p>
     </div>
@@ -1237,6 +1298,7 @@ function sourceSheet() {
     $('source-name').value = label;
     $('source-url').value = base;
     $('source-api').hidden = subscription;
+    $('source-auth').hidden = $('source-kind').value !== '6';
     $('source-help').textContent = subscription
       ? `Install ${provider === 'claude-cli' ? 'Claude Code and run claude' : 'Codex and run codex login'} on the computer hosting Distributed Orchestrator, then sign in with your own account. Distributed Orchestrator uses that computer’s CLI login. Adding this entry does not verify the login.`
       : 'Enter the model ID available in your provider account. Custom endpoints must support OpenAI chat completions; agent sessions also require tool calling.';
@@ -1249,6 +1311,7 @@ function sourceSheet() {
     $('source-save').disabled = true;
     try {
       await api('/api/models/add', { method: 'POST', body: JSON.stringify({
+        apiKeyOptional: $('source-kind').value === '6' && $('source-auth-mode').value === 'none',
         label: $('source-name').value, model: $('source-model').value, provider, apiKeyEnv,
         baseUrl: provider.endsWith('-cli') ? '' : $('source-url').value.trim(),
         apiKey: provider.endsWith('-cli') ? '' : $('source-key').value.trim(),
@@ -1926,6 +1989,26 @@ function orderProjects(apps) {
   return [...apps].sort((a, b) => rank(a) - rank(b));
 }
 
+let peerCatalog = null;
+async function showPeerSessions() {
+  const box = $('peer-sessions');
+  if (!box) return;
+  peerCatalog ??= nativeFetch('/api/nodes').then(async (r) => r.ok ? r.json() : []).finally(() => {
+    setTimeout(() => { peerCatalog = null; }, 5000);
+  });
+  try {
+    const nodes = await peerCatalog;
+    if ($('peer-sessions') !== box) return;
+    box.innerHTML = nodes.filter((n) => n.id !== executionNode).map((n) =>
+      `<h3>${esc(n.name)} · ${n.online ? 'online' : 'offline'}</h3>` + (n.online
+        ? (n.sessions ?? []).map((s) => `<button class="rowlink machine-choice" data-peer="${esc(n.id)}" data-session="${esc(s.id)}"><span>${esc(s.name)}</span><span class="chev">›</span></button>`).join('')
+        : '<p class="dim">This machine’s work is unavailable until it reconnects.</p>')).join('');
+    box.querySelectorAll('[data-peer]').forEach((button) => { button.onclick = () => {
+      location.href = `/?node=${encodeURIComponent(button.dataset.peer)}&session=${encodeURIComponent(button.dataset.session)}`;
+    }; });
+  } catch { if ($('peer-sessions') === box) box.textContent = 'Could not load connected machines.'; }
+}
+
 function renderAppsSheet(d) {
   // Redrawing throws the scroll position away, which is wrong both for an
   // expander tap and for the refresh that lands a moment after the sheet opens.
@@ -1994,7 +2077,7 @@ function renderAppsSheet(d) {
     ? `<h3>Other sessions</h3>${loose.map(sessionRow).join('')}`
     : '';
 
-  openSheet(`<h2>Projects &amp; sessions</h2>${appsHtml}${looseHtml}
+  openSheet(`<h2>Projects &amp; sessions</h2><div class="actions"><button class="ghost" id="project-machines">machines</button></div>${appsHtml}${looseHtml}<div id="peer-sessions"></div>
     <div class="actions">
       <button class="primary" id="app-new">new project</button>
       <button class="ghost" id="sess-new">new session</button>
@@ -2002,6 +2085,8 @@ function renderAppsSheet(d) {
   if (scroll) $('sheet').scrollTop = scroll;
 
   // --- app-level actions ---
+  $('project-machines').onclick = machinesSheet;
+  showPeerSessions();
   $('app-new').onclick = () => appEditSheet(null);
   $('sess-new').onclick = () => { draft = {}; newSheet(); };
   $('sheet').querySelectorAll('[data-app-toggle]').forEach((el) => {
@@ -2034,7 +2119,7 @@ function renderAppsSheet(d) {
         // Poll until it answers again, then reload so the new code is what runs.
         const started = Date.now();
         const tick = async () => {
-          try { await fetch('/api/state', { cache: 'no-store' }); location.reload(); }
+          try { await api('/api/state', { cache: 'no-store' }); location.reload(); }
           catch { if (Date.now() - started < 30_000) setTimeout(tick, 700); else showBanner('the orchestrator did not come back — check server.log in its data folder', true); }
         };
         setTimeout(tick, 1500);
@@ -2437,7 +2522,7 @@ async function filesSheet(start) {
 
 async function viewFile(file, kind) {
   const name = file.split('/').pop();
-  const src = `/api/file?path=${encodeURIComponent(file)}`;
+  const src = nodeApi(`/api/file?path=${encodeURIComponent(file)}`);
   const back = `<div class="actions"><button class="ghost" id="v-back">back</button>
     <button class="primary" id="v-close">done</button></div>`;
 
@@ -2674,8 +2759,8 @@ window.addEventListener('online', reconcile);
 setInterval(reconcile, 20_000);
 
 (async () => {
-  await refreshState();
-  const last = localStorage.getItem('lastSession');
+  try { await refreshState(); } catch (e) { showBanner(e.message); machinesSheet(); return; }
+  const last = new URLSearchParams(location.search).get('session') || localStorage.getItem(sessionStorageKey);
   if (last && state.sessions.some((s) => s.id === last)) await openSession(last);
   else paintHeader();
 })();
