@@ -27,6 +27,9 @@ const USER_DATA =
   process.env.HARNESS_DATA_DIR ||
   path.join(os.homedir(), 'Library', 'Application Support', 'harness');
 
+// Keep the runtime/menu name aligned with packaged and web branding.
+app.setName('Distributed Orchestrator');
+
 let win = null;
 let child = null;
 

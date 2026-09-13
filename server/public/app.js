@@ -2491,11 +2491,9 @@ $('attach').onclick = () => {
   $('pick').click();
 };
 
-$('pick').onchange = async () => {
-  const files = [...$('pick').files];
-  $('pick').value = '';                       // so the same photo can be picked twice
+async function attachFiles(files) {
   const session = cur().session;
-  if (!session) return;
+  if (!session) return showBanner('open a session first — tap ☰');
 
   for (const file of files) {
     const entry = { name: file.name, uploading: true, preview: URL.createObjectURL(file) };
@@ -2516,7 +2514,28 @@ $('pick').onchange = async () => {
     }
     paintPending();
   }
+}
+
+$('pick').onchange = () => {
+  const files = [...$('pick').files];
+  $('pick').value = ''; // choosing the same file again still triggers change
+  return attachFiles(files);
 };
+
+// Only intercept file paste in the composer; ordinary text keeps native paste.
+$('input').addEventListener('paste', (event) => {
+  const clipboard = event.clipboardData;
+  if (!clipboard) return;
+  let files = [...(clipboard.files ?? [])];
+  if (!files.length) {
+    files = [...(clipboard.items ?? [])]
+      .filter((item) => item.kind === 'file')
+      .map((item) => item.getAsFile()).filter(Boolean);
+  }
+  if (!files.length) return;
+  event.preventDefault();
+  attachFiles(files);
+});
 
 $('send').onclick = send;
 $('stop').onclick = () => api(`/api/sessions/${cur().session.id}/stop`, { method: 'POST' });
