@@ -468,7 +468,7 @@ function turnHtml(turn, i, running, number, isLast) {
     const seen = new Set();
     const unique = turn.files.filter((f) => !seen.has(f.path) && seen.add(f.path));
     const shown = unique.slice(0, 12);
-    bits.push(`<div class="files">
+    bits.push(`<details class="turn-files"><summary>Files (${unique.length})</summary><div class="files">
       ${shown.map((f) => `
         <button class="file-card" data-open-file="${esc(f.path)}" data-file-kind="${f.kind}">
           <span class="file-icon">${FILE_ICON[f.kind] ?? '📄'}</span>
@@ -481,7 +481,7 @@ function turnHtml(turn, i, running, number, isLast) {
         </button>`).join('')}
       ${unique.length > shown.length
     ? `<div class="dim" style="padding:4px 2px">…and ${unique.length - shown.length} more</div>` : ''}
-    </div>`);
+    </div></details>`);
   }
 
   const sum = foldSummary(turn, running);
