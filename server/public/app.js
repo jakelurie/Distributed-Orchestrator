@@ -1920,6 +1920,12 @@ async function appsSheet() {
  * asks gh for visibility, so a tap felt sluggish. Expansion is a pure view
  * change, so it re-renders from the cached data instead.
  */
+// Keep the built-in project first, then runnable apps, then workspaces.
+function orderProjects(apps) {
+  const rank = (app) => app.builtin ? 0 : app.start?.trim() || app.running ? 1 : 2;
+  return [...apps].sort((a, b) => rank(a) - rank(b));
+}
+
 function renderAppsSheet(d) {
   // Redrawing throws the scroll position away, which is wrong both for an
   // expander tap and for the refresh that lands a moment after the sheet opens.
@@ -1983,7 +1989,7 @@ function renderAppsSheet(d) {
     </div>`;
   };
 
-  const appsHtml = d.apps.length ? d.apps.map(appCard).join('') : '<p class="dim">no projects yet — create an app or a workspace</p>';
+  const appsHtml = d.apps.length ? orderProjects(d.apps).map(appCard).join('') : '<p class="dim">no projects yet — create an app or a workspace</p>';
   const looseHtml = loose.length
     ? `<h3>Other sessions</h3>${loose.map(sessionRow).join('')}`
     : '';
