@@ -1,5 +1,5 @@
 {
-  "name": "harness",
+  "name": "distributed-orchestrator",
   "version": "0.1.0",
   "description": "A desktop frontend for running projects against swappable models",
   "main": "electron/main.js",
@@ -21,7 +21,7 @@
   },
   "build": {
     "appId": "dev.jake.harness",
-    "productName": "Harness",
+    "productName": "Distributed Orchestrator",
     "files": [
       "electron/**/*",
       "src/**/*",

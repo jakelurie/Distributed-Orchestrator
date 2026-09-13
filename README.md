@@ -1,4 +1,6 @@
-# Harness
+# Distributed Orchestrator
+
+A control plane for AI work across apps, workspaces, and sessions.
 
 Run a project against swappable models — Claude, GPT, or a local one — and
 switch between them mid-session with the conversation intact. Drive it from a

@@ -1,4 +1,4 @@
-/* Harness, phone edition. Talks to the same core the desktop app drives. */
+/* Distributed Orchestrator, phone edition. Talks to the same core the desktop app drives. */
 
 const $ = (id) => document.getElementById(id);
 
@@ -106,7 +106,7 @@ function emphasis(t) {
     // unrendered they spill an absolute path across several lines.
     .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, href) => {
       // Only schemes that are safe to put in an href; a local path becomes a
-      // preview link into the harness rather than a dead file:// URL.
+      // preview link into the orchestrator rather than a dead file:// URL.
       if (/^https?:\/\//i.test(href)) {
         return `<a href="${href}" target="_blank" rel="noopener">${label}</a>`;
       }
@@ -652,7 +652,7 @@ async function setTab(name) {
 function paintHeader() {
   const s = state.session;
   const t = cur();
-  $('title-name').textContent = s ? s.name : 'harness';
+  $('title-name').textContent = s ? s.name : 'Distributed Orchestrator';
   $('title-sub').textContent = s
     ? `${s.model}${s.mode === 'chat' ? ' · chat' : ''} · ${shortDir(s.projectDir)}`
     : 'pick a session';
@@ -1080,7 +1080,7 @@ async function settingsSheet() {
             output to fit; allowing it keeps everything and pays the higher rate.</p>`;
       })()}` : ''}
 
-    <h3>Harness</h3>
+    <h3>Distributed Orchestrator</h3>
     <div class="rowlinks">
       <button class="rowlink" id="h-files"><span>Files</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-models"><span>AI sources</span><span class="chev">›</span></button>
@@ -1181,7 +1181,7 @@ async function settingsSheet() {
 }
 
 /**
- * Harness-wide settings, one sheet each.
+ * Distributed Orchestrator-wide settings, one sheet each.
  *
  * These used to sit inline below the session settings, which made one very
  * long scroll — and put a second full list of model cards under the first,
@@ -1222,12 +1222,12 @@ function sourceSheet() {
   openSheet(`<h2>Add AI source</h2>
     <label>Connection</label><select id="source-kind">${choices.map((c, i) => `<option value="${i}">${c[0]}</option>`).join('')}</select>
     <p class="dim" id="source-help"></p>
-    <label>Name in Harness</label><input id="source-name" />
+    <label>Name in Distributed Orchestrator</label><input id="source-name" />
     <label>Model ID</label><input id="source-model" spellcheck="false" placeholder="Exact model ID from your provider" />
     <div id="source-api">
       <label>API endpoint</label><input id="source-url" type="url" spellcheck="false" placeholder="https://your-provider.example/v1" />
       <label>API key</label><input id="source-key" type="password" autocomplete="off" />
-      <p class="dim">API billing is separate from chat subscriptions. Local servers may not need a key. Keys are saved on the Harness server.</p>
+      <p class="dim">API billing is separate from chat subscriptions. Local servers may not need a key. Keys are saved on the Distributed Orchestrator server.</p>
     </div>
     <p class="dim" id="source-error" role="status"></p>
     <div class="actions"><button class="ghost" id="source-back">back</button><button class="primary" id="source-save">add source</button></div>`);
@@ -1238,7 +1238,7 @@ function sourceSheet() {
     $('source-url').value = base;
     $('source-api').hidden = subscription;
     $('source-help').textContent = subscription
-      ? `Install ${provider === 'claude-cli' ? 'Claude Code and run claude' : 'Codex and run codex login'} on the computer hosting Harness, then sign in with your own account. Harness uses that computer’s CLI login. Adding this entry does not verify the login.`
+      ? `Install ${provider === 'claude-cli' ? 'Claude Code and run claude' : 'Codex and run codex login'} on the computer hosting Distributed Orchestrator, then sign in with your own account. Distributed Orchestrator uses that computer’s CLI login. Adding this entry does not verify the login.`
       : 'Enter the model ID available in your provider account. Custom endpoints must support OpenAI chat completions; agent sessions also require tool calling.';
   };
   $('source-kind').onchange = change;
@@ -1555,7 +1555,7 @@ function modelSheet(alias) {
   const m = state.models[alias];
   if (['claude-cli', 'codex-cli'].includes(m.provider)) {
     openSheet(`<h2>${esc(m.label ?? alias)}</h2>
-      <p class="dim">Uses the ${m.provider === 'claude-cli' ? 'Claude Code' : 'Codex'} login on the computer hosting Harness. No API key is needed here. Sign in on that computer before using this source.</p>
+      <p class="dim">Uses the ${m.provider === 'claude-cli' ? 'Claude Code' : 'Codex'} login on the computer hosting Distributed Orchestrator. No API key is needed here. Sign in on that computer before using this source.</p>
       <label>Model ID</label><input id="subscription-model" spellcheck="false" />
       <p id="subscription-error" class="dim" role="status"></p>
       <div class="actions"><button class="ghost" id="subscription-back">back</button><button class="primary" id="subscription-save">save</button></div>`);
@@ -1946,11 +1946,11 @@ function renderAppsSheet(d) {
     if (a.urls?.phone) links.push(`<a href="${esc(a.urls.phone)}" target="_blank" rel="noopener">phone: ${esc(a.urls.phone)}</a>`);
     if (a.urls?.desktop) links.push(`<a href="${esc(a.urls.desktop)}" target="_blank" rel="noopener">laptop: ${esc(a.urls.desktop)}</a>`);
 
-    // The built-in Harness app is special: it *is* the running harness, its
-    // sessions edit the harness itself, and it cannot be started, edited as a
+    // The built-in Distributed Orchestrator app is special: it *is* the running harness, its
+    // sessions edit the orchestrator itself, and it cannot be started, edited as a
     // record, or deleted.
     const meta = a.builtin
-      ? `<div class="s dim">the harness itself — sessions here edit its code</div>`
+      ? `<div class="s dim">the orchestrator itself — sessions here edit its code</div>`
       : `<div class="s">${esc(shortDir(a.dir))}</div>
          ${a.running && a.reachable && links.length ? `<div class="s app-links">${links.join('<br>')}</div>` : ''}`;
     const pill = a.builtin
@@ -1959,7 +1959,7 @@ function renderAppsSheet(d) {
       : `<span class="pill ${a.reachable ? 'ready' : a.running ? 'warm' : ''}">${label}</span>`;
     const actions = a.builtin
       ? `<div class="app-actions">
-          <button class="x" data-harness-restart="1" title="Restart the harness to apply edits made to its own code">⟳</button>
+          <button class="x" data-harness-restart="1" title="Restart the orchestrator to apply edits made to its own code">⟳</button>
         </div>`
       : `<div class="app-actions">
           ${launchable || a.running ? `<button class="x" data-app-run="${esc(a.id)}" title="${a.running ? 'Stop' : 'Start'}">${a.running ? '■' : '▶'}</button>` : ''}
@@ -2017,19 +2017,19 @@ function renderAppsSheet(d) {
       e.stopPropagation();
       // Two taps: restarting drops every live connection for a few seconds.
       if (el.dataset.armed !== '1') {
-        el.dataset.armed = '1'; el.textContent = '⟳?'; el.title = 'Tap again to restart the harness';
+        el.dataset.armed = '1'; el.textContent = '⟳?'; el.title = 'Tap again to restart the orchestrator';
         setTimeout(() => { el.dataset.armed = ''; el.textContent = '⟳'; }, 3000);
         return;
       }
       el.disabled = true; el.textContent = '…';
       try {
         await api('/api/harness/restart', { method: 'POST' });
-        showBanner('restarting the harness — back in a few seconds…');
+        showBanner('restarting the orchestrator — back in a few seconds…');
         // Poll until it answers again, then reload so the new code is what runs.
         const started = Date.now();
         const tick = async () => {
           try { await fetch('/api/state', { cache: 'no-store' }); location.reload(); }
-          catch { if (Date.now() - started < 30_000) setTimeout(tick, 700); else showBanner('the harness did not come back — check server.log in its data folder', true); }
+          catch { if (Date.now() - started < 30_000) setTimeout(tick, 700); else showBanner('the orchestrator did not come back — check server.log in its data folder', true); }
         };
         setTimeout(tick, 1500);
       } catch (err) { showBanner(err.message, true); el.disabled = false; el.textContent = '⟳'; }
@@ -2263,8 +2263,8 @@ async function appDeleteSheet(app) {
     const s2 = $('del-sessions').checked;
     $('del-warn').textContent = f || s2
       ? `This cannot be undone. ${[f ? shortDir(app.dir) : null, s2 ? `${mine.length} transcript${mine.length === 1 ? '' : 's'}` : null].filter(Boolean).join(' and ')} will be erased.`
-      : 'The folder stays on disk; only the harness forgets the app.';
-    $('del-go').textContent = f || s2 ? 'delete permanently' : 'remove from harness';
+      : 'The folder stays on disk; only the orchestrator forgets the app.';
+    $('del-go').textContent = f || s2 ? 'delete permanently' : 'remove from orchestrator';
   };
   $('del-files').onchange = warn;
   $('del-sessions').onchange = warn;

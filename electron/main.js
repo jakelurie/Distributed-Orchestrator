@@ -80,7 +80,7 @@ async function createWindow() {
     height: 860,
     minWidth: 420,
     minHeight: 480,
-    title: 'Harness',
+    title: 'Distributed Orchestrator',
     backgroundColor: '#14161a',
     titleBarStyle: 'hiddenInset',
     webPreferences: { contextIsolation: true, nodeIntegration: false },
@@ -90,7 +90,7 @@ async function createWindow() {
   if (state === 'failed') {
     await win.loadURL(`data:text/html,${encodeURIComponent(
       `<body style="background:#14161a;color:#e6e9ef;font:14px -apple-system;padding:40px">
-       <h2>The harness server did not start</h2>
+       <h2>Distributed Orchestrator did not start</h2>
        <p style="color:#909aa6">Run <code>npm run serve</code> in ${ROOT} and reopen this window.</p></body>`,
     )}`);
     return;

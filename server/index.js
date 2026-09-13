@@ -337,7 +337,7 @@ const server = http.createServer(async (req, res) => {
   if (!authorized(req, url)) {
     res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end('<body style="background:#14161a;color:#d7dbe0;font:16px system-ui;padding:2rem">' +
-      '<h2>Harness</h2><p>This link needs its access token. Open the full URL printed on the laptop.</p></body>');
+      '<h2>Distributed Orchestrator</h2><p>This link needs its access token. Open the full URL printed on the laptop.</p></body>');
   }
 
   // First hit carries ?t=; stow it in a cookie so later navigations are clean.
@@ -699,7 +699,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && pathname === '/api/notify/test') {
       const cfg = await notifyConfig({ ...(await readBody(req)), enabled: true });
-      return json(res, 200, await sendNotify(cfg, 'Harness test — notifications are working.'));
+      return json(res, 200, await sendNotify(cfg, 'Distributed Orchestrator test — notifications are working.'));
     }
 
     // ---- git

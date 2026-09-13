@@ -83,7 +83,7 @@ check('accepts the token in the query string', (await fetch(`${root}/api/state?t
 
 // ---- static + state ----
 const html = await (await call('/')).text();
-check('serves the phone UI', html.includes('<title>Harness</title>') && html.includes('app.js'));
+check('serves the phone UI', html.includes('<title>Distributed Orchestrator</title>') && html.includes('app.js'));
 check('serves the voice recorder', (await call('/voice.js')).status === 200 && html.includes('id="dictate"'));
 const composer = html.match(/<footer id="composer">([\s\S]*?)<\/footer>/)?.[1] ?? '';
 const attachClasses = composer.match(/id="attach" class="([^"]+)"/)?.[1];

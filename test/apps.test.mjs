@@ -16,6 +16,8 @@ const check = (label, cond, extra = '') => {
 const data = await fs.mkdtemp(path.join(os.tmpdir(), 'apps-'));
 const proj = await fs.mkdtemp(path.join(os.tmpdir(), 'proj-'));
 
+const builtin = (await apps.load(data)).find((a) => a.id === '__harness');
+check('built-in project uses the new brand and repository', builtin.name === 'Distributed Orchestrator' && builtin.repo.endsWith('/Distributed-Orchestrator.git'));
 check('only the built-in Harness app to begin with', (await apps.load(data)).filter((x) => x.id !== '__harness').length === 0);
 
 const a = await apps.create(data, { name: 'Job Applier', dir: proj, start: 'echo hi' });

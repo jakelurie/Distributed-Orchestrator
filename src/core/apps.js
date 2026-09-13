@@ -45,9 +45,9 @@ export function appsPath(userDataDir) {
 function harnessApp() {
   return {
     id: HARNESS_APP_ID,
-    name: 'Harness',
+    name: 'Distributed Orchestrator',
     dir: HARNESS_ROOT,
-    repo: 'git@github.com:jakelurie/Harness.git',
+    repo: 'git@github.com:jakelurie/Distributed-Orchestrator.git',
     start: '',                 // it is already running — it is the harness
     editsHarness: true,
     builtin: true,             // cannot be deleted
