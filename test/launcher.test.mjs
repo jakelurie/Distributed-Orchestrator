@@ -1,0 +1,25 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+const pkg = JSON.parse(await fs.readFile('package.json'));
+assert.equal(pkg.scripts.start, 'sh scripts/launch.sh');
+assert.equal(pkg.devDependencies?.electron, undefined);
+assert.equal(pkg.build, undefined);
+const result = spawnSync('python3', ['-c', `
+import importlib.util, os, tempfile
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('launcher', 'scripts/launcher.py')
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+with tempfile.TemporaryDirectory() as d:
+    m.ROOT = Path(d)
+    (m.ROOT / '.orchestrator-node.env').write_text('HARNESS_PORT="9898"\\nORCHESTRATOR_NODE_NAME="Desktop"\\n')
+    os.environ['HARNESS_PORT'] = '9899'
+    result = m.configuration()
+    assert result['HARNESS_PORT'] == '9899'
+    assert result['ORCHESTRATOR_NODE_NAME'] == 'Desktop'
+    del os.environ['HARNESS_PORT']
+    assert m.configuration()['HARNESS_PORT'] == '9898'
+`], {encoding:'utf8'});
+assert.equal(result.status, 0, result.stderr);
+console.log('PASS browser-only package and launcher configuration precedence');

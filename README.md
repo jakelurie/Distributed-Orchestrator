@@ -4,7 +4,7 @@ A control plane for AI work across apps, workspaces, and sessions.
 
 Run a project against swappable models — Claude, GPT, or a local one — and
 switch between them mid-session with the conversation intact. Drive it from a
-desktop app or from your phone.
+browser on your computer or phone.
 
 Built to answer one question honestly: *given the same project and the same
 history, what do different models actually do?*
@@ -15,9 +15,7 @@ history, what do different models actually do?*
   repository, a port and a start command, and survives reboots — you relaunch it
   from the dashboard. Sessions attach to an app, several at once, each free to
   run a different model. That is how you compare agents: one app, two sessions.
-- **One harness, two screens.** The desktop app is a window onto the same server
-  the phone uses, so both show the same thing and every feature exists in one
-  place. Opening it on a cold laptop starts the server.
+- **Browser interface.** The laptop and phone use the same server. A small native launcher provides status, a browser link, and a stop control.
 - **Mid-session model switching.** The transcript is provider-neutral, so a
   session can move from Claude to GPT to a local model and keep its history.
   Tool-call ids are preserved across the switch, which is the part that usually
@@ -54,7 +52,7 @@ history, what do different models actually do?*
 ```bash
 npm install
 npm run serve      # the harness; open the printed URL on any device
-npm start          # the same thing in a desktop window
+npm start          # native launcher
 npm test           # the suite
 ```
 
@@ -144,7 +142,7 @@ them — never what you typed.
 
 ```
 src/core/        agent loop, transcript, tools, providers, usage, git
-electron/        desktop shell
+scripts/         native launcher and machine setup
 server/          LAN server and phone UI
 test/            suites, run with `npm test`
 python-cli/      the original CLI prototype, archived
@@ -153,3 +151,26 @@ python-cli/      the original CLI prototype, archived
 ## Licence
 
 MIT.
+
+
+## Browser launcher
+
+On macOS double-click **Launch Distributed Orchestrator.command** in this folder.
+On Linux run **Launch Distributed Orchestrator.sh**. On Windows double-click
+**Launch Distributed Orchestrator.cmd**; it runs through WSL2 Ubuntu and WSLg.
+Install Node.js 22+ and run npm ci first. macOS uses a native Cocoa launcher compiled with Swift (Apple Command Line Tools). Linux/WSL uses Python 3 with Tk. On Ubuntu,
+the Tk package is python3-tk. Windows requires these dependencies inside WSL,
+not just Windows.
+
+The small native window shows server status, the local URL, Open browser, and
+Stop server. The main interface runs in your normal browser. Server output goes
+to .launcher.log. Closing the window asks before stopping a server it owns.
+An already-running external server is detected but not stopped by this launcher;
+use its existing service controls. This avoids stopping an unrelated process.
+A server restarted from the web UI becomes independently managed.
+
+The launcher reads .orchestrator-node.env when present, otherwise existing
+environment variables and the default local port 8787. No Tailscale rules change.
+Existing installed Electron bundles can be removed manually; this checkout no
+longer uses Electron. The former testAstra path may remain as a compatibility
+symlink after renaming the folder to DistributedOrchestratorCore.

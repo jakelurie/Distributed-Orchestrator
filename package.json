@@ -2,12 +2,9 @@
   "name": "distributed-orchestrator",
   "version": "0.1.0",
   "description": "A desktop frontend for running projects against swappable models",
-  "main": "electron/main.js",
   "type": "module",
   "scripts": {
-    "start": "electron .",
-    "build": "electron-builder --mac --dir",
-    "dist": "electron-builder --mac",
+    "start": "sh scripts/launch.sh",
     "test": "node test/run.mjs",
     "serve": "node server/index.js",
     "node:setup": "node scripts/setup-node.mjs",
@@ -16,28 +13,5 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.124.0",
     "openai": "^7.10.0"
-  },
-  "devDependencies": {
-    "electron": "^44.2.0",
-    "electron-builder": "^26.15.3"
-  },
-  "build": {
-    "appId": "dev.jake.harness",
-    "productName": "Distributed Orchestrator",
-    "files": [
-      "electron/**/*",
-      "src/**/*",
-      "package.json",
-      "server/**/*",
-      "scripts/**/*",
-      "docs/**/*"
-    ],
-    "mac": {
-      "category": "public.app-category.developer-tools",
-      "target": [
-        "dir",
-        "dmg"
-      ]
-    }
   }
 }
