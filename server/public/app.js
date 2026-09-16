@@ -1244,48 +1244,75 @@ async function networkSheet() {
 
 async function machinesSheet() {
   openSheet(`<h2>Machines</h2>
-    <p class="dim">Choose where your sessions run. Each machine owns its projects, files, and logins. Offline work stays on that machine.</p>
-    <div id="machine-list"><p class="dim">loading…</p></div>
-    <p class="dim">On each host, use Settings → Phone access to obtain its private HTTPS address before pairing.</p>
-    <h3>Connect a machine</h3>
-    <label>Name</label><input id="machine-name" placeholder="Desktop PC" />
-    <label>Node address</label><input id="machine-url" type="url" placeholder="https://desktop.example:8443" />
-    <label>Node access token</label><input id="machine-token" type="password" autocomplete="off" />
-    <p class="dim">Use the token configured on that machine. Connections grant access to its tools and files. Pair machines in both directions to access either from the other.</p>
+    <div id="cluster-summary" role="status">Checking machines…</div>
+    <h3>Orchestrator hosts</h3><p class="dim">Preferred main is used at the next election; it does not interrupt a healthy main.</p><div id="machine-list"></div>
+    <h3>Phones &amp; browser viewers</h3><div id="viewer-list"></div>
+    <h3>Tailscale devices</h3><p class="dim">Network presence is separate from running this app. Devices are remembered after going offline; joining requires your approval.</p>
+    <div id="tailnet-list">Checking Tailscale…</div>
+    <h3>Add another host</h3>
+    <p class="dim">Create a one-use code on the main, then enter it under Join an existing system on the new computer. Codes expire after ten minutes.</p>
+    <div class="actions"><button class="ghost" id="cluster-invite">create join code</button></div>
+    <p id="cluster-invitation" class="cluster-invitation" role="status"></p>
+    <div id="cluster-join">
+      <h3>Join an existing system</h3>
+      <p class="dim">On the new host, set up Phone access first, then enter the existing main host’s address and join code. Its sessions will synchronize automatically. Subscription CLI logins stay on each computer.</p>
+      <label>This host’s HTTPS address</label><input id="cluster-own-url" type="url" placeholder="https://desktop.your-tailnet.ts.net" />
+      <label>Existing main’s address</label><input id="cluster-url" type="url" placeholder="https://laptop.your-tailnet.ts.net" />
+      <label>Join code (or existing main’s access token)</label><input id="cluster-token" type="password" autocomplete="off" />
+      <div class="actions"><button class="primary" id="cluster-connect">join system</button></div>
+    </div>
     <p id="machine-error" class="dim" role="status"></p>
-    <div class="actions"><button class="primary" id="machine-add">connect</button></div>${backToSettings}`);
+    <div class="actions"><button class="ghost" id="machines-refresh">refresh</button></div>${backToSettings}`);
   $('sub-back').onclick = settingsSheet;
+  $('machines-refresh').onclick = machinesSheet;
   const list = $('machine-list');
-  try {
-    const response = await nativeFetch('/api/nodes');
-    const nodes = await response.json();
-    if (!response.ok) throw new Error(nodes.error);
-    if ($('machine-list') !== list) return;
-    list.innerHTML = `<button class="rowlink machine-choice" data-machine=""><span>This machine</span><span class="chev">›</span></button>` + nodes.map((n) =>
-      `<div class="item"><div class="grow"><button class="rowlink machine-choice" data-machine="${esc(n.id)}" ${n.online ? '' : 'disabled'}>${esc(n.name)}</button>
-        <div class="s">${n.online ? 'online' : 'offline'} · ${n.sessions?.length ?? 0} sessions</div></div>
-        <button class="ghost" data-unpair="${esc(n.id)}">disconnect</button></div>`).join('');
-    list.querySelectorAll('[data-machine]').forEach((button) => { button.onclick = () => {
-      location.href = button.dataset.machine ? `/?node=${encodeURIComponent(button.dataset.machine)}` : '/';
-    }; });
-    list.querySelectorAll('[data-unpair]').forEach((button) => { button.onclick = async () => {
-      const r = await nativeFetch(`/api/nodes/${button.dataset.unpair}`, { method: 'DELETE' });
-      if (!r.ok) return showBanner('Could not disconnect machine.');
-      machinesSheet();
-    }; });
-  } catch (e) { if ($('machine-list') === list) list.textContent = e.message; }
-  if (!$('machine-add')) return;
-  $('machine-add').onclick = async () => {
-    const button = $('machine-add'); button.disabled = true;
-    try {
-      const response = await nativeFetch('/api/nodes', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: $('machine-name').value, url: $('machine-url').value.trim(), token: $('machine-token').value.trim() }) });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error);
-      machinesSheet();
-    } catch (e) { if ($('machine-error')) $('machine-error').textContent = e.message; }
-    finally { button.disabled = false; }
+  const call = async (route, body) => {
+    const response = await nativeFetch('/api/cluster/' + route, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+    const result = await response.json(); if (!response.ok) throw new Error(result.error); return result;
   };
+  const seen = (at) => at ? new Date(at).toLocaleString() : 'not yet observed';
+  try {
+    const data = await call('status');
+    if ($('machine-list') !== list) return;
+    $('cluster-summary').textContent = `${data.hosts.filter((n) => n.member).length} hosts · ${data.viewers.filter((v) => v.active).length} connected viewers · ${data.mode}`;
+    if (data.mode === 'two-host availability') $('cluster-summary').append(document.createTextNode('. Both hosts may become main during a network split; divergent history is preserved for recovery.'));
+    list.innerHTML = data.hosts.map((n) => `<div class="item machine-item"><div class="grow"><div class="t">${esc(n.name)}${n.id === data.self ? ' · this host' : ''}</div>
+      <div class="s">${n.active ? 'active' : 'offline'} · ${n.id === data.leader ? 'main' : 'replica'}${n.id === data.preferred ? ' · preferred main' : ''}</div>
+      <div class="s">Last contact: ${esc(seen(n.lastSeen))}</div></div>
+      ${n.member && n.id !== data.preferred ? `<button class="ghost" data-prefer="${esc(n.id)}">prefer main</button>` : ''}</div>`).join('');
+    list.querySelectorAll('[data-prefer]').forEach((button) => { button.onclick = async () => {
+      try { await call('preferred', { id: button.dataset.prefer }); await machinesSheet(); }
+      catch (e) { if ($('machine-error')) $('machine-error').textContent = e.message; }
+    }; });
+    $('viewer-list').innerHTML = data.viewers.map((v) => `<div class="item machine-item"><div class="grow"><div class="t">${esc(v.name)}</div><div class="s">${v.active ? 'connected' : 'disconnected'} · last activity ${esc(seen(v.lastSeen))}</div><div class="s">First seen ${esc(seen(v.firstSeen))}</div></div></div>`).join('') || '<p class="dim">No browser heartbeat received yet. This view updates when you refresh.</p>';
+    $('cluster-join').hidden = data.hosts.filter((n) => n.member).length > 1;
+    $('cluster-invite').disabled = data.self !== data.leader;
+    $('cluster-invite').onclick = async () => {
+      try {
+        const invite = await call('invite', {});
+        if ($('cluster-invitation')) $('cluster-invitation').textContent = `Main address: ${invite.url} · Join code: ${invite.code}`;
+      } catch (e) { if ($('machine-error')) $('machine-error').textContent = e.message; }
+    };
+    for (const issue of data.recoveryIssues || []) {
+      const message = document.createElement('p');
+      message.textContent = `${issue.session}: files not synchronized — ${issue.error}`;
+      $('cluster-summary').append(message);
+    }
+    if (data.conflicts) $('cluster-summary').append(document.createTextNode(` ${data.conflicts} divergent history branch(es) were preserved in the cluster recovery files.`));
+    $('cluster-own-url').value = data.hosts.find((n) => n.id === data.self)?.url || '';
+    $('cluster-connect').onclick = async () => {
+      const button = $('cluster-connect'); button.disabled = true;
+      try {
+        await call('join', { url: $('cluster-url').value.trim(), token: $('cluster-token').value.trim(), ownUrl: $('cluster-own-url').value.trim() });
+        location.href = '/';
+      } catch (e) { if ($('machine-error')) $('machine-error').textContent = e.message; }
+      finally { button.disabled = false; }
+    };
+    const inventory = await call('devices');
+    if ($('machine-list') !== list) return;
+    $('tailnet-list').innerHTML = inventory.devices.map((n) => `<div class="item machine-item"><div class="grow"><div class="t">${esc(n.name)}${n.local ? ' · this device' : ''}</div><div class="s">${n.active ? 'online on Tailscale' : 'offline on Tailscale'} · ${esc(n.platform || 'device')} · ${esc(seen(n.lastSeen))}</div></div></div>`).join('');
+    if (inventory.error) $('tailnet-list').append(document.createTextNode(inventory.error));
+  } catch (e) { if ($('machine-list') === list) $('machine-error').textContent = e.message; }
 }
 
 async function modelsSheet() {

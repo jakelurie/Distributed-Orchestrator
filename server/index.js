@@ -21,6 +21,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
 
+import { replicatedAssets } from '../src/core/cluster/assets.js';
+import { portableWorkspaces } from '../src/core/cluster/workspaces.js';
+import { deviceInventory } from '../src/core/cluster/devices.js';
+import { createCluster } from '../src/core/cluster/index.js';
 import { createNodes } from '../src/core/nodes.js';
 import { runTurn } from '../src/core/agent.js';
 import { loadConfig, patchModel, addModel } from '../src/core/config.js';
@@ -57,7 +61,11 @@ const USER_DATA =
   path.join(os.homedir(), 'Library', 'Application Support', 'harness');
 
 const nodes = createNodes(USER_DATA);
+const inventory = deviceInventory(USER_DATA);
 
+let cluster = null;
+let workspaces = null;
+let clusterAssets = null;
 let TOKEN = '';              // resolved from disk at startup
 let usage = null;            // the usage ledger, loaded at startup
 let usageDirty = false;
@@ -130,6 +138,42 @@ async function resolveToken(dir) {
   return fresh;
 }
 
+// Portable app/model configuration and API keys travel only over authenticated
+// cluster transport. CLI login state and machine-local network settings do not.
+const SHARED_SETTINGS = ['models.json', 'secrets.json', 'apps.json'];
+let settingsApplied = '';
+async function snapshotSettings() {
+  for (const name of SHARED_SETTINGS) {
+    let value = await fs.readFile(path.join(USER_DATA, name), 'utf8').catch((e) => { if (e.code === 'ENOENT') return null; throw e; });
+    if (name === 'apps.json' && value !== null) {
+      const parsed = JSON.parse(value);
+      for (const app of parsed.apps || []) app.ownerNode ||= cluster.self.id;
+      value = JSON.stringify(parsed);
+    }
+    if (value !== null && cluster.replica.state.values['settings:' + name] !== value) {
+      await cluster.replica.propose({ type: 'value', id: 'settings:' + name, value });
+    }
+  }
+}
+async function restoreSettings() {
+  const values = SHARED_SETTINGS.map((name) => cluster.replica.state.values['settings:' + name] ?? null);
+  const fingerprint = JSON.stringify(values);
+  if (fingerprint === settingsApplied) return;
+  for (let i = 0; i < SHARED_SETTINGS.length; i++) {
+    if (values[i] === null) continue;
+    let content = values[i];
+    const parsed = JSON.parse(content);
+    if (SHARED_SETTINGS[i] === 'apps.json') {
+      for (const app of parsed.apps || []) if (app.ownerNode && app.ownerNode !== cluster.self.id) app.pid = null;
+      content = JSON.stringify(parsed);
+    }
+    const file = path.join(USER_DATA, SHARED_SETTINGS[i]);
+    const tmp = `${file}.cluster-${crypto.randomUUID()}`;
+    await fs.writeFile(tmp, content, { mode: 0o600 }); await fs.rename(tmp, file);
+  }
+  resetClients(); settingsApplied = fingerprint;
+}
+
 // ---------------------------------------------------------------- utilities
 
 /**
@@ -166,15 +210,23 @@ function send(res, code, type, buf) {
   return undefined;
 }
 
-const json = (res, code, body) =>
-  send(res, code, 'application/json; charset=utf-8', Buffer.from(JSON.stringify(body)));
+async function json(res, code, body) {
+  if (res.syncSettings && code < 400) {
+    try { await snapshotSettings(); }
+    catch (error) {
+      settingsApplied = '';
+      return send(res, 503, 'application/json; charset=utf-8', Buffer.from(JSON.stringify({ error: error.message })));
+    }
+  }
+  return send(res, code, 'application/json; charset=utf-8', Buffer.from(JSON.stringify(body)));
+}
 
-async function readBody(req) {
+async function readBody(req, limit = 4_000_000) {
   const chunks = [];
   let size = 0;
   for await (const c of req) {
     size += c.length;
-    if (size > 4_000_000) throw new Error('request body too large');
+    if (size > limit) throw new Error('request body too large');
     chunks.push(c);
   }
   if (!chunks.length) return {};
@@ -182,11 +234,13 @@ async function readBody(req) {
 }
 
 function authorized(req, url) {
+  if (cluster?.trusted(req)) return true;
   if (!TOKEN) return true; // open by default
   const supplied =
     url.searchParams.get('t') ||
     req.headers['x-harness-token'] ||
     (req.headers.cookie ?? '').match(/(?:^|;\s*)ht=([^;]+)/)?.[1];
+  if (cluster?.verifyTicket(supplied)) return true;
   if (!supplied) return false;
 
   // Constant-time compare so the token can't be guessed a byte at a time.
@@ -338,7 +392,15 @@ const server = http.createServer(async (req, res) => {
   const { pathname } = url;
   res.gzipOk = /\bgzip\b/.test(req.headers['accept-encoding'] ?? '');
 
-  if (!authorized(req, url)) {
+  // Only minimal health is public, so an already-authorized browser can find
+  // another host without leaking sessions or sharing a cluster credential.
+  if (req.method === 'GET' && pathname === '/api/cluster/health') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    return json(res, 200, { id: cluster?.replica.disk.clusterId, node: cluster?.self.id,
+      ready: Boolean(cluster?.replica.writable()), leader: cluster?.replica.leader });
+  }
+  const invited = pathname === '/api/cluster/admit' && cluster?.validInvite(req.headers['x-harness-token']);
+  if (!invited && !authorized(req, url)) {
     res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end('<body style="background:#14161a;color:#d7dbe0;font:16px system-ui;padding:2rem">' +
       '<h2>Distributed Orchestrator</h2><p>This link needs its access token. Open the full URL printed on the laptop.</p></body>');
@@ -346,10 +408,76 @@ const server = http.createServer(async (req, res) => {
 
   // First hit carries ?t=; stow it in a cookie so later navigations are clean.
   if (url.searchParams.has('t')) {
-    res.setHeader('Set-Cookie', `ht=${TOKEN}; Path=/; Max-Age=31536000; SameSite=Lax`);
+    res.setHeader('Set-Cookie', `ht=${cluster?.verifyTicket(url.searchParams.get('t')) ? url.searchParams.get('t') : TOKEN}; Path=/; Max-Age=31536000; SameSite=Lax`);
   }
 
   try {
+    if (pathname.startsWith('/api/cluster/')) {
+      const route = pathname.slice('/api/cluster/'.length);
+      const internal = ['rpc', 'command', 'activate'];
+      if (internal.includes(route) && !cluster.trusted(req)) return json(res, 403, { error: 'Cluster authentication required' });
+      if (req.method === 'GET' && route === 'status') return json(res, 200, cluster.status());
+      if (req.method === 'GET' && route === 'devices') {
+        const observed = await inventory();
+        await cluster.command({ type: 'value', id: 'devices:' + cluster.self.id, value: observed.devices });
+        const devices = new Map();
+        for (const [id, entries] of Object.entries(cluster.replica.state.values)) {
+          if (!id.startsWith('devices:')) continue;
+          for (const item of entries) if (!devices.has(item.id) || (devices.get(item.id).lastSeen || 0) < (item.lastSeen || 0)) devices.set(item.id, item);
+        }
+        for (const item of observed.devices) devices.set(item.id, item);
+        return json(res, 200, { devices: [...devices.values()], error: observed.error });
+      }
+      if (req.method !== 'POST') return json(res, 405, { error: 'POST required' });
+      if (!req.headers['content-type']?.startsWith('application/json')) return json(res, 415, { error: 'JSON required' });
+      const body = await readBody(req, 128_000_000);
+      if (route === 'invite') return json(res, 200, cluster.invite());
+      if (route === 'rpc') return json(res, 200, await cluster.replica.receive(body));
+      if (route === 'command') { await cluster.replica.propose(body); return json(res, 200, { ok: true }); }
+      if (route === 'viewer') return json(res, 200, await cluster.viewer(body, req.headers['user-agent'] || ''));
+      if (route === 'preferred') {
+        if (!cluster.replica.members().some((n) => n.id === body.id)) return json(res, 400, { error: 'Unknown host' });
+        await cluster.command({ type: 'preferred', id: body.id }); return json(res, 200, { ok: true });
+      }
+      if (route === 'admit') {
+        if (!TOKEN && !invited) return json(res, 403, { error: 'Create a join code on the existing main host first.' });
+        if (!cluster.shared()) {
+          for (const meta of await store.list()) {
+            const session = await store.load(meta.id, { repair: false });
+            session.ownerNode = cluster.self.id;
+            try { await workspaces.capture(session); } catch (e) { session.workspaceError = e.message; }
+            await clusterAssets.session(session, true);
+            await store.save(session);
+            await cluster.command({ type: 'session', id: session.id, value: { ...session, ownerNode: cluster.self.id } });
+          }
+        }
+        await snapshotSettings();
+        const snapshot = await cluster.admit(body.member);
+        if (invited) cluster.consumeInvite();
+        return json(res, 200, snapshot);
+      }
+      if (route === 'activate') { await cluster.activate(body.member); return json(res, 200, { ok: true }); }
+      if (route === 'join') {
+        if (running.size) return json(res, 409, { error: 'Wait for this host’s running turns to finish before joining.' });
+        const sessions = await Promise.all((await store.list()).map((s) => store.load(s.id, { repair: false })));
+        for (const session of sessions) { await workspaces.capture(session); await clusterAssets.session(session, true); }
+        const values = Object.fromEntries(Object.entries(cluster.replica.state.values).filter(([id]) => id.startsWith('workspace:') || id.startsWith('asset:')));
+        return json(res, 200, await cluster.join(body, sessions, values));
+      }
+      return json(res, 404, { error: 'Unknown cluster operation' });
+    }
+    // Shared workspace requests always execute through the elected main. Host
+    // setup/inspection stays local and no uncertain mutation is retried.
+    if (cluster.shared() && pathname.startsWith('/api/') &&
+        !/^\/api\/(network|node-info|nodes)(?:[/?]|$)/.test(pathname)) {
+      if (cluster.replica.role !== 'leader') {
+        if (cluster.trusted(req)) return json(res, 503, { error: 'Coordinator changed. Refresh before retrying.' });
+        return cluster.proxy(req, res);
+      }
+      if (!cluster.replica.writable()) return json(res, 503, { error: 'Waiting for coordinator quorum.' });
+      await restoreSettings();
+      res.syncSettings = req.method !== 'GET' && /^\/api\/(models|apps)(?:[/?]|$)/.test(pathname);
+    }
     if (req.method === 'GET' && pathname === '/api/node-info') {
       return json(res, 200, { protocol: 1, name: process.env.ORCHESTRATOR_NODE_NAME || os.hostname(),
         platform: process.platform, authenticated: Boolean(TOKEN), storage: 'node-owned' });
@@ -372,7 +500,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
       return serveStatic(res, 'index.html');
     }
-    if (req.method === 'GET' && /^\/(app\.js|voice\.js|styles\.css)$/.test(pathname)) {
+    if (req.method === 'GET' && /^\/(app\.js|voice\.js|cluster-client\.js|sw\.js|styles\.css)$/.test(pathname)) {
       return serveStatic(res, pathname.slice(1));
     }
 
@@ -580,6 +708,12 @@ const server = http.createServer(async (req, res) => {
     const appMatch = pathname.match(/^\/api\/apps(?:\/([^/]+))?(?:\/(\w+))?$/);
     if (appMatch) {
       const [, appId, verb] = appMatch;
+      if (cluster.shared() && appId && req.method !== 'GET') {
+        const app = (await apps.load(USER_DATA)).find((item) => item.id === appId);
+        if (app?.ownerNode && app.ownerNode !== cluster.self.id) return json(res, 409, {
+          error: 'This app’s processes belong to another host. Open its session and send a message to recover the project on this main before using app controls.',
+        });
+      }
 
       if (req.method === 'GET' && !appId) {
         // Visibility is not shown in the list (it lives in each app's edit
@@ -948,7 +1082,8 @@ const server = http.createServer(async (req, res) => {
 
     // ---- one file's contents, for the phone to render
     if (req.method === 'GET' && pathname === '/api/file') {
-      const file = path.resolve(url.searchParams.get('path') ?? '');
+      let file = path.resolve(url.searchParams.get('path') ?? '');
+      if (cluster.shared()) file = await clusterAssets.resolve(file);
       const st = await fs.stat(file).catch(() => null);
       if (!st?.isFile()) return json(res, 404, { error: 'not a file' });
 
@@ -1151,6 +1286,7 @@ const server = http.createServer(async (req, res) => {
         const name = decodeURIComponent(String(req.headers['x-filename'] ?? 'image.jpg'));
         try {
           const att = await attachments.store(USER_DATA, id, { name, buffer: Buffer.concat(chunks) });
+          if (cluster.shared()) await clusterAssets.capture(att);
           return json(res, 200, att);
         } catch (e) {
           return json(res, 400, { error: e?.message ?? String(e) });
@@ -1162,6 +1298,18 @@ const server = http.createServer(async (req, res) => {
 
         const { text, attachments: atts } = await readBody(req);
         const session = await store.load(id);
+        if (cluster.shared()) {
+          await clusterAssets.session(session);
+          for (const attachment of atts || []) await clusterAssets.restore(attachment);
+          const previousOwner = session.ownerNode;
+          await workspaces.prepare(session);
+          if (previousOwner && previousOwner !== cluster.self.id && session.appId && !session.editsHarness && session.appId !== '__harness') {
+            await apps.update(USER_DATA, session.appId, { dir: session.projectDir, ownerNode: cluster.self.id, pid: null });
+            await snapshotSettings();
+          }
+          await workspaces.capture(session);
+          await store.save(session);
+        }
         live.set(id, session);
         const cfg = await loadConfig(USER_DATA);
         if (cfg.error) return json(res, 400, { error: cfg.error });
@@ -1181,7 +1329,13 @@ const server = http.createServer(async (req, res) => {
           userText: text,
           attachments: Array.isArray(atts) ? atts : [],
           signal: controller.signal,
-          save: (s) => store.save(s),
+          save: async (s) => {
+            if (cluster.shared()) {
+              if (!cluster.replica.writable()) throw new Error('Coordinator lost quorum; turn stopped.');
+              await workspaces.capture(s);
+            }
+            return store.save(s);
+          },
           monitorsFile: monitorsPath(USER_DATA),
           tailnetHost: await apps.tailnetHost().catch(() => null),
           // A ready-to-run command for the monitor companion, so a custom view
@@ -1322,6 +1476,26 @@ function lanAddress() {
 
 await store.init(USER_DATA);
 TOKEN = await resolveToken(USER_DATA);
+cluster = await createCluster(USER_DATA, { port: PORT, onChange: (replica) => {
+  if (replica.role !== 'leader') for (const turn of running.values()) turn.controller.abort();
+} });
+store.useCluster(cluster);
+workspaces = portableWorkspaces(cluster);
+clusterAssets = replicatedAssets(cluster, USER_DATA);
+cluster.replica.start();
+// Discover our published address without changing the user's Serve routes.
+networkStatus(PORT).then((n) => cluster.setUrl(n.phoneUrl)).catch(() => {});
+setInterval(() => {
+  if (cluster.shared() && !cluster.replica.writable()) for (const turn of running.values()) turn.controller.abort();
+}, 500).unref();
+setInterval(async () => {
+  if (!cluster.replica.writable()) return;
+  try {
+    for (const [id, at] of cluster.replica.lastContact) {
+      if ((cluster.replica.state.values['host-seen:' + id] || 0) < at) await cluster.command({ type: 'value', id: 'host-seen:' + id, value: at });
+    }
+  } catch { /* A new main will continue collecting sightings. */ }
+}, 30000).unref();
 
 usage = await usageStore.load(USER_DATA);
 await collectUsage({ force: true });      // catch up on anything missed while down
@@ -1381,6 +1555,7 @@ let shuttingDown = false;
 async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
+  cluster?.replica.stop();
 
   const interrupted = [...running.entries()];
   for (const [id, turn] of interrupted) {

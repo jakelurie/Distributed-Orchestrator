@@ -1,0 +1,70 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import net from 'node:net';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cluster-server-'));
+const hosts = [];
+const pause = () => new Promise((r) => setTimeout(r, 150));
+async function start(name) {
+  const portCheck = net.createServer(); await new Promise((r) => portCheck.listen(0, '127.0.0.1', r));
+  const port = portCheck.address().port; await new Promise((r) => portCheck.close(r));
+  const dir = path.join(root, name); await fs.mkdir(dir);
+  const origin = `http://127.0.0.1:${port}`;
+  const child = spawn(process.execPath, ['server/index.js'], { env: { ...process.env,
+    HARNESS_PORT: String(port), HARNESS_TOKEN: 'cluster-test', HARNESS_DATA_DIR: dir,
+    ORCHESTRATOR_PUBLIC_URL: origin, ORCHESTRATOR_NODE_NAME: name,
+  }, stdio: 'ignore' });
+  const closed = once(child, 'exit');
+  const call = async (route, method = 'GET', body) => {
+    const response = await fetch(origin + route, { method, headers: { 'Content-Type': 'application/json', 'x-harness-token': 'cluster-test' },
+      body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(20000) });
+    const data = await response.json(); assert.ok(response.ok, JSON.stringify(data)); return data;
+  };
+  const host = { child, closed, origin, call }; hosts.push(host);
+  for (let i = 0; i < 60; i++) { try { await call('/api/cluster/status'); return host; } catch { await pause(); } }
+  throw Error('Test server failed to start');
+}
+try {
+  const a = await start('a'), b = await start('b'), c = await start('c');
+  const project = path.join(root, 'project'); await fs.mkdir(project); await fs.writeFile(path.join(project, 'reference.txt'), 'replicated');
+  const session = await a.call('/api/sessions', 'POST', { name: 'shared', model: 'opus', projectDir: project });
+  const invitation = await a.call('/api/cluster/invite', 'POST', {});
+  await b.call('/api/cluster/join', 'POST', { url: a.origin, ownUrl: b.origin, token: invitation.code });
+  const reused = await fetch(a.origin + '/api/cluster/admit', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-harness-token': invitation.code }, body: '{}' });
+  assert.equal(reused.status, 401, 'join codes are one-use');
+  await c.call('/api/cluster/join', 'POST', { url: a.origin, ownUrl: c.origin, token: 'cluster-test' });
+  assert.equal((await b.call('/api/sessions/' + session.id)).name, 'shared');
+  await c.call('/api/cluster/viewer', 'POST', { id: 'test-phone-123456789' });
+  await a.call('/api/sessions/' + session.id, 'PATCH', { name: 'replicated rename' });
+  await a.call('/api/models/key', 'POST', { alias: '__transcription', apiKey: 'test-replicated-key' });
+  const upload = await fetch(a.origin + '/api/sessions/' + session.id + '/upload', {
+    method: 'POST', headers: { 'x-harness-token': 'cluster-test', 'x-filename': 'sample.txt' }, body: 'replicated attachment',
+  });
+  assert.equal(upload.status, 200); const attachment = await upload.json();
+  assert.ok(attachment.clusterAsset);
+  // Hard failure, not graceful shutdown: no last-second snapshot is possible.
+  a.child.kill('SIGKILL'); await a.closed;
+  let survivor;
+  for (let i = 0; i < 100; i++) {
+    for (const node of [b, c]) { if ((await node.call('/api/cluster/status')).writable) survivor = node; }
+    if (survivor) break; await pause();
+  }
+  assert.ok(survivor, 'a surviving majority elects a coordinator');
+  assert.equal((await survivor.call('/api/sessions/' + session.id)).name, 'replicated rename');
+  assert.equal((await survivor.call('/api/cluster/status')).hosts.length, 3);
+  assert.equal((await survivor.call('/api/cluster/status')).viewers.length, 1);
+  await survivor.call('/api/sessions/' + session.id, 'PATCH', { name: 'after crash' });
+  assert.equal((await survivor.call('/api/transcription')).configured, true);
+  const restored = await fetch(survivor.origin + '/api/file?path=' + encodeURIComponent(attachment.path), {
+    headers: { 'x-harness-token': 'cluster-test' },
+  });
+  assert.equal(restored.status, 200); assert.equal(await restored.text(), 'replicated attachment');
+  console.log('PASS three real servers: onboarding, proxy, replicated rename, viewer history, config, attachments and SIGKILL failover');
+} finally {
+  for (const host of hosts) { if (host.child.exitCode === null && host.child.signalCode === null) host.child.kill('SIGTERM'); }
+  await Promise.all(hosts.map((h) => h.closed));
+  await fs.rm(root, { recursive: true, force: true });
+}

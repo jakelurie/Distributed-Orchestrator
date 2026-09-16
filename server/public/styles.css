@@ -780,3 +780,11 @@ button.primary.danger:active { background: #db5f78; }
 /* The built-in Harness app: it edits the harness itself. */
 .app-block.builtin .app-card { border-color: var(--accent); }
 .pill.self { color: var(--accent); border-color: rgba(122,162,247,0.4); }
+
+/* Machine history wraps on phone widths, including long device names. */
+.machine-item { flex-wrap: wrap; gap: 8px; }
+.machine-item .grow { min-width: 140px; }
+.machine-item .t, .machine-item .s { white-space: normal; overflow-wrap: anywhere; }
+.machine-item button { min-height: 44px; padding: 0 12px; }
+
+.cluster-invitation { overflow-wrap: anywhere; user-select: all; }

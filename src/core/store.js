@@ -12,12 +12,16 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 import { HARNESS_ROOT, HARNESS_APP_ID } from './harness-guard.js';
 
 import { danglingToolCalls, noteEvent, toolResultEvent } from './transcript.js';
 
 let sessionsDir = null;
+let cluster = null;
+export function useCluster(value) { cluster = value; }
+const shared = () => cluster?.shared();
 
 export function init(userDataDir) {
   sessionsDir = path.join(userDataDir, 'sessions');
@@ -46,7 +50,7 @@ function fileFor(id) {
 
 export function newSession({ name, model, projectDir, system = '', mode = 'agent', appId = null }) {
   return {
-    id: `${stamp()}-${slug(name)}`,
+    id: `${stamp()}-${slug(name)}-${crypto.randomUUID().slice(0, 8)}`,
     name: name || 'untitled',
     model,
     mode,
@@ -73,6 +77,14 @@ const writing = new Map();
 let writeSeq = 0;
 
 export async function save(session) {
+  if (shared()) {
+    session.updatedAt = Date.now();
+    session.ownerNode ||= cluster.self.id;
+    // A stopped former main must not forward a stale in-memory transcript to
+    // its replacement. Session writers execute only on the current main.
+    await cluster.replica.propose({ type: 'session', id: session.id, value: session });
+    return session;
+  }
   const prior = writing.get(session.id) ?? Promise.resolve();
 
   const run = prior
@@ -107,11 +119,12 @@ export async function save(session) {
  *                it corrupts a live transcript.
  */
 export async function load(id, { repair = true } = {}) {
-  const session = JSON.parse(await fs.readFile(fileFor(id), 'utf8'));
+  const session = shared() ? structuredClone(cluster.replica.state.sessions[id]) : JSON.parse(await fs.readFile(fileFor(id), 'utf8'));
+  if (!session) throw new Error('Session not found');
   // Built-in sessions follow this checkout, not a historical folder alias.
   if (session.appId === HARNESS_APP_ID && session.projectDir !== HARNESS_ROOT) {
     session.projectDir = HARNESS_ROOT;
-    await save(session);
+    if (!shared() || cluster.replica.writable()) await save(session);
   }
   if (!repair) return session;
 
@@ -138,6 +151,12 @@ export async function load(id, { repair = true } = {}) {
 }
 
 export async function list() {
+  if (shared()) return Object.values(cluster.replica.state.sessions).map((s) => ({
+    id: s.id, name: s.name, model: s.model, appId: s.appId ?? null, projectDir: s.projectDir,
+    ownerNode: s.ownerNode, updatedAt: s.updatedAt, forkedFrom: s.forkedFrom,
+    turns: (s.events || []).filter((e) => e.type === 'assistant').length,
+    modelsUsed: [...new Set((s.events || []).filter((e) => e.type === 'assistant').map((e) => e.model))],
+  })).sort((a, b) => b.updatedAt - a.updatedAt);
   let names;
   try {
     names = await fs.readdir(sessionsDir);
@@ -168,6 +187,7 @@ export async function list() {
 }
 
 export async function remove(id) {
+  if (shared()) return cluster.replica.propose({ type: 'session', id, value: null });
   await fs.rm(fileFor(id), { force: true });
 }
 

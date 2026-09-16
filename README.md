@@ -71,7 +71,9 @@ Use `npm run node:setup` on a new machine, then `npm run node:serve`.
 Pair nodes under **Settings → Machines**. Any number of nodes can be connected;
 remote sessions and file transfers stay on their owning machine.
 See [machine setup, Windows/WSL2, GPU models, and availability limits](docs/machines.md).
-This is execution-node federation, not replicated state or automatic failover.
+Settings → Machines now supports a shared cluster with replicated sessions and
+automatic main-host election. Two hosts prioritize availability; three or more
+require a majority. See the recovery and browser-failover limits in the setup guide.
 
 ## Using it from a phone
 

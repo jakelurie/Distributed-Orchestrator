@@ -1,23 +1,72 @@
 # Connecting your machines
 
-## What this version implements
+## Shared system and failover
 
-A node is a running Distributed Orchestrator server. Pair any number of nodes
-under Settings → Machines, then open a node or one of its sessions from the
-Projects browser. The gateway forwards chat, streamed replies, uploads,
-downloads, model settings and tools to the selected node. The remote node's
-credentials remain server-side. Connections persist across gateway restarts.
+Settings → Machines shows the current host, every joined host, recorded browser
+viewers, and devices observed through the installed Tailscale client. Host status
+means the orchestrator responded; Tailscale status means the device is online on
+that network. These are separate. Browser activity is a heartbeat, not proof that
+a person is looking at the screen. Sleeping phones become disconnected after
+45 seconds and keep their history. Different browser profiles count as different
+viewers; this app cannot enumerate devices hidden by Tailscale permissions or
+ones that disappeared before it first observed them.
 
-Each node owns its sessions, repositories, files and subscription logins.
-Remote operations execute exactly where the session lives. API and GPU endpoints
-can be reached over your private network independently of the execution node.
+A new installation starts as a one-host system. On the existing main, select
+**create join code**. On the new host, use Phone access to publish its private
+HTTPS address, then enter the main address and code under **Join an existing
+system**. Codes are one-use and expire in ten minutes. Presence on the same
+Tailscale network does not silently authorize access to files, API keys or tools.
+After joining, membership, sessions, viewer history, and portable configuration
+synchronize without reverse pairing. There is no configured host/viewer count
+limit; CPU, disk and network capacity still apply.
 
-**This is not yet a highly available shared-state cluster.** Node registries,
-sessions, attachments and project files are not replicated. A dead gateway needs
-a different bookmark; a dead execution node makes its sessions unavailable.
-Three nodes do not enable consensus in this implementation. Do not sync the live
-data folder with a file-sync tool or start several processes against one data
-directory. No automatic takeover or task replay is attempted.
+- **One host:** independent operation, with no other host available for failover.
+- **Two hosts:** either can take over after missed heartbeats. This explicitly
+  prioritizes availability: a partition can produce two mains and divergent
+  changes. Losing log branches are preserved as `cluster/conflict-*.json` for
+  manual recovery, with a warning in Machines. They are not silently merged.
+- **Three or more hosts:** majority voting and a replicated log select the main
+  and commit shared session changes. An isolated minority stops accepting work.
+  Membership upgrades use joint voting; both existing hosts must participate
+  when upgrading from two to three. Adding hosts never automatically shrinks the
+  voter set when another host goes offline.
+
+Preferred main biases the next election. It does not interrupt a healthy current
+main just to move work. Heartbeats run every 700 ms; elections begin after roughly
+3.5–6.5 seconds without a main, subject to connection latency. Running turns are
+aborted after quorum loss is detected. Already-started external side effects and
+background programs cannot be undone or fenced by a JavaScript coordinator.
+Uncertain sends/tools are **not automatically replayed** after a failure.
+
+Sessions are persisted in the cluster log before a shared save succeeds.
+Model definitions, API secrets and app records are copied only through authenticated
+cluster transport; therefore join only computers you trust with those secrets.
+Host-specific subscription CLI logins, network configuration, notification services,
+usage ledgers and live processes remain local. Shared model/app setting mutations wait for their checkpoint to commit before
+reporting success.
+
+Project working files checkpoint at onboarding and agent saves. Recovery restores
+them into a new generation under `~/Projects/OrchestratorWorkspaces`, preserving
+other hosts' original folders. Checkpoints exclude dependencies, build output,
+logs, symlinks, `.env` files and Git internals. They currently support 48 MB total
+and 16 MB per file. Larger datasets require separate storage. Reinstall dependencies
+and provide local secrets when needed. Files modified externally between checkpoints,
+open processes and uncommitted in-flight tool effects are not covered by workspace
+recovery. Uploaded attachment bytes are replicated with checksums and restored
+into the receiving host’s attachment store. The built-in orchestrator project uses each host's
+own checkout rather than copying a running installation over another.
+
+A visited phone browser caches the public app shell and approved peer addresses.
+If its host goes away, it probes those peers and moves to the elected main, carrying
+an unsent text draft and a short-lived signed login ticket. No mutation is retried.
+This requires a secure browser with service workers, a prior successful visit,
+and a reachable peer; it is not a floating DNS name. An expired ticket, cleared
+browser storage, or a first visit to a dead host still requires another host's
+bookmark and login. Tailscale machine names remain device addresses.
+
+This is a new implementation with automated crash/partition/rejoin tests, not a
+claim of production-grade consensus verification. Keep backups. Remote power
+on/off is not implemented.
 
 ## Mac, Linux, Windows
 
@@ -48,9 +97,9 @@ npm run node:serve
 Setup writes a private `.orchestrator-node.env` in this checkout and refuses to
 overwrite an existing config. It chooses port 8788 by default and checks that it
 is available. Your old Mac setup keeps its existing data path, port, credentials,
-and Tailscale rules: do not run the new-machine wizard over it. To pair that
-existing node, it must require authentication (`HARNESS_TOKEN=auto`, or an
-explicit token in its existing launcher), then be restarted with the new code.
+and Tailscale rules: do not run the new-machine wizard over it. Restart it with
+the new code, then create a short-lived join code in Settings → Machines.
+Permanent access tokens are still supported for the older explicit pairing API.
 
 ## Private network and pairing
 
@@ -81,8 +130,8 @@ Open **Settings → Phone access · Tailscale** on the host:
 The launcher and web settings share the same status implementation. They
 separate an unavailable client, login required, missing HTTPS route and a
 configured route. Checks never change network settings. Hosting on Windows
-currently uses WSL2; phones need only Tailscale and a browser. Node pairing is
-separate from publishing a phone address:
+currently uses WSL2; phones need only Tailscale and a browser. Shared-system joining is separate from publishing a phone address. The older
+explicit remote-execution pairing API remains available for compatibility:
 
 1. Open the new node's URL with its access token (`?t=TOKEN`) once to establish
    a browser cookie. The token is in your private `.orchestrator-node.env`.
@@ -154,14 +203,17 @@ session's execution node. Existing API integrations remain available.
 
 ## Validation before depending on it
 
-Create a disposable workspace on the second node, open its session from the
-first, send a message, and attach/download a test file. Stop the second node:
-its status should become offline and requests must fail without being replayed.
-Restart it and verify the existing session returns. Stop the gateway and use
-the second node's own bookmark. These are federation checks, not HA acceptance.
+The automated tests cover durable election state, three-host majority loss,
+isolated-minority rejection, two-host takeover, reconnection, one-to-three-host
+onboarding over HTTP, checksummed workspace recovery, remembered network devices,
+and browser selection of approved peers without replaying sends. The server test
+starts three real processes, kills the main with SIGKILL, and checks session edits,
+viewer records, model configuration and attachment downloads on the replacement.
 
-Remaining HA work: a versioned replicated metadata/transcript store, independent
-voters with durable quorum decisions and fencing, worker leases, replicated
-artifacts/project recovery, migration of existing local state, and a stable
-frontend address with tested failover. Two-voter quorum cannot safely accept
-writes after either voter fails; extra workers do not need to become voters.
+Before relying on this across your actual Mac/PC/phone, join a disposable second
+host, verify its private HTTPS URL from the phone, and open the updated app once
+so its offline shell and peer list are stored. Create a test session/file, stop
+the main, and verify the phone reconnects and the recovered project opens. Test
+three hosts under a network split as well: a lone host must not accept changes.
+A two-host network split intentionally has weaker guarantees, with conflict
+archives requiring manual review. Remote power controls remain future work.
