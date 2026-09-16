@@ -1,14 +1,15 @@
 import Cocoa
 import Foundation
 
-final class Launcher: NSObject, NSApplicationDelegate {
+final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var window: NSWindow!
     let status = NSTextField(labelWithString: "Checking server…")
     var stopButton: NSButton!
     var child: Process?
     var timer: Timer?
     var log: FileHandle?
-    var active = false
+    var stopping = false
+    var stopped = false
     var checking = false
     // Finder supplies no project argument; the app bundle lives beside the source.
     let root = CommandLine.arguments.count > 1
@@ -32,6 +33,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 490, height: 210),
                           styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "Distributed Orchestrator"
+        window.delegate = self
         window.appearance = NSAppearance(named: .darkAqua)
         let content = window.contentView!
         status.frame = NSRect(x: 20, y: 155, width: 450, height: 24)
@@ -48,9 +50,9 @@ final class Launcher: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         check { found in
+            if self.stopping || self.stopped { return }
             if found {
-                self.status.stringValue = "Active — managed by an existing service"
-                self.stopButton.title = "Close launcher"
+                self.status.stringValue = "Active — closing this window stops the server"
             } else { self.start() }
         }
     }
@@ -114,26 +116,59 @@ final class Launcher: NSObject, NSApplicationDelegate {
         if !token.isEmpty { components.queryItems = [URLQueryItem(name: "t", value: token)] }
         NSWorkspace.shared.open(components.url!)
     }
+    func stopServer(close: Bool) {
+        if stopping { return }
+        stopping = true
+        timer?.invalidate()
+        status.stringValue = "Stopping…"
+        stopButton.isEnabled = false
+        if let process = child, process.isRunning { process.terminate() }
+        let helper = Process()
+        helper.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        helper.arguments = ["node", root.appendingPathComponent("scripts/stop-server.mjs").path,
+                            root.path, env["HARNESS_PORT"] ?? "8787"]
+        helper.environment = env
+        let errors = Pipe()
+        helper.standardError = errors
+        helper.terminationHandler = { process in
+            let data = errors.fileHandleForReading.readDataToEndOfFile()
+            DispatchQueue.main.async {
+                self.stopping = false
+                self.stopButton.isEnabled = true
+                if process.terminationStatus == 0 {
+                    self.stopped = true
+                    self.status.stringValue = "Stopped"
+                    self.stopButton.title = "Close launcher"
+                    if close { NSApp.terminate(nil) }
+                } else {
+                    self.status.stringValue = String(data: data, encoding: .utf8) ?? "Could not stop server."
+                    self.window.makeKeyAndOrderFront(nil)
+                }
+            }
+        }
+        do { try helper.run() }
+        catch {
+            stopping = false
+            status.stringValue = "Could not stop server: \(error.localizedDescription)"
+            stopButton.isEnabled = true
+        }
+    }
     @objc func stop() {
-        if let process = child, process.isRunning {
-            process.terminate()
-            stopButton.isEnabled = false
-            status.stringValue = "Stopping…"
-        } else { NSApp.terminate(nil) }
+        if stopped { NSApp.terminate(nil) }
+        else { stopServer(close: false) }
+    }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if stopped { return true }
+        stopServer(close: true)
+        return false
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if let process = child, process.isRunning {
-            let alert = NSAlert()
-            alert.messageText = "Stop this server?"
-            alert.informativeText = "Phone access through this machine will also stop."
-            alert.addButton(withTitle: "Stop server")
-            alert.addButton(withTitle: "Cancel")
-            if alert.runModal() != .alertFirstButtonReturn { return .terminateCancel }
-            process.terminate()
-        }
-        return .terminateNow
+        if stopped { return .terminateNow }
+        stopServer(close: true)
+        return .terminateCancel
     }
+
 }
 let app = NSApplication.shared
 let delegate = Launcher()

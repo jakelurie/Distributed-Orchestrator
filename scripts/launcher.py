@@ -54,28 +54,53 @@ def main():
         from urllib.parse import quote
         webbrowser.open(url + ('/?t=' + quote(token, safe='') if token else '/'))
 
-    def stop():
+    stopping = False
+
+    def stop(close_window=False):
+        nonlocal stopping
+        if stopping:
+            return
+        stopping = True
         if child and child.poll() is None:
             child.terminate()
-            status.set('Stopping…')
-            stop_button.config(state='disabled')
-        else:
-            window.destroy()
+        status.set('Stopping…')
+        stop_button.config(state='disabled')
+        try:
+            helper = subprocess.Popen(
+                [shutil.which('node') or 'node', str(ROOT / 'scripts/stop-server.mjs'),
+                 str(ROOT), env.get('HARNESS_PORT', '8787')],
+                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        except OSError as error:
+            stopping = False
+            status.set(str(error))
+            stop_button.config(state='normal')
+            return
+        def finished():
+            nonlocal stopping
+            if helper.poll() is None:
+                window.after(100, finished)
+                return
+            stopping = False
+            if helper.returncode == 0:
+                if close_window:
+                    window.destroy()
+                else:
+                    status.set('Stopped')
+                    stop_button.config(text='Close launcher', state='normal', command=window.destroy)
+            else:
+                status.set(helper.stderr.read())
+                stop_button.config(state='normal')
+        window.after(100, finished)
 
     def close():
-        if child and child.poll() is None:
-            if not messagebox.askyesno('Stop server?', 'Stop this server? Phone access through this machine will also stop.'):
-                return
-            child.terminate()
-        window.destroy()
+        stop(close_window=True)
 
     ttk.Button(window, text='Open browser', command=open_browser).pack(pady=10)
     stop_button = ttk.Button(window, text='Stop server', command=stop)
     stop_button.pack()
     window.protocol('WM_DELETE_WINDOW', close)
     if responding():
-        status.set('Active — already running outside this launcher')
-        stop_button.config(text='Close launcher')
+        status.set('Active — closing this window stops the server')
     else:
         node = shutil.which('node')
         if not node:
@@ -85,6 +110,8 @@ def main():
             log = open(ROOT / '.launcher.log', 'a')
             child = subprocess.Popen([node, 'server/index.js'], cwd=ROOT, env=env, stdout=log, stderr=log)
             def update():
+                if stopping:
+                    return
                 if child.poll() is not None:
                     status.set('Stopped' if child.returncode in (0, -15) else 'Server exited — see .launcher.log')
                     stop_button.config(text='Close launcher', state='normal')

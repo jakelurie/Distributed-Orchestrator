@@ -168,10 +168,11 @@ not just Windows.
 
 The small native window shows server status, the local URL, Open browser, and
 Stop server. The main interface runs in your normal browser. Server output goes
-to .launcher.log. Closing the window asks before stopping a server it owns.
-An already-running external server is detected but not stopped by this launcher;
-use its existing service controls. This avoids stopping an unrelated process.
-A server restarted from the web UI becomes independently managed.
+to .launcher.log. Closing the window stops this checkout's server, including a
+server that was already running when the launcher opened. Stop server does the
+same without closing the window. The launcher verifies the listening process
+belongs to this checkout and waits for shutdown. If an external service restarts
+it, the window stays open with an error; disable that service before retrying.
 
 The launcher reads .orchestrator-node.env when present, otherwise existing
 environment variables and the default local port 8787. No Tailscale rules change.
