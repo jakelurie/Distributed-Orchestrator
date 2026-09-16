@@ -417,20 +417,20 @@ check('a repointed session is no longer flagged',
     appsSrc.indexOf('renderAppsSheet(lastAppsData)') < appsSrc.indexOf('await Promise.all'));
   check('and asks for apps and state together, not one after the other',
     /await Promise\.all\(\[api\('\/api\/apps'\), refreshState\(\)\]\)/.test(appsSrc));
-  const openSrc = clientSrc.slice(clientSrc.indexOf('async function openSession('), clientSrc.indexOf('/** The monitoring tab'));
+  const openSrc = clientSrc.slice(clientSrc.indexOf('async function openSession('), clientSrc.indexOf('function showSession()'));
   check('opening a session closes the list before awaiting the transcript',
     openSrc.indexOf('closeSheet()') < openSrc.indexOf('await api(`/api/sessions/'));
   check('and a second tap while the first is loading wins',
     openSrc.includes('if (openingSession !== id) return;'));
   check('deleting a session drops it from the local list too, so the redraw agrees',
     /state\.sessions = state\.sessions\.filter\(\(x\) => x\.id !== id\);/.test(clientSrc));
-  const settingsSrc = clientSrc.slice(clientSrc.indexOf('async function settingsSheet()'), clientSrc.indexOf('const backToSettings'));
+  const settingsSrc = clientSrc.slice(clientSrc.indexOf('async function sessionSettingsSheet()'), clientSrc.indexOf('const backToSettings'));
   check('reference folders stay visible beside project settings',
     settingsSrc.includes('Reference folders (read-only)') &&
-    settingsSrc.indexOf('id="s-readable"') < settingsSrc.indexOf('<h3>Distributed Orchestrator</h3>') &&
+    settingsSrc.includes('id="session-git"') &&
     !settingsSrc.includes('<details') && settingsSrc.includes('id="s-readable-save"'));
   const harnessRows = clientSrc.match(/<div class="rowlinks">([\s\S]*?)<\/div>/)?.[1] ?? '';
-  check('Git settings have a visible shared settings entry', harnessRows.includes('id="h-git"'));
+  check('Git settings belong to the session editor', !harnessRows.includes('id="h-git"') && settingsSrc.includes('id="session-git"'));
   check('voice setup sits in the shared Harness settings rows',
     harnessRows.includes('class="rowlink" id="h-voice"') &&
     clientSrc.includes("$('h-voice').onclick = () => window.voiceSetup();") &&

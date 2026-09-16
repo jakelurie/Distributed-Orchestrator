@@ -94,6 +94,15 @@ npm run node:setup
 npm run node:serve
 ```
 
+Open the login URL printed by `node:serve` on the new computer (including its
+`?t=…` token on the first visit). Keep the server terminal running. In the
+top-right Distributed Orchestrator settings, open **Phone access · Tailscale**
+and set up HTTPS. On the existing main, open **Machines → create join code**.
+On the new host, open **Machines → Join an existing system** and enter its own
+HTTPS address, the existing main’s HTTPS address, and that code. Do not run the
+setup wizard again on the existing host. For automatic startup after reboot,
+follow the platform-specific service instructions below.
+
 Setup writes a private `.orchestrator-node.env` in this checkout and refuses to
 overwrite an existing config. It chooses port 8788 by default and checks that it
 is available. Your old Mac setup keeps its existing data path, port, credentials,

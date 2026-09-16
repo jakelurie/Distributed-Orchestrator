@@ -14,21 +14,18 @@
     <header id="bar">
       <button id="menu" class="tap" aria-label="Sessions">☰</button>
       <div id="title">
+        <div id="title-app"></div>
         <div id="title-name">Distributed Orchestrator</div>
         <div id="title-sub">pick a session</div>
+        <div id="title-dir"></div>
       </div>
       <button id="usage" class="tap" aria-label="Usage">📊</button>
-      <button id="gear" class="tap" aria-label="Settings">🔧</button>
+      <button id="gear" class="tap" aria-label="Distributed Orchestrator settings">🔧</button>
     </header>
-
-    <nav id="tabs">
-      <button class="tab on" data-tab="chat">chat</button>
-      <button class="tab" data-tab="monitor">monitoring</button>
-    </nav>
 
     <div id="banner" hidden></div>
 
-    <button id="background" hidden></button>
+    <div id="background" hidden></div>
 
     <div id="working" hidden>
       <span class="pulse"></span>
@@ -36,10 +33,6 @@
       <span id="working-what" class="what"></span>
       <span id="working-time" class="mono"></span>
     </div>
-
-    <section id="panel" hidden>
-      <div id="panel-body"></div>
-    </section>
 
     <main id="transcript">
       <div class="empty">
@@ -50,7 +43,6 @@
 
     <div id="pending" hidden></div>
 
-    <button id="mon-chat-toggle" hidden></button>
 
     <footer id="composer">
       <textarea id="input" rows="1" placeholder="Describe what to build…" enterkeyhint="send"></textarea>

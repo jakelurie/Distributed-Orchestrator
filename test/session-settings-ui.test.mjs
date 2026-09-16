@@ -1,0 +1,26 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import vm from 'node:vm';
+const source = await fs.readFile('server/public/app.js', 'utf8');
+const html = await fs.readFile('server/public/index.html', 'utf8');
+const nodes = new Map();
+const $ = (id) => { if (!nodes.has(id)) nodes.set(id, {}); return nodes.get(id); };
+let rendered;
+const context = { $, openSheet: (html) => { rendered = html; }, closeSheet() {},
+  machinesSheet() {}, networkSheet() {}, filesSheet() {}, modelsSheet() {}, notifySheet() {}, emailSheet() {}, window: {} };
+vm.createContext(context);
+vm.runInContext(source.slice(source.indexOf('async function settingsSheet()'), source.indexOf('async function sessionSettingsSheet()')), context);
+await context.settingsSheet();
+assert.match(rendered, /Distributed Orchestrator settings/);
+assert.match(rendered, /AI sources/);
+assert.doesNotMatch(rendered, /s-models|s-dir|s-name|h-git/);
+assert.equal(typeof $('h-machines').onclick, 'function');
+assert.doesNotMatch(html, /id="tabs"|data-tab|id="panel"|mon-chat-toggle/);
+Object.assign(context, { state: { session: { name: 'My session', model: 'model', projectDir: '/project', appId: 'app' }, apps: [{ id: 'app', name: 'My app' }], models: { model: { label: 'My model', hasKey: true } } }, cur: () => ({ session: {} }), idlePlaceholder: () => '', showBanner() {} });
+vm.runInContext(source.slice(source.indexOf('function paintHeader()'), source.indexOf('function showBanner(')), context);
+context.paintHeader();
+assert.equal($('title-app').textContent, 'App: My app');
+assert.equal($('title-name').textContent, 'Session: My session');
+assert.equal($('title-sub').textContent, 'Model: My model');
+assert.equal($('title-dir').textContent, 'Directory: /project');
+console.log('PASS global settings, single session view and four-field session header');

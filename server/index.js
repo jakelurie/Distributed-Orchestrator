@@ -534,6 +534,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, {
         models,
         default: cfg.default,
+        apps: (await apps.load(USER_DATA)).map(({ id, name }) => ({ id, name })),
         error: cfg.error,
         sessions: (await store.list()).filter((x) => !x.id.endsWith('--monitor')),
         home: os.homedir(),

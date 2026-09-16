@@ -31,17 +31,14 @@ const api = async (url, opts = {}) => {
   return body;
 };
 
-// Each tab is a separate session with its own transcript and its own stream:
-// the chat tab talks to the project, the monitoring tab talks to a companion
-// session whose job is the panel above it.
+// The open session owns its transcript and stream.
 const tabs = {
   chat: { session: null, stream: null, running: false, live: null, startedAt: null },
-  monitor: { session: null, stream: null, running: false, live: null, startedAt: null },
 };
 
 const state = {
   models: {}, default: null, sessions: [], beacons: {},
-  session: null,          // the chat session; identity of the pair
+  session: null,          // the currently open session
   home: '',
   tab: 'chat',
 };
@@ -516,11 +513,7 @@ function drawTranscript() {
     return;
   }
   if (!s.events.length) {
-    el.innerHTML = state.tab === 'monitor'
-      ? `<div class="empty"><p>monitoring</p>
-         <p class="dim">ask about the view above, or change it</p>
-         <p class="dim">"is this current?" · "refresh it" · "show failures too"</p></div>`
-      : `<div class="empty"><p>${esc(s.name)}</p><p class="dim">${esc(shortDir(s.projectDir))}</p><p class="dim">say what you want built</p></div>`;
+    el.innerHTML = `<div class="empty"><p>${esc(s.name)}</p><p class="dim">${esc(shortDir(s.projectDir))}</p><p class="dim">say what you want built</p></div>`;
     return;
   }
   const turns = turnsFrom(s.events);
@@ -598,84 +591,38 @@ async function openSession(id) {
 
   state.session = session;
   tabs.chat.session = session;
-  tabs.monitor.session = null;          // loaded when the tab is first opened
-  tabs.monitor.stream?.close();
-  tabs.monitor.stream = null;
   localStorage.setItem(sessionStorageKey, id);
 
   clearLive('chat');
-  clearLive('monitor');
-  setTab('chat');
+  showSession();
   listen('chat', id);
   refreshBackground();
 }
 
-/** The monitoring tab's companion session, created on the server on demand. */
-async function ensureMonitorSession() {
-  if (tabs.monitor.session) return tabs.monitor.session;
-  // The tabs are reachable while a session is still loading now that the list
-  // closes on the tap rather than on the reply, so there may not be one yet.
-  if (!state.session) throw new Error('open a session first — tap ☰');
-  const companion = await api(`/api/sessions/${state.session.id}/monitor`);
-  tabs.monitor.session = companion;
-  listen('monitor', companion.id);
-  return companion;
-}
-
-async function setTab(name) {
-  window.cancelDictation?.();
-  state.tab = name;
-  document.querySelectorAll('.tab').forEach((el) => {
-    el.classList.toggle('on', el.dataset.tab === name);
-  });
-
-  // The panel exists only in the monitoring tab; the chat tab is just a chat.
-  const monitoring = name === 'monitor';
-  $('panel').hidden = !monitoring;
-  $('panel').classList.toggle('pinned', monitoring);
-  document.body.classList.toggle('tab-monitor', monitoring);
-  // The monitoring tab is the monitoring view. Its chat is available when
-  // wanted rather than permanently occupying a third of the screen.
-  document.body.classList.toggle('chat-open', !monitoring || monitorChatOpen);
-  $('mon-chat-toggle').hidden = !monitoring;
-  $('mon-chat-toggle').textContent = monitorChatOpen ? 'hide chat ▾' : 'chat about this ▴';
-
-  if (monitoring) {
-    $('panel-body').hidden = false;
-    panelOpen = true;
-    $('transcript').innerHTML = '<div class="empty"><p class="dim">loading…</p></div>';
-    try {
-      await ensureMonitorSession();
-    } catch (e) {
-      showBanner(e.message);
-    }
-    startPanelPolling();
-  } else {
-    panelOpen = false;
-    stopPanelPolling();
-  }
-
+function showSession() {
   drawTranscript();
   paintHeader();
   const t = cur();
-  setRunning(t.running, t.startedAt, null, name);
+  setRunning(t.running, t.startedAt);
   scrollDown(true);
 }
 
 function paintHeader() {
   const s = state.session;
   const t = cur();
-  $('title-name').textContent = s ? s.name : 'Distributed Orchestrator';
+  $('title-app').textContent = s ? `App: ${state.apps?.find((a) => a.id === s.appId)?.name || 'No app'}` : '';
+  $('title-name').textContent = s ? `Session: ${s.name}` : 'Distributed Orchestrator';
+  $('title-dir').textContent = s ? `Directory: ${s.projectDir}` : '';
   $('title-sub').textContent = s
-    ? `${executionName ? executionName + ' · ' : ''}${s.model}${s.mode === 'chat' ? ' · chat' : ''} · ${shortDir(s.projectDir)}`
+    ? `Model: ${state.models[s.model]?.label || s.model}`
     : 'pick a session';
   $('send').disabled = !t.session;
   $('input').placeholder = idlePlaceholder();
   const model = s && state.models[s.model];
   if (s && s.projectDir === state.home) {
-    showBanner('this session is rooted at your home folder — every project is in its scope. Tap 🔧 to give it its own directory.', true);
+    showBanner('this session is rooted at your home folder — every project is in its scope. Use Edit session to give it its own directory.', true);
   } else if (s?.projectDirMissing) {
-    showBanner(`${shortDir(s.projectDir)} no longer exists — tap ⚙ to point this session somewhere else`, true);
+    showBanner(`${shortDir(s.projectDir)} no longer exists — use Edit session to choose another folder`, true);
   } else if (s && model && !model.hasKey) {
     showBanner(`${s.model} has no API key — tap ⚙ to add one`, true);
   } else {
@@ -702,9 +649,7 @@ function setRunning(on, startedAt = null, last = null, tab = state.tab) {
   if (on) startClock(startedAt); else stopClock();
 }
 
-const idlePlaceholder = () => (state.tab === 'monitor'
-  ? 'ask about or change the view above…'
-  : 'Describe what to build…');
+const idlePlaceholder = () => 'Describe what to build…';
 
 function setActivity(name) {
   $('working-what').textContent = name ? `· ${name}` : '';
@@ -787,11 +732,9 @@ function listen(tab, id) {
         // would otherwise keep claiming "working" after the turn had ended.
         drawTranscript();
         refreshState();
-        refreshPanel();
         refreshBackground();
       }
-      // A monitoring turn usually just changed the panel; show the result.
-      if (tab === 'monitor') refreshPanel();
+
     }
   };
   es.onerror = () => {}; // EventSource reconnects on its own
@@ -834,6 +777,7 @@ async function refreshState() {
   // Assign field by field. A blanket Object.assign once let the server's
   // `running` (an array of busy session ids) land on top of the local boolean
   // of the same name - and [] is truthy, so send() silently refused forever.
+  state.apps = s.apps ?? [];
   state.models = s.models ?? {};
   state.default = s.default;
   state.sessions = s.sessions ?? [];
@@ -842,8 +786,7 @@ async function refreshState() {
   state.beacons = s.beacons ?? {};
   if (s.error) showBanner(s.error);
   // Keep the composer honest if the page was reloaded mid-turn.
-  // Each tab is a different session, so each is reconciled against its own
-  // status rather than the chat session's.
+  // Reconcile the open session against the server's running turn.
   for (const [name, tab] of Object.entries(tabs)) {
     if (!tab.session) continue;
     const id = tab.session.id;
@@ -1046,10 +989,35 @@ async function browseSheet(start, pick, back = newSheet) {
 }
 
 async function settingsSheet() {
+  openSheet(`
+    <h2>Distributed Orchestrator settings</h2>
+    <div class="rowlinks">
+      <button class="rowlink" id="h-network"><span>Phone access · Tailscale</span><span class="chev">›</span></button>
+      <button class="rowlink" id="h-machines"><span>Machines</span><span class="chev">›</span></button>
+      <button class="rowlink" id="h-files"><span>Files</span><span class="chev">›</span></button>
+      <button class="rowlink" id="h-models"><span>AI sources</span><span class="chev">›</span></button>
+      <button class="rowlink" id="h-voice"><span>Voice setup</span><span class="chev">›</span></button>
+      <button class="rowlink" id="h-notify"><span>Notifications</span><span class="chev">›</span></button>
+      <button class="rowlink" id="h-email"><span>Email</span><span class="chev">›</span></button>
+    </div>
+    <div class="actions"><button class="primary" id="s-close">done</button></div>`);
+
+  $('h-machines').onclick = machinesSheet;
+  $('h-network').onclick = networkSheet;
+  $('h-files').onclick = () => filesSheet();
+  $('h-models').onclick = modelsSheet;
+  $('h-voice').onclick = () => window.voiceSetup();
+  $('h-notify').onclick = notifySheet;
+  $('h-email').onclick = emailSheet;
+
+  $('s-close').onclick = closeSheet;
+}
+
+async function sessionSettingsSheet() {
   try { await refreshState(); } catch (e) { if (executionNode) return machinesSheet(); throw e; }
   const session = cur().session;
   openSheet(`
-    ${session ? `<h2>This ${state.tab === 'monitor' ? 'monitoring ' : ''}session</h2>
+    ${session ? `<h2>Edit session</h2>
       <label>Name</label>
       <div class="row"><input id="s-name" value="${esc(session.name ?? '')}" spellcheck="false" />
       <button class="ghost" id="s-rename" style="flex:0 0 80px">rename</button></div>
@@ -1092,28 +1060,8 @@ async function settingsSheet() {
             output to fit; allowing it keeps everything and pays the higher rate.</p>`;
       })()}` : ''}
 
-    <h3>Distributed Orchestrator</h3>
-    <div class="rowlinks">
-      <button class="rowlink" id="h-git"><span>Git &amp; GitHub</span><span class="chev">›</span></button>
-      <button class="rowlink" id="h-network"><span>Phone access · Tailscale</span><span class="chev">›</span></button>
-      <button class="rowlink" id="h-machines"><span>Machines</span><span class="chev">›</span></button>
-      <button class="rowlink" id="h-files"><span>Files</span><span class="chev">›</span></button>
-      <button class="rowlink" id="h-models"><span>AI sources</span><span class="chev">›</span></button>
-      <button class="rowlink" id="h-voice"><span>Voice setup</span><span class="chev">›</span></button>
-      <button class="rowlink" id="h-notify"><span>Notifications</span><span class="chev">›</span></button>
-      <button class="rowlink" id="h-email"><span>Email</span><span class="chev">›</span></button>
-    </div>
-    <div class="actions"><button class="primary" id="s-close">done</button></div>`);
-
-  $('h-git').onclick = gitSheet;
-  $('h-machines').onclick = machinesSheet;
-  $('h-network').onclick = networkSheet;
-  $('h-files').onclick = () => filesSheet();
-  $('h-models').onclick = modelsSheet;
-  $('h-voice').onclick = () => window.voiceSetup();
-  $('h-notify').onclick = notifySheet;
-  $('h-email').onclick = emailSheet;
-
+    <div class="actions"><button class="ghost" id="session-git">Git &amp; GitHub</button><button class="primary" id="s-close">done</button></div>`);
+  $('session-git').onclick = gitSheet;
   $('s-close').onclick = closeSheet;
   if ($('s-rename')) {
     const rename = async () => {
@@ -1143,7 +1091,7 @@ async function settingsSheet() {
       t.session = updated;
       if (state.tab === 'chat') state.session = updated;
       showBanner(dirs.length ? `${dirs.length} folder(s) readable` : 'no extra folders');
-      settingsSheet();
+      sessionSettingsSheet();
     };
   }
   $('sheet').querySelectorAll('[data-band]').forEach((el) => {
@@ -1155,7 +1103,7 @@ async function settingsSheet() {
         });
         t.session = updated;
         if (state.tab === 'chat') state.session = updated;
-        settingsSheet();
+        sessionSettingsSheet();
       } catch (e) { showBanner(`couldn't change that: ${e.message}`, true); }
     };
   });
@@ -1175,25 +1123,25 @@ async function settingsSheet() {
         t.session = updated;
         if (state.tab === 'chat') state.session = updated;
         paintHeader();
-        settingsSheet();
+        sessionSettingsSheet();
       } catch (e) {
         showBanner(`couldn't switch mode: ${e.message} — tap again`, true);
-        settingsSheet();   // restore the buttons to their true state
+        sessionSettingsSheet();   // restore the buttons to their true state
       }
     };
   });
   $('sheet').querySelectorAll('[data-switch]').forEach((el) => {
     el.onclick = async () => {
       await setSessionModel(el.dataset.switch);
-      settingsSheet();   // redraw so "in use" moves to the model just chosen
+      sessionSettingsSheet();   // redraw so "in use" moves to the model just chosen
     };
   });
   if ($('s-browse')) {
     $('s-browse').onclick = () => browseSheet($('s-dir').value, async (chosen) => {
       await setProjectDir(chosen);
-      settingsSheet();
-    }, settingsSheet);
-    $('s-dir-save').onclick = () => setProjectDir($('s-dir').value.trim()).then(settingsSheet);
+      sessionSettingsSheet();
+    }, sessionSettingsSheet);
+    $('s-dir-save').onclick = () => setProjectDir($('s-dir').value.trim()).then(sessionSettingsSheet);
   }
 }
 
@@ -1575,8 +1523,8 @@ function gitSheet() {
   const session = cur().session;
   openSheet(`<h2>Git &amp; GitHub</h2>
     <p class="dim">${session ? `Settings for ${esc(session.name)}. Git saves changes locally; GitHub stores a remote copy. GitHub access uses the hosting computer’s gh login.` : 'Open a session to configure its repository and automatic commits.'}</p>
-    <div id="s-git"></div>${backToSettings}`);
-  $('sub-back').onclick = settingsSheet;
+    <div id="s-git"></div><div class="actions"><button class="ghost" id="sub-back">‹ edit session</button></div>`);
+  $('sub-back').onclick = sessionSettingsSheet;
   if (session) paintGit(session);
 }
 
@@ -1764,166 +1712,6 @@ function modelSheet(alias) {
 
 // ------------------------------------------------------------------- wire
 
-// ------------------------------------------------- this session's own panel
-//
-// Nothing here runs until the button is pressed. Pressing it kicks off a
-// sample; while it stays open it refreshes; closing it stops everything. An
-// empty result is a real answer - "nothing is running" - not a failure.
-
-let panelTimer = null;
-let panelOpen = false;
-let monitorChatOpen = false;
-
-const agoText = (ms) => {
-  const s = Math.round(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  return m < 60 ? `${m}m ${s % 60}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
-};
-
-/**
- * The panel is the agent's to own. If it has authored a view for this session,
- * that view is the whole surface; otherwise the built-in default below runs so
- * the tab is never empty before anyone has asked for anything.
- */
-function renderActivity(d) {
-  // Two parts, always. The first is whatever the user chose to see; the second
-  // is what is actually running, which they did not choose and should not have
-  // to go looking for.
-  const view = d.samples.find((sm) => sm.role === 'view');
-  const monitors = d.samples.filter((sm) => sm.role !== 'view');
-
-  const yours = view
-    ? (view.error
-      ? `<div class="mon"><div class="mon-head">${esc(view.label)}
-           <span class="tool-status err">error</span></div>
-         <pre class="mon-pre">${esc(view.error)}</pre></div>`
-      : `<div class="mon-html view">${view.html || ''}</div>`)
-    : monitors.length
-      ? monitors.map(monitorCard).join('')
-      : `<p class="dim mon-empty">Nothing set up yet — open the chat and ask for
-          whatever you want to watch: a log, a count, a progress table.</p>`;
-
-  const procs = d.procs.length
-    ? d.procs.map(procCard).join('')
-    : '<p class="dim mon-empty">No processes running for this session.</p>';
-
-  return `
-    <section class="mon-section">
-      <h4 class="mon-title">Your view</h4>
-      ${d.running ? `<div class="mon"><div class="mon-head">this session
-        <span class="tool-status pending">turn running${d.startedAt ? ` · ${agoText(Date.now() - d.startedAt)}` : ''}</span>
-        </div></div>` : ''}
-      ${yours}
-    </section>
-    <section class="mon-section">
-      <h4 class="mon-title">Background processes${d.procs.length ? ` · ${d.procs.length}` : ''}</h4>
-      ${procs}
-    </section>`;
-}
-
-function monitorCard(sm) {
-  if (sm.kind === 'panel') {
-    return `<div class="mon"><div class="mon-head">${esc(sm.label)}</div>
-      <div class="mon-html">${sm.error ? esc(sm.error) : (sm.html || '')}</div></div>`;
-  }
-  const badge = sm.kind === 'process'
-    ? `<span class="tool-status ${sm.count ? 'ok' : 'err'}">${sm.count ? `${sm.count} running` : 'stopped'}</span>`
-    : sm.ok === false ? '<span class="tool-status err">error</span>' : '';
-  return `<div class="mon"><div class="mon-head">${esc(sm.label)} ${badge}</div>
-    <pre class="mon-pre">${esc(sm.error ?? sm.text ?? '')}</pre></div>`;
-}
-
-function procCard(p) {
-  const idle = p.cpu < 0.5;
-  return `<div class="mon">
-    <div class="mon-head">${esc(p.command.split(' ').slice(0, 3).join(' '))}
-      <span class="tool-status ${idle ? 'pending' : 'ok'}">${p.cpu.toFixed(0)}% cpu</span></div>
-    <pre class="mon-pre">pid ${p.pid} · ${esc(p.etime)} · ${p.rssMb} MB${p.detached ? ' · detached' : ''}${p.log ? `\nlog: ${esc(p.log)}` : ''}</pre>
-    <div class="row" style="padding:0 10px 10px">
-      ${p.log ? `<button class="ghost" data-log="${esc(p.log)}">watch log</button>` : ''}
-      <button class="ghost" data-stop="${p.pid}">stop</button>
-    </div></div>`;
-}
-
-function defaultActivity(d) {
-  const bits = [];
-
-  if (d.running) {
-    bits.push(`<div class="mon"><div class="mon-head">this session
-      <span class="tool-status pending">turn running${d.startedAt ? ` · ${agoText(Date.now() - d.startedAt)}` : ''}</span>
-      </div></div>`);
-  }
-
-  for (const sm of d.samples) {
-    if (sm.kind === 'panel') {
-      bits.push(`<div class="mon"><div class="mon-head">${esc(sm.label)}</div>
-        <div class="mon-html">${sm.error ? esc(sm.error) : (sm.html || '')}</div></div>`);
-      continue;
-    }
-    const badge = sm.kind === 'process'
-      ? `<span class="tool-status ${sm.count ? 'ok' : 'err'}">${sm.count ? `${sm.count} running` : 'stopped'}</span>`
-      : sm.ok === false ? '<span class="tool-status err">error</span>' : '';
-    bits.push(`<div class="mon"><div class="mon-head">${esc(sm.label)} ${badge}</div>
-      <pre class="mon-pre">${esc(sm.error ?? sm.text ?? '')}</pre></div>`);
-  }
-
-  for (const p of d.procs) {
-    const idle = p.cpu < 0.5;
-    bits.push(`<div class="mon">
-      <div class="mon-head">${esc(p.command.split(' ').slice(0, 3).join(' '))}
-        <span class="tool-status ${idle ? 'pending' : 'ok'}">${p.cpu.toFixed(0)}% cpu</span></div>
-      <pre class="mon-pre">pid ${p.pid} · ${esc(p.etime)} · ${p.rssMb} MB${p.detached ? ' · detached' : ''}${p.log ? `\nlog: ${esc(p.log)}` : ''}</pre>
-      <div class="row" style="padding:0 10px 10px">
-        ${p.log ? `<button class="ghost" data-log="${esc(p.log)}">watch log</button>` : ''}
-        <button class="ghost" data-stop="${p.pid}">stop</button>
-      </div></div>`);
-  }
-
-  if (!bits.length) {
-    bits.push(`<p class="dim" style="padding:4px 2px 10px">Nothing running for this session.
-      ${d.projectDir ? `Watching <span class="mono">${esc(shortDir(d.projectDir))}</span>.` : ''}
-      <br>Ask below to change what this shows.</p>`);
-  }
-  return bits.join('');
-}
-
-async function refreshPanel() {
-  if (!panelOpen || !state.session) return;
-  let d;
-  try {
-    // Always the chat session's id: the companion watches it, not itself.
-    d = await api(`/api/activity?session=${encodeURIComponent(state.session.id)}`);
-  } catch (e) {
-    $('panel-body').innerHTML = `<p class="dim">${esc(e.message)}</p>`;
-    return;
-  }
-
-  $('panel-body').innerHTML = renderActivity(d);
-
-  $('panel-body').querySelectorAll('[data-log]').forEach((el) => {
-    el.onclick = () => watchLog(el.dataset.log);
-  });
-  $('panel-body').querySelectorAll('[data-stop]').forEach((el) => {
-    el.onclick = async () => {
-      if (!confirm(`Stop process ${el.dataset.stop}?`)) return;
-      await api('/api/procs/stop', { method: 'POST', body: JSON.stringify({ pid: Number(el.dataset.stop) }) });
-      refreshPanel();
-    };
-  });
-}
-
-function startPanelPolling() {
-  clearInterval(panelTimer);
-  refreshPanel();
-  panelTimer = setInterval(refreshPanel, 3000);
-}
-function stopPanelPolling() {
-  clearInterval(panelTimer);
-  panelTimer = null;
-}
-
-
 // -------------------------------------------------------- background jobs
 
 let jobsTimer = null;
@@ -1965,21 +1753,6 @@ async function watchLog(file) {
   const done = () => { clearInterval(jobsTimer); jobsTimer = null; };
   $('l-close').onclick = () => { done(); closeSheet(); };
 }
-
-$('mon-chat-toggle').onclick = () => {
-  monitorChatOpen = !monitorChatOpen;
-  document.body.classList.toggle('chat-open', monitorChatOpen);
-  $('mon-chat-toggle').textContent = monitorChatOpen ? 'hide chat ▾' : 'chat about this ▴';
-  if (monitorChatOpen) { drawTranscript(); scrollDown(true); $('input').focus(); }
-};
-
-document.querySelectorAll('.tab').forEach((el) => {
-  el.onclick = () => {
-    if (!state.session) return showBanner('open a session first — tap ☰');
-    setTab(el.dataset.tab);
-  };
-});
-
 
 // ---------------------------------------------------------------- usage
 
@@ -2109,7 +1882,7 @@ function renderAppsSheet(d) {
       <div class="grow"><div class="t">${esc(sn.name)} ${sessionStatus(sn)}</div>
         <div class="s">${esc(sn.model)} · ${sn.turns} turns</div></div>
       <button class="x" data-fork="${esc(sn.id)}" title="Fork onto another model">⑂</button>
-      <button class="x" data-rename="${esc(sn.id)}" title="Rename">✎</button>
+      <button class="x" data-rename="${esc(sn.id)}" title="Edit session">✎</button>
       <button class="x" data-del="${esc(sn.id)}" title="Delete">×</button>
     </div>`;
 
@@ -2244,21 +2017,8 @@ function renderAppsSheet(d) {
   $('sheet').querySelectorAll('[data-rename]').forEach((el) => {
     el.onclick = async (e) => {
       e.stopPropagation();
-      const id = el.dataset.rename;
-      const current = state.sessions.find((x) => x.id === id)?.name ?? '';
-      const name = prompt('Rename session', current);
-      if (!name?.trim() || name === current) return;
-      await api(`/api/sessions/${id}`, { method: 'PATCH', body: JSON.stringify({ name: name.trim() }) });
-      if (state.session?.id === id) {
-        const fresh = await api(`/api/sessions/${id}`);
-        tabs.chat.session = fresh; state.session = fresh; paintHeader();
-      }
-      // The sheet now redraws from the local list before the server answers,
-      // so the local list has to already agree - otherwise the old name shows
-      // for a moment and the rename looks like it did not take.
-      const local = state.sessions.find((x) => x.id === id);
-      if (local) local.name = name.trim();
-      appsSheet();
+      await openSession(el.dataset.rename);
+      await sessionSettingsSheet();
     };
   });
   $('sheet').querySelectorAll('[data-del]').forEach((el) => {
@@ -2832,14 +2592,7 @@ async function reconcile() {
   }
 }
 
-/**
- * Background work belonging to this session, shown even when no turn is running.
- *
- * A turn finishing does not mean the session is idle — an agent can leave a
- * crawler running behind it. Previously that was only visible by opening the
- * monitoring tab, so a quiet chat tab looked like "nothing is happening" when
- * something was.
- */
+/** Background work can outlive a turn; keep its status visible in the session. */
 async function refreshBackground() {
   const bar = $('background');
   if (!bar || !state.session) return;
@@ -2860,8 +2613,8 @@ async function refreshBackground() {
     bar.innerHTML = `<span class="pulse-dot${busy.length ? '' : ' off'}"></span>
       <span class="bg-label">${d.procs.length} background ${d.procs.length === 1 ? 'process' : 'processes'}
         · ${esc(names)}${idle && !busy.length ? ' · idle' : ''}</span>
-      <span class="bg-more">monitoring ›</span>`;
-    bar.onclick = () => setTab('monitor');
+      `;
+
   }
 }
 
