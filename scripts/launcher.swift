@@ -5,6 +5,7 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var window: NSWindow!
     let status = NSTextField(labelWithString: "Checking server…")
     var stopButton: NSButton!
+    var copyButton: NSButton!
     var child: Process?
     var timer: Timer?
     var log: FileHandle?
@@ -34,35 +35,9 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
             }
         }
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 490, height: 320),
-                          styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = "Distributed Orchestrator"
-        window.delegate = self
-        window.appearance = NSAppearance(named: .darkAqua)
-        let content = window.contentView!
-        status.frame = NSRect(x: 20, y: 265, width: 450, height: 24)
-        content.addSubview(status)
-        let link = NSButton(title: address, target: self, action: #selector(openBrowser))
-        link.frame = NSRect(x: 20, y: 215, width: 450, height: 44)
-        link.bezelStyle = .rounded
-        content.addSubview(link)
-        phoneStatus.frame = NSRect(x: 20, y: 165, width: 450, height: 40)
-        phoneStatus.maximumNumberOfLines = 2
-        content.addSubview(phoneStatus)
-        phoneLink.frame = NSRect(x: 20, y: 115, width: 450, height: 44)
-        phoneLink.isSelectable = true
-        phoneLink.maximumNumberOfLines = 2
-        content.addSubview(phoneLink)
-        let copy = NSButton(title: "Copy phone link", target: self, action: #selector(copyPhone))
-        copy.frame = NSRect(x: 20, y: 65, width: 160, height: 44)
-        copy.bezelStyle = .rounded
-        content.addSubview(copy)
+        buildWindow()
         refreshConnections()
         networkTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: true) { _ in self.refreshConnections() }
-        stopButton = NSButton(title: "Stop server", target: self, action: #selector(stop))
-        stopButton.frame = NSRect(x: 170, y: 35, width: 150, height: 44)
-        stopButton.bezelStyle = .rounded
-        content.addSubview(stopButton)
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -72,6 +47,93 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.status.stringValue = "Active — closing this window stops the server"
             } else { self.start() }
         }
+    }
+
+    // One vertical layout owns spacing; status changes never move controls into
+    // neighbouring rows. Semantic AppKit colours follow the forced dark theme.
+    func buildWindow() {
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 480),
+                          styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+        window.title = "Distributed Orchestrator"
+        window.delegate = self
+        window.appearance = NSAppearance(named: .darkAqua)
+        let content = window.contentView!
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
+            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -24),
+        ])
+        func label(_ text: String, size: CGFloat = 13, weight: NSFont.Weight = .regular) -> NSTextField {
+            let field = NSTextField(wrappingLabelWithString: text)
+            field.font = .systemFont(ofSize: size, weight: weight)
+            field.textColor = .secondaryLabelColor
+            return field
+        }
+        func add(_ view: NSView) {
+            stack.addArrangedSubview(view)
+            view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+        func button(_ title: String, action: Selector) -> NSButton {
+            let control = NSButton(title: title, target: self, action: action)
+            control.bezelStyle = .rounded
+            control.controlSize = .large
+            control.heightAnchor.constraint(equalToConstant: 44).isActive = true
+            return control
+        }
+        let title = label("Distributed Orchestrator", size: 22, weight: .semibold)
+        title.textColor = .labelColor
+        add(title)
+        add(label("Your workspace, on this computer and your phone."))
+        stack.setCustomSpacing(24, after: stack.arrangedSubviews.last!)
+        add(label("THIS COMPUTER", size: 11, weight: .semibold))
+        status.font = .systemFont(ofSize: 13, weight: .medium)
+        status.cell?.wraps = true
+        status.cell?.isScrollable = false
+        status.maximumNumberOfLines = 2
+        status.heightAnchor.constraint(equalToConstant: 34).isActive = true
+        add(status)
+        let local = label(address)
+        local.isSelectable = true
+        add(local)
+        let open = button("Open workspace", action: #selector(openBrowser))
+        add(open)
+        stack.setCustomSpacing(24, after: open)
+        add(label("PHONE & OTHER DEVICES", size: 11, weight: .semibold))
+        phoneStatus.font = .systemFont(ofSize: 12)
+        phoneStatus.textColor = .secondaryLabelColor
+        phoneStatus.cell?.wraps = true
+        phoneStatus.cell?.isScrollable = false
+        phoneStatus.maximumNumberOfLines = 3
+        phoneStatus.heightAnchor.constraint(equalToConstant: 48).isActive = true
+        add(phoneStatus)
+        phoneLink.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        phoneLink.isSelectable = true
+        phoneLink.cell?.wraps = true
+        phoneLink.cell?.isScrollable = false
+        phoneLink.lineBreakMode = .byCharWrapping
+        phoneLink.maximumNumberOfLines = 2
+        phoneLink.heightAnchor.constraint(equalToConstant: 34).isActive = true
+        add(phoneLink)
+        copyButton = button("Copy phone link", action: #selector(copyPhone))
+        copyButton.isEnabled = false
+        stopButton = button("Stop server", action: #selector(stop))
+        let actions = NSStackView(views: [copyButton, stopButton])
+        actions.orientation = .horizontal
+        actions.distribution = .fillEqually
+        actions.spacing = 12
+        add(actions)
+        add(label("Keep this computer awake. Closing this window stops its server.", size: 11))
+        content.layoutSubtreeIfNeeded()
+        // Size to the arranged content instead of maintaining a second set of
+        // hand-positioned heights when labels or system font metrics change.
+        window.setContentSize(NSSize(width: 560, height: stack.fittingSize.height + 48))
     }
 
     @objc func copyPhone() {
@@ -94,10 +156,11 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let info = (try? JSONSerialization.jsonObject(with: data)) as? [String: String]
             DispatchQueue.main.async {
                 self.networkChecking = false
-                if !self.stopping {
+                if !self.stopping && !self.stopped {
                     self.status.stringValue = "This machine: " + (info?["localStatus"] ?? "Status unavailable")
                 }
                 self.phoneStatus.stringValue = "Phone: " + (info?["phoneStatus"] ?? "Status unavailable")
+                self.copyButton.isEnabled = info?["phoneUrl"]?.hasPrefix("https://") == true
                 if let url = info?["phoneUrl"], !url.isEmpty { self.phoneLink.stringValue = url }
                 else { self.phoneLink.stringValue = "Open Settings → Phone access to set up HTTPS" }
             }

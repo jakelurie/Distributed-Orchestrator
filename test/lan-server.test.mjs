@@ -553,9 +553,12 @@ for (let i = 0; i < 60; i += 1) {
   try { await fetch(openRoot); break; } catch { await new Promise((r) => setTimeout(r, 100)); }
 }
 check('with no HARNESS_TOKEN the server needs no token', (await fetch(`${openRoot}/api/state`)).status === 200);
-openChild.kill();
-
-child.kill();
+// Both servers can flush state during shutdown. Wait before deleting their
+// shared temporary data directory, otherwise cleanup races those writes.
+await Promise.all([openChild, child].map((server) => new Promise((resolve) => {
+  server.once('exit', resolve);
+  server.kill();
+})));
 upstream.close();
 await fs.rm(dataDir, { recursive: true, force: true });
 
