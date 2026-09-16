@@ -11,6 +11,10 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var stopping = false
     var stopped = false
     var checking = false
+    var networkTimer: Timer?
+    var networkChecking = false
+    let phoneStatus = NSTextField(labelWithString: "Phone: checking…")
+    let phoneLink = NSTextField(labelWithString: "")
     // Finder supplies no project argument; the app bundle lives beside the source.
     let root = CommandLine.arguments.count > 1
         ? URL(fileURLWithPath: CommandLine.arguments[1])
@@ -30,18 +34,31 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
             }
         }
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 490, height: 210),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 490, height: 320),
                           styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "Distributed Orchestrator"
         window.delegate = self
         window.appearance = NSAppearance(named: .darkAqua)
         let content = window.contentView!
-        status.frame = NSRect(x: 20, y: 155, width: 450, height: 24)
+        status.frame = NSRect(x: 20, y: 265, width: 450, height: 24)
         content.addSubview(status)
         let link = NSButton(title: address, target: self, action: #selector(openBrowser))
-        link.frame = NSRect(x: 20, y: 100, width: 450, height: 44)
+        link.frame = NSRect(x: 20, y: 215, width: 450, height: 44)
         link.bezelStyle = .rounded
         content.addSubview(link)
+        phoneStatus.frame = NSRect(x: 20, y: 165, width: 450, height: 40)
+        phoneStatus.maximumNumberOfLines = 2
+        content.addSubview(phoneStatus)
+        phoneLink.frame = NSRect(x: 20, y: 115, width: 450, height: 44)
+        phoneLink.isSelectable = true
+        phoneLink.maximumNumberOfLines = 2
+        content.addSubview(phoneLink)
+        let copy = NSButton(title: "Copy phone link", target: self, action: #selector(copyPhone))
+        copy.frame = NSRect(x: 20, y: 65, width: 160, height: 44)
+        copy.bezelStyle = .rounded
+        content.addSubview(copy)
+        refreshConnections()
+        networkTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: true) { _ in self.refreshConnections() }
         stopButton = NSButton(title: "Stop server", target: self, action: #selector(stop))
         stopButton.frame = NSRect(x: 170, y: 35, width: 150, height: 44)
         stopButton.bezelStyle = .rounded
@@ -55,6 +72,38 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.status.stringValue = "Active — closing this window stops the server"
             } else { self.start() }
         }
+    }
+
+    @objc func copyPhone() {
+        if phoneLink.stringValue.hasPrefix("https://") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(phoneLink.stringValue, forType: .string)
+        }
+    }
+    func refreshConnections() {
+        if networkChecking { return }
+        networkChecking = true
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        task.arguments = ["python3", root.appendingPathComponent("scripts/connection-status.py").path]
+        task.environment = env
+        let output = Pipe()
+        task.standardOutput = output
+        task.terminationHandler = { process in
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            let info = (try? JSONSerialization.jsonObject(with: data)) as? [String: String]
+            DispatchQueue.main.async {
+                self.networkChecking = false
+                if !self.stopping {
+                    self.status.stringValue = "This machine: " + (info?["localStatus"] ?? "Status unavailable")
+                }
+                self.phoneStatus.stringValue = "Phone: " + (info?["phoneStatus"] ?? "Status unavailable")
+                if let url = info?["phoneUrl"], !url.isEmpty { self.phoneLink.stringValue = url }
+                else if self.phoneLink.stringValue.isEmpty { self.phoneLink.stringValue = "Phone URL unavailable until Tailscale is running" }
+            }
+        }
+        do { try task.run() }
+        catch { networkChecking = false; phoneStatus.stringValue = "Phone: could not check Tailscale" }
     }
 
     func check(_ completion: @escaping (Bool) -> Void) {

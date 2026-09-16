@@ -179,3 +179,12 @@ environment variables and the default local port 8787. No Tailscale rules change
 Existing installed Electron bundles can be removed manually; this checkout no
 longer uses Electron. The former testAstra path may remain as a compatibility
 symlink after renaming the folder to DistributedOrchestratorCore.
+
+The launcher displays separate local-server and phone-route status, refreshed
+periodically. Copy phone link uses the Tailscale HTTPS route that targets this
+node's actual HTTP port. An active route is not proof that the phone is connected
+to the tailnet: the window explicitly reports phone reachability as unverified.
+If Tailscale is stopped, the window reports it rather than claiming phone access
+is active. It does not replace your Tailscale identity or change serving rules.
+An optional ORCHESTRATOR_PHONE_URL can display your known phone bookmark while
+Tailscale is unavailable; this does not mark that address as active.

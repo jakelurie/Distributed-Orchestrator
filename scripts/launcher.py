@@ -1,5 +1,6 @@
 """Browser-only frontend with a small native server controller."""
 import os
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -27,10 +28,37 @@ def main():
     url = 'http://127.0.0.1:' + env.get('HARNESS_PORT', '8787')
     window = tk.Tk()
     window.title('Distributed Orchestrator')
-    window.geometry('470x210')
+    window.geometry('570x340')
     status = tk.StringVar(value='Starting…')
     ttk.Label(window, textvariable=status, wraplength=440).pack(pady=20)
     ttk.Label(window, text=url).pack()
+    phone_status = tk.StringVar(value='Phone: checking…')
+    phone_url = tk.StringVar(value='')
+    ttk.Label(window, textvariable=phone_status, wraplength=540).pack(pady=8)
+    ttk.Entry(window, textvariable=phone_url, state='readonly', width=65).pack()
+    def copy_phone():
+        window.clipboard_clear()
+        window.clipboard_append(phone_url.get())
+    ttk.Button(window, text='Copy phone link', command=copy_phone).pack()
+    def refresh_connections():
+        probe = subprocess.Popen([shutil.which('python3') or 'python3', str(ROOT / 'scripts/connection-status.py')],
+                                 env=env, stdout=subprocess.PIPE, text=True)
+        def complete():
+            if probe.poll() is None:
+                window.after(100, complete)
+                return
+            try:
+                info = json.loads(probe.stdout.read())
+                if not stopping:
+                    status.set('This machine: ' + info['localStatus'])
+                phone_status.set('Phone: ' + info['phoneStatus'])
+                if info['phoneUrl']:
+                    phone_url.set(info['phoneUrl'])
+            except (ValueError, KeyError):
+                phone_status.set('Phone: status unavailable')
+            window.after(6000, refresh_connections)
+        window.after(100, complete)
+    window.after(500, refresh_connections)
     child = None
     log = None
 
