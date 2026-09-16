@@ -25,3 +25,5 @@ __pycache__/
 nodes.json
 
 .launcher/
+
+/Launch Distributed Orchestrator.app/

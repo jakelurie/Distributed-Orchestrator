@@ -155,9 +155,13 @@ MIT.
 
 ## Browser launcher
 
-On macOS double-click **Launch Distributed Orchestrator.command** in this folder.
-On Linux run **Launch Distributed Orchestrator.sh**. On Windows double-click
-**Launch Distributed Orchestrator.cmd**; it runs through WSL2 Ubuntu and WSLg.
+On macOS double-click **Launch Distributed Orchestrator.app** in this folder.
+It opens only the small native window, without Terminal. Keep the app in this
+folder so it can locate the server. After cloning, run `npm start` once to build
+it (or `python3 scripts/build-launcher.py`). The generated bundle is not committed.
+On Linux run **scripts/Launch Distributed Orchestrator.sh**. On Windows use
+**scripts/Launch Distributed Orchestrator.cmd** through WSL2 Ubuntu and WSLg.
+These platform-specific helpers live under scripts rather than beside the Mac button.
 Install Node.js 22+ and run npm ci first. macOS uses a native Cocoa launcher compiled with Swift (Apple Command Line Tools). Linux/WSL uses Python 3 with Tk. On Ubuntu,
 the Tk package is python3-tk. Windows requires these dependencies inside WSL,
 not just Windows.

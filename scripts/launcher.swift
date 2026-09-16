@@ -10,11 +10,16 @@ final class Launcher: NSObject, NSApplicationDelegate {
     var log: FileHandle?
     var active = false
     var checking = false
-    let root = URL(fileURLWithPath: CommandLine.arguments[1])
+    // Finder supplies no project argument; the app bundle lives beside the source.
+    let root = CommandLine.arguments.count > 1
+        ? URL(fileURLWithPath: CommandLine.arguments[1])
+        : Bundle.main.bundleURL.deletingLastPathComponent()
     var env = ProcessInfo.processInfo.environment
     var address: String { "http://127.0.0.1:\(env["HARNESS_PORT"] ?? "8787")" }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
+
         if let config = try? String(contentsOf: root.appendingPathComponent(".orchestrator-node.env"), encoding: .utf8) {
             for line in config.components(separatedBy: .newlines) {
                 if line.trimmingCharacters(in: .whitespaces).hasPrefix("#") { continue }
