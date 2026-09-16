@@ -33,6 +33,7 @@ import { setSecret } from '../src/core/secrets.js';
 import { transcribe, transcriptionKey } from '../src/core/transcription.js';
 import * as attachments from '../src/core/attachments.js';
 import * as git from '../src/core/git.js';
+import { configureGithub, createGithubAuth } from '../src/core/github-auth.js';
 import { loadNotify, saveNotify, send as sendNotify, summarise, notificationSetupError } from '../src/core/notify.js';
 import * as store from '../src/core/store.js';
 import { noteEvent, tally } from '../src/core/transcript.js';
@@ -60,6 +61,8 @@ const USER_DATA =
   process.env.HARNESS_DATA_DIR ||
   path.join(os.homedir(), 'Library', 'Application Support', 'harness');
 
+configureGithub(USER_DATA);
+const github = createGithubAuth(USER_DATA);
 const nodes = createNodes(USER_DATA);
 const inventory = deviceInventory(USER_DATA);
 
@@ -476,7 +479,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (!cluster.replica.writable()) return json(res, 503, { error: 'Waiting for coordinator quorum.' });
       await restoreSettings();
-      res.syncSettings = req.method !== 'GET' && /^\/api\/(models|apps)(?:[/?]|$)/.test(pathname);
+      res.syncSettings = req.method !== 'GET' && /^\/api\/(models|apps|github)(?:[/?]|$)/.test(pathname);
     }
     if (req.method === 'GET' && pathname === '/api/node-info') {
       return json(res, 200, { protocol: 1, name: process.env.ORCHESTRATOR_NODE_NAME || os.hostname(),
@@ -883,6 +886,13 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, await sendNotify(cfg, 'Distributed Orchestrator test — notifications are working.'));
     }
 
+    // GitHub credentials are global; repository visibility remains session-specific.
+    if (pathname === '/api/github' && req.method === 'GET') return json(res, 200, await github.status());
+    if (pathname === '/api/github/login' && req.method === 'POST') return json(res, 200, await github.start());
+    if (pathname === '/api/github/login' && req.method === 'GET') return json(res, 200, github.progress());
+    if (pathname === '/api/github/finish' && req.method === 'POST') return json(res, 200, await github.finish());
+    if (pathname === '/api/github/share' && req.method === 'POST') return json(res, 200, await github.shareExisting());
+
     // ---- git
     if (req.method === 'GET' && pathname === '/api/git') {
       const id = url.searchParams.get('session');
@@ -912,6 +922,7 @@ const server = http.createServer(async (req, res) => {
       const session = live.get(id) ?? (await store.load(id, { repair: false }));
       const last = [...session.events].reverse().find((e) => e.type === 'assistant');
       return json(res, 200, await git.commitAndPush(session.projectDir, {
+        push: (await github.status()).authenticated,
         model: session.model, servedModel: last?.servedModel,
       }));
     }
@@ -1381,6 +1392,7 @@ const server = http.createServer(async (req, res) => {
                 const app = session.appId
                   ? (await apps.load(USER_DATA)).find((a) => a.id === session.appId) : null;
                 const res = await git.commitAndPush(session.projectDir, {
+                  push: (await github.status()).authenticated,
                   appName: app?.name,
                   model: session.model,
                   servedModel: last?.servedModel,

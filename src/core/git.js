@@ -12,10 +12,10 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { promisify } from 'node:util';
 
-import { loginPath } from './tools.js';
+import { githubEnv } from './github-auth.js';
 
 const run = async (args, cwd, opts = {}) => {
-  const env = { ...process.env, PATH: await loginPath() };
+  const env = await githubEnv();
   return new Promise((resolve) => {
     execFile('git', args, { cwd, env, timeout: 120_000, maxBuffer: 8e6, ...opts }, (err, stdout, stderr) =>
       resolve({ ok: !err, out: (stdout ?? '').trim(), err: (stderr ?? '').trim() || err?.message || '' }));
@@ -89,7 +89,11 @@ export async function commitAndPush(dir, { model, servedModel, push = true, auto
     + (files.length > 40 ? `\n…and ${files.length - 40} more` : '');
 
   const message = `${subject}\n\n${body}`;
-  const commit = await run(['commit', '-m', message], st.root);
+  const identity = [];
+  for (const [key, fallback] of [['user.name', 'Distributed Orchestrator'], ['user.email', 'orchestrator@localhost']]) {
+    if (!(await run(['config', '--get', key], st.root)).out) identity.push('-c', `${key}=${fallback}`);
+  }
+  const commit = await run([...identity, 'commit', '-m', message], st.root);
   if (!commit.ok) {
     return { ok: false, error: commit.err || commit.out || 'git commit failed', files };
   }
@@ -138,7 +142,7 @@ export function defaultRepoName(root, appName) {
 
 /** Rename the linked GitHub repository before changing the app's display name. */
 export async function renameAppRepo(app, name, execute = promisify(execFile)) {
-  const options = { cwd: app.dir, timeout: 30_000, env: { ...process.env, PATH: await loginPath() } };
+  const options = { cwd: app.dir, timeout: 30_000, env: await githubEnv() };
   let remote = '';
   try { remote = (await execute('git', ['remote', 'get-url', 'origin'], options)).stdout.trim(); }
   catch { /* A workspace may not have a local Git repository. */ }
@@ -173,17 +177,17 @@ export async function deleteAppRepo(app, confirmation, execute = promisify(execF
   const repo = githubRepoIdentity(app.repo);
   if (!repo || confirmation !== repo) throw new Error('Confirm the exact linked GitHub owner/repository.');
   await execute('gh', ['repo', 'delete', repo, '--yes'], {
-    cwd: app.dir, timeout: 30_000, env: { ...process.env, PATH: await loginPath() },
+    cwd: app.dir, timeout: 30_000, env: await githubEnv(),
   });
   return repo;
 }
 
 async function createPrivateRepo(root, branch, appName) {
   const name = defaultRepoName(root, appName);
-  const PATH = await loginPath();
+  const env = await githubEnv();
   const res = await new Promise((resolve) => {
     execFile('gh', ['repo', 'create', name, '--private', '--source', root, '--remote', 'origin', '--push'],
-      { cwd: root, timeout: 120_000, env: { ...process.env, PATH } },
+      { cwd: root, timeout: 120_000, env },
       (err, stdout, stderr) => resolve({ ok: !err, out: stdout ?? '', err: (stderr || err?.message) ?? '' }));
   });
   if (res.ok) return { ok: true, repo: name };
@@ -217,10 +221,10 @@ export async function visibility(dir) {
   const st = await status(dir);
   if (!st.repo || !st.remote) return { ok: false, reason: 'no remote' };
 
-  const PATH = await loginPath();
+  const env = await githubEnv();
   const res = await new Promise((resolve) => {
     execFile('gh', ['repo', 'view', '--json', 'nameWithOwner,visibility,url'],
-      { cwd: st.root, timeout: 20_000, env: { ...process.env, PATH } },
+      { cwd: st.root, timeout: 20_000, env },
       (err, stdout, stderr) => resolve({ ok: !err, out: stdout ?? '', err: (stderr || err?.message) ?? '' }));
   });
   if (!res.ok) return { ok: false, reason: res.err.trim() || 'gh not available' };
@@ -238,10 +242,10 @@ export async function setVisibility(dir, want) {
   if (!st.repo) return { ok: false, reason: 'not a git repository' };
   if (!['public', 'private'].includes(want)) return { ok: false, reason: 'bad visibility' };
 
-  const PATH = await loginPath();
+  const env = await githubEnv();
   const res = await new Promise((resolve) => {
     execFile('gh', ['repo', 'edit', `--visibility=${want}`, '--accept-visibility-change-consequences'],
-      { cwd: st.root, timeout: 30_000, env: { ...process.env, PATH } },
+      { cwd: st.root, timeout: 30_000, env },
       (err, stdout, stderr) => resolve({ ok: !err, out: stdout ?? '', err: (stderr || err?.message) ?? '' }));
   });
   return res.ok ? { ok: true, visibility: want } : { ok: false, reason: res.err.trim() || 'gh failed' };

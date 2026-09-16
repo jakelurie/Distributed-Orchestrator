@@ -7,13 +7,13 @@ const nodes = new Map();
 const $ = (id) => { if (!nodes.has(id)) nodes.set(id, {}); return nodes.get(id); };
 let rendered;
 const context = { $, openSheet: (html) => { rendered = html; }, closeSheet() {},
-  machinesSheet() {}, networkSheet() {}, filesSheet() {}, modelsSheet() {}, notifySheet() {}, emailSheet() {}, window: {} };
+  githubSheet() {}, machinesSheet() {}, networkSheet() {}, filesSheet() {}, modelsSheet() {}, notifySheet() {}, emailSheet() {}, window: {} };
 vm.createContext(context);
 vm.runInContext(source.slice(source.indexOf('async function settingsSheet()'), source.indexOf('async function sessionSettingsSheet()')), context);
 await context.settingsSheet();
 assert.match(rendered, /Distributed Orchestrator settings/);
 assert.match(rendered, /AI sources/);
-assert.doesNotMatch(rendered, /s-models|s-dir|s-name|h-git/);
+assert.doesNotMatch(rendered, /s-models|s-dir|s-name|id="h-git"/);
 assert.equal(typeof $('h-machines').onclick, 'function');
 assert.doesNotMatch(html, /id="tabs"|data-tab|id="panel"|mon-chat-toggle/);
 Object.assign(context, { state: { session: { name: 'My session', model: 'model', projectDir: '/project', appId: 'app' }, apps: [{ id: 'app', name: 'My app' }], models: { model: { label: 'My model', hasKey: true } } }, cur: () => ({ session: {} }), idlePlaceholder: () => '', showBanner() {} });

@@ -226,3 +226,24 @@ the main, and verify the phone reconnects and the recovered project opens. Test
 three hosts under a network split as well: a lone host must not accept changes.
 A two-host network split intentionally has weaker guarantees, with conflict
 archives requiring manual review. Remote power controls remain future work.
+
+## GitHub connection
+
+Open global **Settings → GitHub connection**. An existing GitHub CLI login is
+recognized without replacing it. Choose **Use this connection across hosts**
+to save that account's token in the orchestrator's private secret store and
+replicate it to paired hosts. This leaves the original CLI login intact.
+
+For a new account, install GitHub CLI on execution hosts, click **Connect GitHub**,
+and enter the displayed one-time code at GitHub's device authorization page.
+Keep the settings screen open (or reopen it after approving) to finish saving
+the connection. This flow uses temporary CLI configuration, not the user's
+existing login configuration. If the main host changes during authorization,
+restart the login on the new main. Completed connections use replicated secrets.
+
+Before connecting, automatic Git saves remain local; cluster synchronization
+continues independently. After connecting, sessions with automatic Git enabled
+push changed turns and can create private app repositories. Connecting does not
+bulk-publish existing projects. Repository visibility and automatic Git controls
+remain under **Edit session → Git & GitHub**. GitHub is for project files and
+commits, not a backup of the orchestrator's session database or credentials.

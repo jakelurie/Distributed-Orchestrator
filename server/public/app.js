@@ -992,6 +992,7 @@ async function settingsSheet() {
   openSheet(`
     <h2>Distributed Orchestrator settings</h2>
     <div class="rowlinks">
+      <button class="rowlink" id="h-github"><span>GitHub connection</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-network"><span>Phone access · Tailscale</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-machines"><span>Machines</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-files"><span>Files</span><span class="chev">›</span></button>
@@ -1002,6 +1003,7 @@ async function settingsSheet() {
     </div>
     <div class="actions"><button class="primary" id="s-close">done</button></div>`);
 
+  $('h-github').onclick = githubSheet;
   $('h-machines').onclick = machinesSheet;
   $('h-network').onclick = networkSheet;
   $('h-files').onclick = () => filesSheet();
@@ -1011,6 +1013,59 @@ async function settingsSheet() {
   $('h-email').onclick = emailSheet;
 
   $('s-close').onclick = closeSheet;
+}
+
+async function githubSheet() {
+  openSheet(`<h2>GitHub connection</h2><p id="github-status" class="dim">Checking connection…</p>
+    <div id="github-actions" class="actions"></div>
+    <p class="dim">Without GitHub, work stays on your hosts and synchronizes within your paired cluster. Connecting enables repository pushes for sessions with automatic Git enabled. New app repositories are private; change visibility in Edit session → Git &amp; GitHub.</p>
+    <p class="dim">A system connection is stored privately and shared with paired hosts. GitHub receives project files and commit history, not your session transcripts or saved integration credentials. Connecting does not publish all existing projects immediately; their next changed turn can create or update the repository.</p>
+    ${backToSettings}`);
+  const box = $('github-status');
+  $('sub-back').onclick = settingsSheet;
+  const present = () => $('github-status') === box;
+  const post = (path) => api('/api/github/' + path, { method: 'POST', body: '{}' });
+  const fail = (e) => { if (present()) box.textContent = e.message; };
+  const poll = async () => {
+    if (!present()) return;
+    try {
+      const result = await api('/api/github/login');
+      if (!present()) return;
+      if (result.state === 'ready') { await post('finish'); if (present()) await githubSheet(); return; }
+      if (result.state === 'connected') { await githubSheet(); return; }
+      if (result.state === 'failed' || result.state === 'idle') {
+        box.textContent = result.error || 'No login in progress. Reopen GitHub connection to try again.';
+        return;
+      }
+      box.textContent = result.code ? `Enter this code on GitHub: ${result.code}` : 'Preparing GitHub login…';
+      $('github-actions').innerHTML = result.code
+        ? '<a class="primary" href="https://github.com/login/device" target="_blank" rel="noopener noreferrer">Continue on GitHub</a>' : '';
+      setTimeout(poll, 2000);
+    } catch (e) { fail(e); }
+  };
+  try {
+    const status = await api('/api/github');
+    if (!present()) return;
+    box.textContent = status.authenticated
+      ? `Connected as ${status.login}${status.shared ? ' · shared with paired hosts' : ' · existing host login preserved'}`
+      : 'GitHub is not connected. Your work stays on your hosts.';
+    if (status.authenticated && status.shared) return;
+    $('github-actions').innerHTML = `<button class="primary" id="github-connect">${status.authenticated ? 'Use this connection across hosts' : 'Connect GitHub'}</button>`;
+    $('github-connect').onclick = async () => {
+      $('github-connect').disabled = true;
+      try {
+        if (status.authenticated) { await post('share'); if (present()) await githubSheet(); }
+        else {
+          const result = await post('login');
+          if (result.state === 'connected') { if (present()) await githubSheet(); }
+          else await poll();
+        }
+      } catch (e) { fail(e); if ($('github-connect')) $('github-connect').disabled = false; }
+    };
+    if (status.missingCli) box.textContent += ' Install GitHub CLI on the host first (cli.github.com).';
+    const pending = await api('/api/github/login');
+    if (present() && ['starting', 'waiting', 'ready'].includes(pending.state)) await poll();
+  } catch (e) { fail(e); }
 }
 
 async function sessionSettingsSheet() {
