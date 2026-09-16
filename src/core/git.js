@@ -157,6 +157,22 @@ export async function renameAppRepo(app, name, execute = promisify(execFile)) {
   return linked.startsWith('git@') ? `git@github.com:${owner}/${next}.git` : url;
 }
 
+export function githubRepoIdentity(url) {
+  const match = String(url || '').match(/^(?:git@github\.com:|https:\/\/github\.com\/)([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/);
+  return match ? match[1] + '/' + match[2] : null;
+}
+
+/** Only delete the explicitly linked repository after an exact-name confirmation. */
+export async function deleteAppRepo(app, confirmation, execute = promisify(execFile)) {
+  if (app.builtin) throw new Error('The built-in project cannot be deleted.');
+  const repo = githubRepoIdentity(app.repo);
+  if (!repo || confirmation !== repo) throw new Error('Confirm the exact linked GitHub owner/repository.');
+  await execute('gh', ['repo', 'delete', repo, '--yes'], {
+    cwd: app.dir, timeout: 30_000, env: { ...process.env, PATH: await loginPath() },
+  });
+  return repo;
+}
+
 async function createPrivateRepo(root, branch, appName) {
   const name = defaultRepoName(root, appName);
   const PATH = await loginPath();

@@ -596,11 +596,24 @@ const server = http.createServer(async (req, res) => {
         catch (e) { return json(res, 400, { error: e.message }); }
       }
       if (req.method === 'DELETE' && appId) {
-        // Two separate decisions, both the user's: whether the folder goes,
-        // and whether the sessions go. Neither is implied by the other.
+        // Folder, sessions, and GitHub deletion are independent opt-in choices.
+        // Validate and complete GitHub deletion before removing local records.
         const wantFiles = url.searchParams.get('files') === '1';
         const wantSessions = url.searchParams.get('sessions') === '1';
 
+        const target = (await apps.load(USER_DATA)).find((a) => a.id === appId);
+        if (!target || target.builtin) return json(res, 400, { error: 'This project cannot be deleted.' });
+        if (url.searchParams.get('github') === '1' &&
+            (await store.list()).some((s) => s.appId === appId && (running.has(s.id) || running.has(s.id + '--monitor')))) {
+          return json(res, 409, { error: 'Stop this project’s active sessions before deleting its GitHub repository.' });
+        }
+        let deletedRepo = null;
+        if (url.searchParams.get('github') === '1') {
+          try {
+            const body = await readBody(req);
+            deletedRepo = await git.deleteAppRepo(target, body.confirmRepository);
+          } catch (e) { return json(res, 400, { error: e.message }); }
+        }
         const attached = (await store.list()).filter((m) => m.appId === appId);
         const removedSessions = [];
         for (const meta of attached) {
@@ -621,7 +634,7 @@ const server = http.createServer(async (req, res) => {
 
         try {
           const done = await apps.destroy(USER_DATA, appId, { files: wantFiles });
-          return json(res, 200, { ...done, removedSessions, apps: await apps.load(USER_DATA) });
+          return json(res, 200, { ...done, deletedRepo, removedSessions, apps: await apps.load(USER_DATA) });
         } catch (e) {
           return json(res, 400, { error: e.message });
         }
@@ -1206,6 +1219,10 @@ const server = http.createServer(async (req, res) => {
                   servedModel: last?.servedModel,
                   autoCreatePrivate: Boolean(session.appId),
                 });
+                if (app && !app.builtin && !app.repo && res.created) {
+                  const linked = await git.status(session.projectDir);
+                  if (linked.remote) await apps.update(USER_DATA, app.id, { repo: linked.remote });
+                }
                 if (res.skipped === 'no changes') {
                   // Nothing to say: a turn that changed no files is normal.
                 } else if (!res.ok) {

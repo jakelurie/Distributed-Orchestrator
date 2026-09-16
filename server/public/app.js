@@ -2369,6 +2369,10 @@ async function appDeleteSheet(app) {
       <label class="grow"><input type="checkbox" id="del-sessions" ${mine.length ? '' : 'disabled'} />
         ${mine.length ? `its ${mine.length} session${mine.length === 1 ? '' : 's'} and their transcripts` : 'no sessions are attached'}</label>
     </div>
+    ${app.repo ? `<div class="item"><label class="grow"><input type="checkbox" id="del-github" />
+      its GitHub repository: ${esc(app.repo)}</label></div>
+      <label>To delete GitHub too, type owner/repository</label>
+      <input id="del-repo-confirm" autocomplete="off" spellcheck="false" placeholder="owner/repository" />` : ''}
     <p class="dim" id="del-warn"></p>
     <div class="actions">
       <button class="ghost" id="del-cancel">cancel</button>
@@ -2376,33 +2380,39 @@ async function appDeleteSheet(app) {
     </div>`);
 
   const warn = () => {
+    delete $('del-go').dataset.armed;
     const f = $('del-files').checked;
     const s2 = $('del-sessions').checked;
-    $('del-warn').textContent = f || s2
-      ? `This cannot be undone. ${[f ? shortDir(app.dir) : null, s2 ? `${mine.length} transcript${mine.length === 1 ? '' : 's'}` : null].filter(Boolean).join(' and ')} will be erased.`
+    const g = $('del-github')?.checked;
+    $('del-warn').textContent = f || s2 || g
+      ? `This cannot be undone. ${[g ? app.repo : null, f ? shortDir(app.dir) : null, s2 ? `${mine.length} transcript${mine.length === 1 ? '' : 's'}` : null].filter(Boolean).join(' and ')} will be erased.`
       : 'The folder stays on disk; only the orchestrator forgets the app.';
-    $('del-go').textContent = f || s2 ? 'delete permanently' : 'remove from orchestrator';
+    $('del-go').textContent = f || s2 || g ? 'delete permanently' : 'remove from orchestrator';
   };
   $('del-files').onchange = warn;
   $('del-sessions').onchange = warn;
+  if ($('del-github')) $('del-github').onchange = warn;
+  if ($('del-repo-confirm')) $('del-repo-confirm').oninput = warn;
   warn();
 
   $('del-cancel').onclick = () => appEditSheet(app);
   $('del-go').onclick = async () => {
     const f = $('del-files').checked;
     const s2 = $('del-sessions').checked;
+    const g = $('del-github')?.checked;
     // A second tap for the irreversible half, because this is a phone and the
     // first one is easy to hit by accident.
-    if ((f || s2) && $('del-go').dataset.armed !== '1') {
+    if ((f || s2 || g) && $('del-go').dataset.armed !== '1') {
       $('del-go').dataset.armed = '1';
       $('del-go').textContent = 'tap again to erase';
       return;
     }
     $('del-go').disabled = true;
     try {
-      const r = await api(`/api/apps/${app.id}?files=${f ? 1 : 0}&sessions=${s2 ? 1 : 0}`, { method: 'DELETE' });
+      const r = await api(`/api/apps/${app.id}?files=${f ? 1 : 0}&sessions=${s2 ? 1 : 0}&github=${g ? 1 : 0}`, { method: 'DELETE', body: JSON.stringify({ confirmRepository: $('del-repo-confirm')?.value.trim() }) });
       // Report what actually happened rather than assuming it all worked.
       const bits = [];
+      if (r.deletedRepo) bits.push('GitHub repository deleted: ' + r.deletedRepo);
       if (r.stopped === false) bits.push('it would not confirm it stopped');
       if (r.dirError) bits.push(`the folder was kept: ${r.dirError}`);
       if (f && r.dir) bits.push('folder deleted');

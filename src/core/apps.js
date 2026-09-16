@@ -305,7 +305,7 @@ export async function update(userDataDir, id, patch) {
     }
     patch[key] = port;
   }
-  if (patch.name !== undefined && patch.name !== app.name) {
+  if (patch.name !== undefined) {
     if (typeof patch.name !== 'string' || !patch.name.trim()) throw new Error('Enter a project name.');
     patch.name = patch.name.trim();
     if (patch.repo !== undefined && patch.repo !== app.repo) {

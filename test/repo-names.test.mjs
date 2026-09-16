@@ -25,3 +25,21 @@ await assert.rejects(renameAppRepo(app, 'Taken', async (bin, args) => {
 assert.deepEqual(failed, ['git', 'gh']);
 assert.equal(await renameAppRepo({ dir: '/unused' }, 'Workspace', async () => { throw new Error('no origin'); }), null);
 console.log('PASS linked repo rename, origin update, rejection, and workspace without a repo');
+
+// Saving an unchanged app name repairs an old mismatched link too.
+const fs = await import('node:fs/promises');
+const vm = await import('node:vm');
+const appSource = await fs.readFile(new URL('../src/core/apps.js', import.meta.url), 'utf8');
+const updateSource = appSource.slice(appSource.indexOf('export async function update('),
+  appSource.indexOf('export async function remove(')).replace('export ', '');
+const savedApp = { id: 'x', name: 'XManager', repo: 'git@github.com:owner/TwitterManager.git' };
+let renamedTo;
+const update = vm.runInNewContext(updateSource + '\nupdate;', {
+  load: async () => [savedApp],
+  renameAppRepo: async (a, name) => { renamedTo = name; return 'git@github.com:owner/' + name + '.git'; },
+  persist: async () => {},
+});
+await update('/unused', 'x', { name: 'XManager' });
+assert.equal(renamedTo, 'XManager');
+assert.equal(savedApp.repo, 'git@github.com:owner/XManager.git');
+console.log('PASS saving the app name repairs an existing repository mismatch');

@@ -141,6 +141,13 @@ for (const [name, start] of [['Workspace test', ''], ['Launchable test', 'npm st
   await call(`/api/apps/${created.id}`, { method: 'PATCH', body: JSON.stringify({ name: `${name} renamed` }) });
   const listed = await (await call('/api/state')).json();
   check('editing a project does not create another session', listed.sessions.filter((s) => s.appId === created.id).length === 1);
+  const rejectedDelete = await call(`/api/apps/${created.id}?github=1&sessions=1`, {
+    method: 'DELETE', body: JSON.stringify({ confirmRepository: 'owner/not-linked' }),
+  });
+  check('GitHub deletion rejects an unlinked target before deleting sessions', rejectedDelete.status === 400);
+  const preserved = await (await call('/api/state')).json();
+  check('failed GitHub deletion preserves the project session', preserved.sessions.some((s) => s.appId === created.id));
+
 }
 
 // ---- compression: the transcript is the big thing on the wire ----
