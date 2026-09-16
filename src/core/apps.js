@@ -63,12 +63,32 @@ function harnessApp() {
   };
 }
 
+// Separate monotonic markers avoid overwriting app edits during status polling.
+function appHistoryPath(userDataDir, id) {
+  return path.join(userDataDir, 'app-history', encodeURIComponent(id) + '.json');
+}
+
+export async function rememberApp(userDataDir, app) {
+  if (app.builtin) return;
+  const file = appHistoryPath(userDataDir, app.id);
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, '{}', { flag: 'wx', mode: 0o600 }).catch((e) => {
+    if (e.code !== 'EEXIST') throw e;
+  });
+  app.hasBeenApp = true;
+}
+
 export async function load(userDataDir) {
   let stored = [];
   try {
     const raw = JSON.parse(await fs.readFile(appsPath(userDataDir), 'utf8'));
     stored = Array.isArray(raw.apps) ? raw.apps : [];
   } catch { /* none yet */ }
+  await Promise.all(stored.map(async (app) => {
+    app.hasBeenApp = Boolean(app.hasBeenApp || app.start?.trim() || app.lastStartedAt);
+    if (app.hasBeenApp) await rememberApp(userDataDir, app);
+    else app.hasBeenApp = await fs.access(appHistoryPath(userDataDir, app.id)).then(() => true, () => false);
+  }));
   // Always present, always first, never persisted as an editable record.
   return [harnessApp(), ...stored.filter((a) => a.id !== HARNESS_APP_ID)];
 }
@@ -251,6 +271,7 @@ export async function create(userDataDir, { name, dir, start = '', repo = null }
     pid: null,
   };
   await fs.mkdir(app.dir, { recursive: true });
+  if (app.start?.trim()) await rememberApp(userDataDir, app);
   apps.push(app);
   await persist(userDataDir, apps);
   return app;
@@ -293,7 +314,9 @@ export async function update(userDataDir, id, patch) {
     const repo = await renameAppRepo(app, patch.name);
     if (repo) patch.repo = repo;
   }
+  const wasApp = app.hasBeenApp;
   Object.assign(app, patch, { updatedAt: Date.now() });
+  if (wasApp || app.start?.trim() || app.lastStartedAt) await rememberApp(userDataDir, app);
   await persist(userDataDir, apps);
   return app;
 }
@@ -410,6 +433,7 @@ export async function start(userDataDir, id) {
   // starting a second copy, and publish the port it is really on.
   const live = runningInfo(app, await listeningProcesses());
   if (live.running) {
+    await rememberApp(userDataDir, app);
     return { app, already: true, adopted: live.adopted, livePort: live.port,
       served: await ensureServe({ ...app, port: live.port }) };
   }
@@ -597,6 +621,7 @@ export async function listWithStatus(userDataDir) {
     let desktop = null;
 
     if (info.running) {
+      await rememberApp(userDataDir, app);
       // "Running" must mean it actually answers, not just that the port is held
       // while it starts up. A link is only offered once this is true.
       reachable = await httpReachable(info.port);

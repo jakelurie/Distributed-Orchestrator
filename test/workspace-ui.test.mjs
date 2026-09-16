@@ -68,3 +68,7 @@ assert.match(html, /Chats \(2\)/);
 context.openProjectGroups.add('chats');
 assert.match(vm.runInNewContext(renderGroups, { ...context }), /data-project-group="chats" open/);
 console.log('PASS active sessions first, persistent orchestrator, default-collapsed groups and retained expansion');
+const remembered = { id: 'simulation', hasBeenApp: true, start: '', running: false };
+assert.equal(group([remembered]).stopped[0].id, 'simulation');
+assert.ok(!card({ ...base, ...remembered }).includes('>chat<'));
+console.log('PASS previously detected apps remain stopped apps without a start command');

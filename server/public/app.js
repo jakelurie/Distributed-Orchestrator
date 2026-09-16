@@ -1994,7 +1994,7 @@ function projectGroups(apps) {
   const visible = [], stopped = [], chats = [];
   for (const app of apps) {
     if (app.builtin || app.running) visible.push(app);
-    else if (app.start?.trim() || app.lastStartedAt) stopped.push(app);
+    else if (app.hasBeenApp || app.start?.trim() || app.lastStartedAt) stopped.push(app);
     else chats.push(app);
   }
   return { visible: orderProjects(visible), stopped, chats };
@@ -2056,7 +2056,7 @@ function renderAppsSheet(d) {
          ${a.running && a.reachable && links.length ? `<div class="s app-links">${links.join('<br>')}</div>` : ''}`;
     const pill = a.builtin
       ? '<span class="pill self">self</span>'
-      : !launchable && !a.running && !a.lastStartedAt ? '<span class="pill">chat</span>'
+      : !launchable && !a.running && !a.lastStartedAt && !a.hasBeenApp ? '<span class="pill">chat</span>'
       : `<span class="pill ${a.reachable ? 'ready' : a.running ? 'warm' : ''}">${label}</span>`;
     const actions = a.builtin
       ? `<div class="app-actions">
