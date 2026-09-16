@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 const pkg = JSON.parse(await fs.readFile('package.json'));
-assert.equal(pkg.scripts.start, 'sh scripts/launch.sh');
+assert.equal(pkg.scripts.start, 'node scripts/launch.mjs');
 assert.equal(pkg.devDependencies?.electron, undefined);
 assert.equal(pkg.build, undefined);
 const result = spawnSync('python3', ['-c', `

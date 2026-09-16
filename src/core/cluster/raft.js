@@ -15,6 +15,8 @@ export async function atomic(file, value) {
   try { await handle.writeFile(JSON.stringify(value)); await handle.sync(); }
   finally { await handle.close(); }
   await fs.rename(tmp, file);
+  // Windows does not support opening directories for fsync; file data was flushed above.
+  if (process.platform === 'win32') return;
   const directory = await fs.open(path.dirname(file), 'r');
   try { await directory.sync(); } finally { await directory.close(); }
 }

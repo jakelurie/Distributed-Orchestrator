@@ -10,7 +10,7 @@ export async function tailscaleCommand(env = process.env, platform = process.pla
   if (binary || socket !== undefined) return [binary || 'tailscale', ...(socket ? ['--socket', socket] : [])];
   const candidates = platform === 'darwin'
     ? [['/Applications/Tailscale.app/Contents/MacOS/Tailscale'], ['tailscale']]
-    : [['tailscale']];
+    : platform === 'win32' ? [['tailscale.exe'], [(env.ProgramFiles || 'C:\\Program Files') + '\\Tailscale\\tailscale.exe']] : [['tailscale']];
   let available;
   for (const command of candidates) {
     try {

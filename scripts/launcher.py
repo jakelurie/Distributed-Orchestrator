@@ -73,7 +73,7 @@ def main():
     def open_browser():
         token = env.get('HARNESS_TOKEN', '')
         if token == 'auto':
-            data = Path(env.get('HARNESS_DATA_DIR', str(Path.home() / 'Library/Application Support/harness')))
+            data = Path(env.get('HARNESS_DATA_DIR', str(Path.home() / ('Library/Application Support/harness' if __import__('sys').platform == 'darwin' else '.local/share/distributed-orchestrator'))))
             try:
                 token = (data / 'server-token').read_text().strip()
             except OSError:

@@ -11,6 +11,7 @@
  * URL once and then kept in a cookie.
  */
 
+import { defaultDataDir } from '../src/core/platform.js';
 import { execFile, spawn } from 'node:child_process';
 import { openSync } from 'node:fs';
 import crypto from 'node:crypto';
@@ -59,7 +60,7 @@ const PORT = Number(process.env.HARNESS_PORT ?? 8787);
 // sessions. This is Electron's app.getPath('userData') for productName Harness.
 const USER_DATA =
   process.env.HARNESS_DATA_DIR ||
-  path.join(os.homedir(), 'Library', 'Application Support', 'harness');
+  defaultDataDir();
 
 configureGithub(USER_DATA);
 const github = createGithubAuth(USER_DATA);
@@ -842,9 +843,8 @@ const server = http.createServer(async (req, res) => {
       // so a failed start is diagnosable rather than silent.
       const logFile = path.join(USER_DATA, 'server.log');
       const out = openSync(logFile, 'a');
-      const script = `while lsof -nP -iTCP:${PORT} -sTCP:LISTEN >/dev/null 2>&1; do sleep 0.2; done; `
-        + `exec ${JSON.stringify(process.execPath)} ${JSON.stringify(path.join(__dirname, 'index.js'))}`;
-      spawn('/bin/sh', ['-c', script], {
+      spawn(process.execPath, [path.join(__dirname, '../scripts/restart-server.mjs'), String(PORT), path.join(__dirname, 'index.js')], {
+        windowsHide: true,
         detached: true, stdio: ['ignore', out, out], cwd: path.join(__dirname, '..'), env: process.env,
       }).unref();
       setTimeout(() => shutdown('restart'), 400);
@@ -891,7 +891,6 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/github/login' && req.method === 'POST') return json(res, 200, await github.start());
     if (pathname === '/api/github/login' && req.method === 'GET') return json(res, 200, github.progress());
     if (pathname === '/api/github/finish' && req.method === 'POST') return json(res, 200, await github.finish());
-    if (pathname === '/api/github/share' && req.method === 'POST') return json(res, 200, await github.shareExisting());
 
     // ---- git
     if (req.method === 'GET' && pathname === '/api/git') {

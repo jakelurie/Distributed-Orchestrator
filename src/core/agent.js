@@ -148,7 +148,8 @@ export function systemPromptFor(session, monitorsFile, activityCmd, tailnetHost 
   // The machine's own tailnet name is substituted here rather than written
   // into the source: it is this user's infrastructure, not part of the tool.
   const base = BASE_SYSTEM.replace(/TAILNET_HOST/g, tailnetHost ?? '<this machine>.ts.net');
-  const parts = [base, `\nProject directory: ${session.projectDir}`];
+  const parts = [base, `\nProject directory: ${session.projectDir}`,
+    process.platform === 'win32' ? 'Execution host: native Windows. Shell commands use cmd.exe; use Windows paths and commands, or invoke PowerShell explicitly. Do not assume WSL or Unix tools.' : `Execution host: ${process.platform}.`];
   if (monitorsFile) {
     // A monitor companion scopes its monitors to the session it watches, not
     // to itself, or its panels would show up in the wrong place.

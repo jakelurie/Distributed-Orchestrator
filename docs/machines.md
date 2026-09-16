@@ -70,53 +70,44 @@ on/off is not implemented.
 
 ## Mac, Linux, Windows
 
-macOS uses the existing shell/runtime. On Linux install Node.js 22+, Git, Bash,
-and `lsof`. On Windows use WSL2 Ubuntu for the server and execution tools; native
-Windows command execution is not implemented. In administrator PowerShell:
+Install Node.js 22+, Git, and the native Tailscale app on the new computer.
+Windows uses Git for Windows and the normal Windows Tailscale application.
+No WSL or Ubuntu installation is required. For GitHub authorization install
+GitHub CLI as well. Install the desired model CLIs separately on execution hosts.
 
-```powershell
-wsl --install -d Ubuntu
-```
+Clone this repository, then run the entry point in its root:
 
-Restart Windows if requested, then use the Ubuntu terminal for the remaining
-server commands. Install Node.js 22+ there, as well as Git and lsof. WSL must be
-running for the node to be available; closing Windows or terminating WSL stops it.
-Linux shell execution does not provide macOS's sandbox-exec protection. Treat
-nodes as trusted execution hosts and run them under a dedicated OS account.
+| System | Launcher |
+| --- | --- |
+| Windows | Double-click `start_windows.cmd` |
+| macOS | Double-click `start_mac.command` |
+| Linux | `sh start_linux.sh` |
+| Ubuntu | `sh start_ubuntu.sh` |
 
-On a **new machine**, after you have this revision from GitHub:
+The launcher installs npm dependencies on first use, creates a private
+`.orchestrator-node.env` without overwriting existing settings, starts the server,
+and opens the browser with its login token. Keep the terminal window open.
+Port 8787 is the default; if occupied, stop the old server or edit HARNESS_PORT
+in that config. The launcher never kills a process already using the port.
+For interactive configuration instead, run `npm run node:setup` followed by
+`npm run node:serve`. The wizard defaults to 8788.
 
-```sh
-git clone https://github.com/jakelurie/Distributed-Orchestrator.git
-cd Distributed-Orchestrator
-npm ci
-npm run node:setup
-npm run node:serve
-```
+On the new host, open **Settings → Phone access · Tailscale** and set up HTTPS.
+On the existing host choose **Machines → create join code**. On the new host
+choose **Machines → Join an existing system**, then enter both HTTPS addresses
+and the code. Approve Windows Firewall access on your private network if prompted.
 
-Open the login URL printed by `node:serve` on the new computer (including its
-`?t=…` token on the first visit). Keep the server terminal running. In the
-top-right Distributed Orchestrator settings, open **Phone access · Tailscale**
-and set up HTTPS. On the existing main, open **Machines → create join code**.
-On the new host, open **Machines → Join an existing system** and enter its own
-HTTPS address, the existing main’s HTTPS address, and that code. Do not run the
-setup wizard again on the existing host. For automatic startup after reboot,
-follow the platform-specific service instructions below.
-
-Setup writes a private `.orchestrator-node.env` in this checkout and refuses to
-overwrite an existing config. It chooses port 8788 by default and checks that it
-is available. Your old Mac setup keeps its existing data path, port, credentials,
-and Tailscale rules: do not run the new-machine wizard over it. Restart it with
-the new code, then create a short-lived join code in Settings → Machines.
-Permanent access tokens are still supported for the older explicit pairing API.
+The existing Mac desktop launcher remains available. Native Windows process
+status uses PowerShell instead of lsof; Windows apps must listen on their assigned
+PORT to be detected reliably. Linux requires Bash and lsof for process discovery.
+Platform-specific project commands still need to be appropriate for that OS.
 
 ## Private network and pairing
 
-Install Tailscale and sign into your own tailnet on each execution host. For
-WSL2 follow [Tailscale's WSL2 instructions](https://tailscale.com/docs/install/windows/wsl2);
-WSL can have a distinct tailnet identity from Windows. Give nodes distinct names.
-Use the standard installed client on the host. On Mac, detection tries the Mac
-app and the CLI, preferring a connected client. Linux/WSL uses `tailscale` on
+Install Tailscale and sign into your own tailnet on each execution host.
+Give nodes distinct names. Use the standard installed client on the host.
+Mac detection tries the Mac app and CLI. Windows tries PATH and the standard
+Program Files installation. Linux uses `tailscale` on
 PATH. A custom installation can explicitly set `ORCHESTRATOR_TAILSCALE_BIN`
 and/or `ORCHESTRATOR_TAILSCALE_SOCKET`; there is no automatic dependency on the
 old `.tailscale-harness` daemon. Users keeping that daemon must explicitly set
@@ -138,8 +129,7 @@ Open **Settings → Phone access · Tailscale** on the host:
 
 The launcher and web settings share the same status implementation. They
 separate an unavailable client, login required, missing HTTPS route and a
-configured route. Checks never change network settings. Hosting on Windows
-currently uses WSL2; phones need only Tailscale and a browser. Shared-system joining is separate from publishing a phone address. The older
+configured route. Checks never change network settings. Windows runs natively; phones need only Tailscale and a browser. Shared-system joining is separate from publishing a phone address. The older
 explicit remote-execution pairing API remains available for compatibility:
 
 1. Open the new node's URL with its access token (`?t=TOKEN`) once to establish
@@ -157,9 +147,9 @@ Machines form. Tokens and cookies from the phone are not forwarded to peers;
 the gateway uses that peer's saved token. Disconnect removes this gateway's
 access record; rotate the peer's token to revoke every holder of it.
 
-## Keep a new Linux/WSL node running
+## Keep a new Linux node running
 
-For Linux or WSL with systemd enabled, create a user service, substituting your
+For Linux with systemd enabled, create a user service, substituting your
 checkout and the absolute path printed by `command -v node`:
 
 ```ini
@@ -181,10 +171,7 @@ WantedBy=default.target
 Save it as `~/.config/systemd/user/distributed-orchestrator.service`, then run
 `systemctl --user daemon-reload` and
 `systemctl --user enable --now distributed-orchestrator`. Linux users can enable
-lingering to keep user services running when logged out. WSL also needs Windows
-to start the distribution at login (for example a Task Scheduler login action
-running `wsl.exe -d Ubuntu --exec /bin/true`). Verify startup after a Windows
-reboot; do not assume installing a Linux unit starts WSL automatically.
+lingering to keep user services running when logged out.
 Read logs with `journalctl --user -u distributed-orchestrator -f`.
 
 ## GPU and other AI sources
@@ -229,17 +216,15 @@ archives requiring manual review. Remote power controls remain future work.
 
 ## GitHub connection
 
-Open global **Settings → GitHub connection**. An existing GitHub CLI login is
-recognized without replacing it. Choose **Use this connection across hosts**
-to save that account's token in the orchestrator's private secret store and
-replicate it to paired hosts. This leaves the original CLI login intact.
+Open global **Settings → GitHub connection → Connect GitHub**. Enter the
+one-time code on GitHub and approve access. Keep the settings screen open or
+reopen it to finish. The saved system connection synchronizes to paired hosts.
+This is the same flow for everyone, including users previously signed in through
+GitHub CLI. Existing CLI credentials are not changed, but do not count as a saved
+system connection. GitHub CLI must be installed on execution hosts.
 
-For a new account, install GitHub CLI on execution hosts, click **Connect GitHub**,
-and enter the displayed one-time code at GitHub's device authorization page.
-Keep the settings screen open (or reopen it after approving) to finish saving
-the connection. This flow uses temporary CLI configuration, not the user's
-existing login configuration. If the main host changes during authorization,
-restart the login on the new main. Completed connections use replicated secrets.
+Authorization uses temporary CLI configuration. If the main host changes during
+login, restart authorization on the new main. Completed connections replicate.
 
 Before connecting, automatic Git saves remain local; cluster synchronization
 continues independently. After connecting, sessions with automatic Git enabled

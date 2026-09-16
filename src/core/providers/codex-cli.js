@@ -13,7 +13,7 @@
  * did rather than a request for the harness to run tools.
  */
 
-import { spawn } from 'node:child_process';
+import spawn from 'cross-spawn';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';

@@ -70,7 +70,7 @@ the UI rather than editing files.
 Use `npm run node:setup` on a new machine, then `npm run node:serve`.
 Pair nodes under **Settings → Machines**. Any number of nodes can be connected;
 remote sessions and file transfers stay on their owning machine.
-See [machine setup, Windows/WSL2, GPU models, and availability limits](docs/machines.md).
+See [machine setup, native Windows, GPU models, and availability limits](docs/machines.md).
 Settings → Machines now supports a shared cluster with replicated sessions and
 automatic main-host election. Two hosts prioritize availability; three or more
 require a majority. See the recovery and browser-failover limits in the setup guide.
@@ -89,7 +89,7 @@ than exposing it publicly.
 Open **Settings → Phone access · Tailscale** to check the host's connection and
 set up its private HTTPS address. Install Tailscale on your phone and sign into
 the same network, then use the displayed phone link. Setup preserves existing
-Serve routes and keeps the local address available. Standard Mac and Linux/WSL
+Serve routes and keeps the local address available. Standard Mac and Linux
 installations work without the former custom daemon. See [machine onboarding](docs/machines.md).
 
 ## Providers
@@ -167,12 +167,13 @@ On macOS double-click **Launch Distributed Orchestrator.app** in this folder.
 It opens only the small native window, without Terminal. Keep the app in this
 folder so it can locate the server. After cloning, run `npm start` once to build
 it (or `python3 scripts/build-launcher.py`). The generated bundle is not committed.
-On Linux run **scripts/Launch Distributed Orchestrator.sh**. On Windows use
-**scripts/Launch Distributed Orchestrator.cmd** through WSL2 Ubuntu and WSLg.
-These platform-specific helpers live under scripts rather than beside the Mac button.
-Install Node.js 22+ and run npm ci first. macOS uses a native Cocoa launcher compiled with Swift (Apple Command Line Tools). Linux/WSL uses Python 3 with Tk. On Ubuntu,
-the Tk package is python3-tk. Windows requires these dependencies inside WSL,
-not just Windows.
+For a fresh clone on any OS, install Node.js 22+, Git, and Tailscale, then use
+**start_windows.cmd**, **start_mac.command**, **start_linux.sh**, or
+**start_ubuntu.sh** in the repository root. These entry points install dependencies,
+start the server, and open your browser. Keep their terminal window open.
+Windows runs natively without WSL. See [machine onboarding](docs/machines.md)
+for joining your existing system. The Mac Cocoa launcher requires Apple Command
+Line Tools; the root start_mac.command does not require Swift or Python.
 
 The small native window shows server status, the local URL, Open browser, and
 Stop server. The main interface runs in your normal browser. Server output goes

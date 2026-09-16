@@ -11,6 +11,7 @@
  * models: one app, two sessions, a different agent in each.
  */
 
+import { shellCommand, windowsListeners, killTree } from './platform.js';
 import { exec, execFile, spawn } from 'node:child_process';
 import http from 'node:http';
 import fs from 'node:fs/promises';
@@ -147,6 +148,7 @@ export function urlsFor(app, host) {
  * up would still be listed as stopped.
  */
 export async function listeningProcesses() {
+  if (process.platform === 'win32') return windowsListeners();
   let listeners = '';
   try {
     ({ stdout: listeners } = await execAsync('lsof -nP -iTCP -sTCP:LISTEN -FpPn', { timeout: 6000 }));
@@ -235,6 +237,7 @@ export async function isRunning(app) {
 
 /** The pids currently holding the app's port. */
 async function pidsOnPort(port) {
+  if (process.platform === 'win32') return (await windowsListeners()).filter((p) => p.port === port).map((p) => p.pid);
   try {
     const { stdout } = await execAsync(`lsof -nP -iTCP:${port} -sTCP:LISTEN -t`, { timeout: 4000 });
     return stdout.trim().split('\n').filter(Boolean).map(Number);
@@ -443,7 +446,9 @@ export async function start(userDataDir, id) {
 
   // Detached, so the app outlives the turn that started it and the harness
   // restarting does not take every app down with it.
-  const child = spawn('/bin/sh', ['-lc', app.start], {
+  const [shell, args] = shellCommand(app.start);
+  const child = spawn(shell, args, {
+    windowsHide: true,
     cwd: app.dir,
     detached: true,
     stdio: ['ignore', out, out],
@@ -540,7 +545,7 @@ export async function stop(userDataDir, id) {
   pids.delete(process.pid);
   pids.delete(process.ppid);
   for (const pid of pids) {
-    try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
+    try { await killTree(pid); } catch { /* already gone */ }
   }
   await new Promise((r) => { setTimeout(r, 600); });
   for (const pid of runningInfo(app, await listeningProcesses()).pids) {

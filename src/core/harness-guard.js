@@ -14,7 +14,7 @@
  * simply may not change it.
  */
 
-import os from 'node:os';
+import { defaultDataDir } from './platform.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -24,7 +24,7 @@ export const HARNESS_ROOT = path.resolve(fileURLToPath(new URL('../..', import.m
 /** Where the harness keeps sessions, models, secrets and the usage ledger. */
 export const HARNESS_DATA =
   process.env.HARNESS_DATA_DIR ||
-  path.join(os.homedir(), 'Library', 'Application Support', 'harness');
+  defaultDataDir();
 
 /** The fixed id of the one app allowed to edit the harness itself. */
 export const HARNESS_APP_ID = '__harness';

@@ -31,22 +31,13 @@ export function createGithubAuth(dir, { run = execute, launch = spawn } = {}) {
   let job;
   const options = async () => ({ env: await githubEnv(), timeout: 20000 });
   async function status() {
+    if (!(await loadSecrets(dir)).__github) return { authenticated: false };
     try {
       const { stdout } = await run('gh', ['api', 'user', '--jq', '.login'], await options());
-      return { authenticated: true, login: stdout.trim(), shared: Boolean((await loadSecrets(dir)).__github) };
+      return { authenticated: true, login: stdout.trim() };
     } catch (e) {
       return { authenticated: false, missingCli: e.code === 'ENOENT' };
     }
-  }
-  async function shareExisting() {
-    const current = await status();
-    if (!current.authenticated) throw new Error('Connect to GitHub first.');
-    if (!current.shared) {
-      const { stdout } = await run('gh', ['auth', 'token', '--hostname', 'github.com'], await options());
-      if (!stdout.trim()) throw new Error('Could not read the existing GitHub connection.');
-      await setSecret(dir, '__github', stdout.trim());
-    }
-    return status();
   }
   function progress() {
     return job ? { state: job.state, code: job.code, url: 'https://github.com/login/device', error: job.error } : { state: 'idle' };
@@ -56,7 +47,7 @@ export function createGithubAuth(dir, { run = execute, launch = spawn } = {}) {
     if (job && ['starting', 'waiting', 'ready'].includes(job.state)) return progress();
     const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'orchestrator-github-'));
     const env = { ...process.env, PATH: await loginPath(), GH_CONFIG_DIR: folder,
-      GH_BROWSER: 'true', GH_NO_UPDATE_NOTIFIER: '1' };
+      GH_BROWSER: process.platform === 'win32' ? 'cmd /c exit 0' : 'true', GH_NO_UPDATE_NOTIFIER: '1' };
     for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_DEBUG', 'DEBUG', 'GH_PROMPT_DISABLED']) delete env[key];
     const current = job = { state: 'starting' };
     const child = launch('gh', ['auth', 'login', '--hostname', 'github.com', '--git-protocol', 'https', '--web', '--insecure-storage'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -92,5 +83,5 @@ export function createGithubAuth(dir, { run = execute, launch = spawn } = {}) {
     delete job.token; job.state = 'connected';
     return status();
   }
-  return { status, start, progress, finish, shareExisting };
+  return { status, start, progress, finish };
 }

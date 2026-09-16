@@ -33,6 +33,7 @@ const BASH_TIMEOUT_MS = 120_000;
 let cachedPath = null;
 
 export async function loginPath() {
+  if (process.platform === 'win32') return process.env.PATH || process.env.Path || '';
   if (cachedPath) return cachedPath;
   const shell = process.env.SHELL || (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash');
   try {

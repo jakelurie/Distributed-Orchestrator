@@ -13,7 +13,7 @@
  * harness's own tools, you are comparing two agents, not two models.
  */
 
-import { spawn } from 'node:child_process';
+import spawn from 'cross-spawn';
 
 import { renderForPrompt } from '../transcript.js';
 

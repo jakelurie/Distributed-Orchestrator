@@ -4,7 +4,7 @@
   "description": "A desktop frontend for running projects against swappable models",
   "type": "module",
   "scripts": {
-    "start": "sh scripts/launch.sh",
+    "start": "node scripts/launch.mjs",
     "test": "node test/run.mjs",
     "serve": "node server/index.js",
     "node:setup": "node scripts/setup-node.mjs",
@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.124.0",
+    "cross-spawn": "^7.0.6",
     "openai": "^7.10.0"
   }
 }

@@ -1047,15 +1047,14 @@ async function githubSheet() {
     const status = await api('/api/github');
     if (!present()) return;
     box.textContent = status.authenticated
-      ? `Connected as ${status.login}${status.shared ? ' · shared with paired hosts' : ' · existing host login preserved'}`
+      ? `Connected as ${status.login} · system connection`
       : 'GitHub is not connected. Your work stays on your hosts.';
-    if (status.authenticated && status.shared) return;
-    $('github-actions').innerHTML = `<button class="primary" id="github-connect">${status.authenticated ? 'Use this connection across hosts' : 'Connect GitHub'}</button>`;
+    if (status.authenticated) return;
+    $('github-actions').innerHTML = `<button class="primary" id="github-connect">Connect GitHub</button>`;
     $('github-connect').onclick = async () => {
       $('github-connect').disabled = true;
       try {
-        if (status.authenticated) { await post('share'); if (present()) await githubSheet(); }
-        else {
+        {
           const result = await post('login');
           if (result.state === 'connected') { if (present()) await githubSheet(); }
           else await poll();

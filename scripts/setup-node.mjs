@@ -1,3 +1,4 @@
+import { defaultDataDir } from '../src/core/platform.js';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -5,10 +6,6 @@ import crypto from 'node:crypto';
 import net from 'node:net';
 import { createInterface } from 'node:readline/promises';
 
-if (process.platform === 'win32') {
-  console.error('Run this setup inside WSL2 Ubuntu. Native Windows execution is not supported yet. See docs/machines.md.');
-  process.exit(1);
-}
 const rl = createInterface({ input: process.stdin, output: process.stdout });
 try {
   const name = (await rl.question(`Machine name [${os.hostname()}]: `)).trim() || os.hostname();
@@ -17,9 +14,7 @@ try {
   const check = net.createServer();
   await new Promise((resolve, reject) => { check.once('error', reject); check.listen(port, '0.0.0.0', resolve); });
   await new Promise((resolve) => check.close(resolve));
-  const fallback = process.platform === 'darwin'
-    ? path.join(os.homedir(), 'Library', 'Application Support', 'harness')
-    : path.join(os.homedir(), '.local', 'share', 'distributed-orchestrator');
+  const fallback = defaultDataDir();
   const dir = (await rl.question(`Data directory [${fallback}]: `)).trim() || fallback;
   if (!path.isAbsolute(dir) || /[\r\n"`]/.test(dir + name)) throw new Error('Use an absolute directory and a single-line machine name without quotes.');
   const token = crypto.randomBytes(32).toString('hex');
