@@ -23,6 +23,13 @@ export function notifyPath(userDataDir) {
   return path.join(userDataDir, 'notify.json');
 }
 
+export function notificationSetupError(cfg) {
+  if (cfg.enabled && cfg.kind === 'sms' && (!cfg.gmailUser || !cfg.gmailPass)) {
+    return 'SMS notifications need a Gmail address and app password. Open Settings → Notifications to finish setup or turn notifications off.';
+  }
+  return null;
+}
+
 export async function loadNotify(userDataDir) {
   try {
     return { enabled: false, kind: 'messages', minSeconds: 60, ...JSON.parse(await fs.readFile(notifyPath(userDataDir), 'utf8')) };

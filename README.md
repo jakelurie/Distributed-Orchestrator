@@ -177,8 +177,8 @@ it, the window stays open with an error; disable that service before retrying.
 The launcher reads .orchestrator-node.env when present, otherwise existing
 environment variables and the default local port 8787. No Tailscale rules change.
 Existing installed Electron bundles can be removed manually; this checkout no
-longer uses Electron. The former testAstra path may remain as a compatibility
-symlink after renaming the folder to DistributedOrchestratorCore.
+longer uses Electron. The project lives in DistributedOrchestratorCore. Built-in sessions follow the
+current checkout path; no legacy folder symlink is required.
 
 The launcher displays separate local-server and phone-route status, refreshed
 periodically. Copy phone link uses the Tailscale HTTPS route that targets this

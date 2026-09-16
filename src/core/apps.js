@@ -19,6 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { renameAppRepo } from './git.js';
+import { tailscale } from './tailscale.js';
 
 import { refuseAsProjectDir, isProtected, protectedRoots, HARNESS_ROOT, HARNESS_APP_ID } from './harness-guard.js';
 
@@ -28,11 +29,6 @@ const execAsync = promisify(exec);
 const HARNESS_PORTS = new Set([80, 443, 8787]);
 const APP_PORT_RANGE = [4300, 4399];   // where an app's own server listens
 const SERVE_PORT_RANGE = [8443, 8542]; // the HTTPS port Tailscale publishes it on
-
-const TAILSCALE_SOCK = process.env.ORCHESTRATOR_TAILSCALE_SOCKET ??
-  (process.platform === 'darwin' ? path.join(os.homedir(), '.tailscale-harness', 'tailscaled.sock') : '');
-const tailscale = (args, timeout) => promisify(execFile)('tailscale',
-  [...(TAILSCALE_SOCK ? ['--socket', TAILSCALE_SOCK] : []), ...args], { timeout });
 
 export function appsPath(userDataDir) {
   return path.join(userDataDir, 'apps.json');

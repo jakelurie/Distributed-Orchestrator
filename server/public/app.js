@@ -1077,8 +1077,7 @@ async function settingsSheet() {
         placeholder="/Users/you/Projects/otherProject">${esc((session.readableDirs ?? []).join('\n'))}</textarea>
       <p class="dim">Let the agent’s file tools read reference material outside this project without granting write access. Enter one folder per line; leave empty if unneeded.</p>
       <div class="actions"><button class="ghost" id="s-readable-save">save folders</button></div>
-      <label>Git</label>
-      <div id="s-git"><p class="dim">checking…</p></div>
+
       ${(() => {
         const m = state.models[session.model];
         if (!m?.softLimitTokens) return '';
@@ -1095,6 +1094,7 @@ async function settingsSheet() {
 
     <h3>Distributed Orchestrator</h3>
     <div class="rowlinks">
+      <button class="rowlink" id="h-git"><span>Git &amp; GitHub</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-machines"><span>Machines</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-files"><span>Files</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-models"><span>AI sources</span><span class="chev">›</span></button>
@@ -1104,6 +1104,7 @@ async function settingsSheet() {
     </div>
     <div class="actions"><button class="primary" id="s-close">done</button></div>`);
 
+  $('h-git').onclick = gitSheet;
   $('h-machines').onclick = machinesSheet;
   $('h-files').onclick = () => filesSheet();
   $('h-models').onclick = modelsSheet;
@@ -1143,7 +1144,6 @@ async function settingsSheet() {
       settingsSheet();
     };
   }
-  if ($('s-git')) paintGit(session);
   $('sheet').querySelectorAll('[data-band]').forEach((el) => {
     el.onclick = async () => {
       const t = cur();
@@ -1413,6 +1413,7 @@ async function paintNotify() {
     ['command', 'shell command'],
   ];
   box.innerHTML = `
+    ${n.kind === 'sms' && (!n.gmailUser || !n.hasGmailPass) ? '<p class="dim">SMS setup is incomplete. Add a Gmail address and app password below, or turn notifications off.</p>' : ''}
     <div class="row">
       <button class="ghost${n.enabled ? '' : ' on'}" data-notify="off">off</button>
       <button class="ghost${n.enabled ? ' on' : ''}" data-notify="on">on</button>
@@ -1427,7 +1428,7 @@ async function paintNotify() {
          <label>Gmail address it sends from</label>
          <input id="n-guser" value="${esc(n.gmailUser ?? '')}" placeholder="you@gmail.com" inputmode="email" spellcheck="false" />
          <label>Gmail app password ${n.hasGmailPass ? '<span class="pill ready">saved</span>' : '<span class="pill missing">none</span>'}</label>
-         <input id="n-gpass" value="" placeholder="${n.hasGmailPass ? 'saved — type to replace' : 'abcd efgh ijkl mnop'}" spellcheck="false" />
+         <input id="n-gpass" type="password" autocomplete="new-password" value="" placeholder="${n.hasGmailPass ? 'saved — type to replace' : 'abcd efgh ijkl mnop'}" spellcheck="false" />
          <p class="dim">Not your Google password — make one at myaccount.google.com → Security → App passwords. It only works if 2-step verification is on.</p>
          <label>Carrier</label>
          <select id="n-carrier">
@@ -1505,6 +1506,15 @@ async function paintNotify() {
  * Git panel for a session. Shows the repo as it really is, rather than assuming
  * — a missing remote is the usual reason a push silently does nothing.
  */
+function gitSheet() {
+  const session = cur().session;
+  openSheet(`<h2>Git &amp; GitHub</h2>
+    <p class="dim">${session ? `Settings for ${esc(session.name)}. Git saves changes locally; GitHub stores a remote copy. GitHub access uses the hosting computer’s gh login.` : 'Open a session to configure its repository and automatic commits.'}</p>
+    <div id="s-git"></div>${backToSettings}`);
+  $('sub-back').onclick = settingsSheet;
+  if (session) paintGit(session);
+}
+
 async function paintGit(session) {
   const box = $('s-git');
   if (!box) return;
@@ -1522,12 +1532,7 @@ async function paintGit(session) {
       <div class="row"><input id="g-remote" placeholder="git@github.com:you/repo.git" spellcheck="false" />
       <button class="ghost" id="g-connect" style="flex:0 0 80px">connect</button></div>`;
   } else {
-    const on = Boolean(g.enabled);
     box.innerHTML = `
-      <div class="row">
-        <button class="ghost${on ? '' : ' on'}" data-git="off">don't push</button>
-        <button class="ghost${on ? ' on' : ''}" data-git="on">push after each turn</button>
-      </div>
       <p class="dim">branch <span class="mono">${esc(g.branch ?? '?')}</span>
         · ${g.changed} uncommitted
         · ${g.remote ? `remote <span class="mono">${esc(g.remote)}</span>` : '<span class="warn-text">no remote</span>'}</p>
@@ -1538,6 +1543,11 @@ async function paintGit(session) {
       <div id="g-vis"></div>
       <div class="actions"><button class="ghost" id="g-now">commit &amp; push now</button></div>`;
   }
+
+  box.insertAdjacentHTML('afterbegin', `<div class="row">
+    <button class="ghost${g.enabled ? '' : ' on'}" data-git="off">automatic commits off</button>
+    <button class="ghost${g.enabled ? ' on' : ''}" data-git="on">commit &amp; push after each turn</button>
+  </div>`);
 
   box.querySelectorAll('[data-git]').forEach((el) => {
     el.onclick = async () => {

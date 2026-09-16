@@ -57,9 +57,27 @@ explicit token in its existing launcher), then be restarted with the new code.
 Install Tailscale and sign into your own tailnet on each execution host. For
 WSL2 follow [Tailscale's WSL2 instructions](https://tailscale.com/docs/install/windows/wsl2);
 WSL can have a distinct tailnet identity from Windows. Give nodes distinct names.
-Linux/WSL uses the normal Tailscale daemon. The existing Mac keeps its custom
-socket. Override with `ORCHESTRATOR_TAILSCALE_SOCKET` if needed; an empty value
-selects the platform's default daemon.
+Linux/WSL uses the normal Tailscale daemon. On macOS, the orchestrator first
+checks the legacy custom socket, then uses the installed Tailscale app if that
+daemon is unavailable. App Store and standalone Mac apps expose that CLI at
+`/Applications/Tailscale.app/Contents/MacOS/Tailscale`. Override with
+`ORCHESTRATOR_TAILSCALE_SOCKET` if needed; an empty value selects the default CLI
+daemon and disables automatic selection.
+
+A logged-in Tailscale client and a published web address are separate states.
+Moving from a custom daemon to the Mac app does not copy its Serve rules. Check
+the new client's `serve status --json` before changing routing or reusing a
+bookmark. The launcher distinguishes a stopped server, unavailable Tailscale,
+and a missing Serve route. It cannot verify access from a remote phone.
+
+For fresh installations, use the normal Tailscale installation for the host
+platform and the Tailscale app on the phone, signed into the same tailnet. The
+phone runs a browser; it does not need Node, Git, or an orchestrator server.
+Use private HTTPS Serve for browser microphone support. A future onboarding
+wizard should detect the existing client, guide login, check route conflicts,
+configure Serve with the user's consent, and show a phone link/QR code alongside
+the local address. This complete wizard is not implemented yet. Windows hosting
+currently uses WSL2; the native Windows host experience still needs validation.
 
 Publish the **new Linux/WSL node** on an unused HTTPS port, for example:
 

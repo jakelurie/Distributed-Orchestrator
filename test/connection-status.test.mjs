@@ -25,6 +25,19 @@ assert r['localStatus'] == 'Active'
 assert r['phoneStatus'] == 'Route active; phone reachability unverified'
 r = m.inspect({'HARNESS_PORT':'9999'}, run)
 assert r['phoneStatus'] == 'No Tailscale route to this server'
+m.platform.system = lambda: 'Darwin'
+commands = []
+def mac_app(args, **kwargs):
+    commands.append(args)
+    if args[0] == 'tailscale': raise OSError('legacy daemon absent')
+    return run(args, **kwargs)
+r = m.inspect({'HARNESS_PORT':'8787'}, mac_app)
+assert r['phoneUrl'] == 'https://host.ts.net/'
+assert any(c[0] == '/Applications/Tailscale.app/Contents/MacOS/Tailscale' for c in commands)
+commands.clear()
+r = m.inspect({'HARNESS_PORT':'8787', 'ORCHESTRATOR_TAILSCALE_SOCKET':'/explicit'}, mac_app)
+assert r['phoneStatus'] == 'Tailscale unavailable'
+assert all(c[0] == 'tailscale' for c in commands)
 def failed(*a, **k): raise OSError('daemon absent')
 r = m.inspect({'HARNESS_PORT':'8787'}, failed)
 assert r['phoneStatus'] == 'Tailscale unavailable'

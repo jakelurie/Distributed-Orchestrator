@@ -2,22 +2,25 @@
  * Git integration: the file changes a turn produced, committed and pushed.
  *
  * What is deliberately NOT recorded: anything the user typed. Commit messages
- * describe the files that changed and which model changed them, nothing else.
+ * describe the files that changed, without model-attribution trailers.
  * The transcript is the harness's business; the repository's history should
  * read as a record of the work, not of the conversation.
  */
 
 import { execFile } from 'node:child_process';
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import { promisify } from 'node:util';
 
 import { loginPath } from './tools.js';
 
-const run = (args, cwd, opts = {}) =>
-  new Promise((resolve) => {
-    execFile('git', args, { cwd, timeout: 120_000, maxBuffer: 8e6, ...opts }, (err, stdout, stderr) =>
-      resolve({ ok: !err, out: (stdout ?? '').trim(), err: (stderr ?? '').trim() }));
+const run = async (args, cwd, opts = {}) => {
+  const env = { ...process.env, PATH: await loginPath() };
+  return new Promise((resolve) => {
+    execFile('git', args, { cwd, env, timeout: 120_000, maxBuffer: 8e6, ...opts }, (err, stdout, stderr) =>
+      resolve({ ok: !err, out: (stdout ?? '').trim(), err: (stderr ?? '').trim() || err?.message || '' }));
   });
+};
 
 export async function status(dir) {
   if (!dir) return { repo: false };
@@ -55,10 +58,12 @@ function pathsFrom(porcelain) {
 /**
  * Commit whatever changed and push if there is a remote.
  *
- * @param model  recorded as a trailer, so the history shows which model made a
- *               change - the point of a harness that compares them.
+ * Model arguments remain accepted for callers; they are not put in commits.
  */
 export async function commitAndPush(dir, { model, servedModel, push = true, autoCreatePrivate = false, appName } = {}) {
+  if (!dir || !await fs.stat(dir).then((s) => s.isDirectory(), () => false)) {
+    return { ok: false, error: `Project folder is missing: ${dir || '(unset)'}. Update Settings → Project folder; restart after moving the orchestrator.` };
+  }
   let st = await status(dir);
   if (!st.repo) {
     // With auto-create on, a brand-new project becomes a repo rather than being

@@ -29,7 +29,7 @@ import { setSecret } from '../src/core/secrets.js';
 import { transcribe, transcriptionKey } from '../src/core/transcription.js';
 import * as attachments from '../src/core/attachments.js';
 import * as git from '../src/core/git.js';
-import { loadNotify, saveNotify, send as sendNotify, summarise } from '../src/core/notify.js';
+import { loadNotify, saveNotify, send as sendNotify, summarise, notificationSetupError } from '../src/core/notify.js';
 import * as store from '../src/core/store.js';
 import { noteEvent, tally } from '../src/core/transcript.js';
 import { normalizeProviderLimits, WINDOWS } from '../src/core/usage.js';
@@ -728,6 +728,8 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && pathname === '/api/notify') {
       const body = await readBody(req);
+      const problem = notificationSetupError(await notifyConfig(body));
+      if (problem) return json(res, 400, { error: problem });
       const cfg = await saveNotify(USER_DATA, { ...(await loadNotify(USER_DATA)), ...body });
       return json(res, 200, cfg);
     }

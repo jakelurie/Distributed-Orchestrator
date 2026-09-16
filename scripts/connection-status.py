@@ -35,6 +35,13 @@ def inspect(env=None, run=subprocess.check_output):
     socket = env.get('ORCHESTRATOR_TAILSCALE_SOCKET',
                      os.path.expanduser('~/.tailscale-harness/tailscaled.sock') if platform.system() == 'Darwin' else '')
     command = ['tailscale'] + (['--socket=' + socket] if socket else [])
+    # An explicit socket is authoritative. Otherwise try the installed Mac app
+    # when the legacy standalone daemon is absent.
+    if platform.system() == 'Darwin' and 'ORCHESTRATOR_TAILSCALE_SOCKET' not in env:
+        try:
+            run(command + ['status', '--json'], timeout=4, stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            command = ['/Applications/Tailscale.app/Contents/MacOS/Tailscale']
     try:
         state = json.loads(run(command + ['status', '--json'], timeout=4, stderr=subprocess.DEVNULL))
         if state.get('BackendState') != 'Running':

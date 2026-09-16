@@ -13,6 +13,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+import { HARNESS_ROOT, HARNESS_APP_ID } from './harness-guard.js';
+
 import { danglingToolCalls, noteEvent, toolResultEvent } from './transcript.js';
 
 let sessionsDir = null;
@@ -106,6 +108,11 @@ export async function save(session) {
  */
 export async function load(id, { repair = true } = {}) {
   const session = JSON.parse(await fs.readFile(fileFor(id), 'utf8'));
+  // Built-in sessions follow this checkout, not a historical folder alias.
+  if (session.appId === HARNESS_APP_ID && session.projectDir !== HARNESS_ROOT) {
+    session.projectDir = HARNESS_ROOT;
+    await save(session);
+  }
   if (!repair) return session;
 
   // Repair a transcript left mid-turn by a crash or a force-quit. Both APIs

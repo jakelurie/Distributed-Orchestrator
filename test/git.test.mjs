@@ -40,7 +40,7 @@ check('without a remote it commits but says it did not push',
 // the commit message must describe files, never the conversation
 const msg = git(['log', '-1', '--format=%B'], repo);
 check('the message names the files', msg.includes('a.txt') && msg.includes('b.txt'));
-check('it records which model made the change', msg.includes('Model: astra') && msg.includes('Served: gpt-6-astra'));
+check('it preserves commits without AI-authorship trailers', !msg.includes('Model:') && !msg.includes('Served:'));
 check('it contains no prompt text', !/user|prompt|asked|question/i.test(msg), JSON.stringify(msg.slice(0, 120)));
 
 // attach a remote and push for real

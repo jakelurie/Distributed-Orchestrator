@@ -81,6 +81,16 @@ check('rejects a request with no token', (await fetch(`${root}/api/state`)).stat
 check('rejects a wrong token', (await fetch(`${root}/api/state`, { headers: { 'x-harness-token': 'nope' } })).status === 401);
 check('accepts the token in the query string', (await fetch(`${root}/api/state?t=${TOKEN}`)).status === 200);
 
+const incompleteNotifications = await call('/api/notify', {
+  method: 'POST', body: JSON.stringify({ kind: 'sms', enabled: true }),
+});
+check('incomplete SMS setup cannot be enabled', incompleteNotifications.status === 400);
+check('notification setup failure gives a settings destination',
+  (await incompleteNotifications.json()).error.includes('Settings → Notifications'));
+check('incomplete SMS notifications can still be disabled', (await call('/api/notify', {
+  method: 'POST', body: JSON.stringify({ kind: 'sms', enabled: false }),
+})).status === 200);
+
 // ---- static + state ----
 const html = await (await call('/')).text();
 check('serves the phone UI', html.includes('<title>Distributed Orchestrator</title>') && html.includes('app.js'));
@@ -414,9 +424,10 @@ check('a repointed session is no longer flagged',
   const settingsSrc = clientSrc.slice(clientSrc.indexOf('async function settingsSheet()'), clientSrc.indexOf('const backToSettings'));
   check('reference folders stay visible beside project settings',
     settingsSrc.includes('Reference folders (read-only)') &&
-    settingsSrc.indexOf('id="s-readable"') < settingsSrc.indexOf('<label>Git</label>') &&
+    settingsSrc.indexOf('id="s-readable"') < settingsSrc.indexOf('<h3>Distributed Orchestrator</h3>') &&
     !settingsSrc.includes('<details') && settingsSrc.includes('id="s-readable-save"'));
   const harnessRows = clientSrc.match(/<div class="rowlinks">([\s\S]*?)<\/div>/)?.[1] ?? '';
+  check('Git settings have a visible shared settings entry', harnessRows.includes('id="h-git"'));
   check('voice setup sits in the shared Harness settings rows',
     harnessRows.includes('class="rowlink" id="h-voice"') &&
     clientSrc.includes("$('h-voice').onclick = () => window.voiceSetup();") &&
