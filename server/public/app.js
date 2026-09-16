@@ -1095,6 +1095,7 @@ async function settingsSheet() {
     <h3>Distributed Orchestrator</h3>
     <div class="rowlinks">
       <button class="rowlink" id="h-git"><span>Git &amp; GitHub</span><span class="chev">›</span></button>
+      <button class="rowlink" id="h-network"><span>Phone access · Tailscale</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-machines"><span>Machines</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-files"><span>Files</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-models"><span>AI sources</span><span class="chev">›</span></button>
@@ -1106,6 +1107,7 @@ async function settingsSheet() {
 
   $('h-git').onclick = gitSheet;
   $('h-machines').onclick = machinesSheet;
+  $('h-network').onclick = networkSheet;
   $('h-files').onclick = () => filesSheet();
   $('h-models').onclick = modelsSheet;
   $('h-voice').onclick = () => window.voiceSetup();
@@ -1205,10 +1207,46 @@ async function settingsSheet() {
  */
 const backToSettings = '<div class="actions"><button class="ghost" id="sub-back">‹ settings</button></div>';
 
+async function networkSheet() {
+  openSheet(`<h2>Phone access</h2>
+    <p class="dim">Install Tailscale on this host and your phone, then sign into the same network. The host must stay awake and running.</p>
+    <p><a href="https://tailscale.com/download" target="_blank" rel="noopener">Get Tailscale</a></p>
+    <p class="dim">Mac: use the installed Tailscale app. Linux or Windows WSL2: connect Tailscale inside the environment running this server.</p>
+    <div id="network-status" role="status">Checking connection…</div>
+    <div class="actions"><button class="ghost" id="network-check">check again</button><button class="primary" id="network-setup" disabled>set up phone access</button></div>
+    <p class="dim">Setup publishes private HTTPS within your Tailscale network. Existing routes are preserved. If this server requires an access token, open its new address with that token on your phone.</p>${backToSettings}`);
+  $('sub-back').onclick = settingsSheet;
+  const box = $('network-status');
+  const setup = $('network-setup');
+  const check = $('network-check');
+  const refresh = async (configure = false) => {
+    setup.disabled = check.disabled = true;
+    box.textContent = configure ? 'Setting up private HTTPS…' : 'Checking connection…';
+    try {
+      const n = await api(configure ? '/api/network/setup' : '/api/network', configure ? { method: 'POST', body: '{}' } : {});
+      if ($('network-status') !== box) return;
+      box.replaceChildren();
+      const message = document.createElement('p'); message.textContent = n.message; box.append(message);
+      for (const [label, url] of [['This host', n.localUrl], ['Phone / away from home', n.phoneUrl], ['Approve HTTPS in Tailscale', n.approvalUrl]]) {
+        if (!url) continue;
+        const row = document.createElement('p'); row.style.overflowWrap = 'anywhere';
+        row.append(document.createTextNode(label + ': '));
+        const link = document.createElement('a'); link.href = url; link.textContent = url; link.target = '_blank'; link.rel = 'noopener'; row.append(link); box.append(row);
+      }
+      setup.disabled = !n.connected || n.ready;
+    } catch (e) { box.textContent = e.message; }
+    finally { check.disabled = false; }
+  };
+  check.onclick = () => refresh();
+  setup.onclick = () => refresh(true);
+  await refresh();
+}
+
 async function machinesSheet() {
   openSheet(`<h2>Machines</h2>
     <p class="dim">Choose where your sessions run. Each machine owns its projects, files, and logins. Offline work stays on that machine.</p>
     <div id="machine-list"><p class="dim">loading…</p></div>
+    <p class="dim">On each host, use Settings → Phone access to obtain its private HTTPS address before pairing.</p>
     <h3>Connect a machine</h3>
     <label>Name</label><input id="machine-name" placeholder="Desktop PC" />
     <label>Node address</label><input id="machine-url" type="url" placeholder="https://desktop.example:8443" />

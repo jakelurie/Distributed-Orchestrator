@@ -99,7 +99,7 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
                 self.phoneStatus.stringValue = "Phone: " + (info?["phoneStatus"] ?? "Status unavailable")
                 if let url = info?["phoneUrl"], !url.isEmpty { self.phoneLink.stringValue = url }
-                else if self.phoneLink.stringValue.isEmpty { self.phoneLink.stringValue = "Phone URL unavailable until Tailscale is running" }
+                else { self.phoneLink.stringValue = "Open Settings → Phone access to set up HTTPS" }
             }
         }
         do { try task.run() }

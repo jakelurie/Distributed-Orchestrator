@@ -37,6 +37,7 @@ import * as codexCli from '../src/core/providers/codex-cli.js';
 import { refuseAsProjectDir } from '../src/core/harness-guard.js';
 import { loadEmailConfig, saveEmailConfig } from '../src/core/email-config.js';
 import * as apps from '../src/core/apps.js';
+import { networkStatus, setupPhoneAccess } from '../src/core/tailscale.js';
 import { createBeacons, wedgeMessage, stallMsFor } from '../src/core/beacon.js';
 import { sendEmail } from '../src/core/email.js';
 import * as usageStore from '../src/core/usage-store.js';
@@ -388,6 +389,15 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ---- state
+    if (req.method === 'GET' && pathname === '/api/network') {
+      return json(res, 200, await networkStatus(PORT));
+    }
+    if (req.method === 'POST' && pathname === '/api/network/setup') {
+      // JSON requests from our settings UI; reject cross-origin form posts.
+      if (!req.headers['content-type']?.startsWith('application/json')) return json(res, 415, { error: 'JSON required' });
+      return json(res, 200, await setupPhoneAccess(PORT));
+    }
+
     if (req.method === 'GET' && pathname === '/api/state') {
       const cfg = await loadConfig(USER_DATA);
       const models = Object.fromEntries(

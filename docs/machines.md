@@ -57,39 +57,32 @@ explicit token in its existing launcher), then be restarted with the new code.
 Install Tailscale and sign into your own tailnet on each execution host. For
 WSL2 follow [Tailscale's WSL2 instructions](https://tailscale.com/docs/install/windows/wsl2);
 WSL can have a distinct tailnet identity from Windows. Give nodes distinct names.
-Linux/WSL uses the normal Tailscale daemon. On macOS, the orchestrator first
-checks the legacy custom socket, then uses the installed Tailscale app if that
-daemon is unavailable. App Store and standalone Mac apps expose that CLI at
-`/Applications/Tailscale.app/Contents/MacOS/Tailscale`. Override with
-`ORCHESTRATOR_TAILSCALE_SOCKET` if needed; an empty value selects the default CLI
-daemon and disables automatic selection.
+Use the standard installed client on the host. On Mac, detection tries the Mac
+app and the CLI, preferring a connected client. Linux/WSL uses `tailscale` on
+PATH. A custom installation can explicitly set `ORCHESTRATOR_TAILSCALE_BIN`
+and/or `ORCHESTRATOR_TAILSCALE_SOCKET`; there is no automatic dependency on the
+old `.tailscale-harness` daemon. Users keeping that daemon must explicitly set
+its socket. Changing clients can change the hostname; update phone bookmarks.
 
-A logged-in Tailscale client and a published web address are separate states.
-Moving from a custom daemon to the Mac app does not copy its Serve rules. Check
-the new client's `serve status --json` before changing routing or reusing a
-bookmark. The launcher distinguishes a stopped server, unavailable Tailscale,
-and a missing Serve route. It cannot verify access from a remote phone.
+Open **Settings → Phone access · Tailscale** on the host:
 
-For fresh installations, use the normal Tailscale installation for the host
-platform and the Tailscale app on the phone, signed into the same tailnet. The
-phone runs a browser; it does not need Node, Git, or an orchestrator server.
-Use private HTTPS Serve for browser microphone support. A future onboarding
-wizard should detect the existing client, guide login, check route conflicts,
-configure Serve with the user's consent, and show a phone link/QR code alongside
-the local address. This complete wizard is not implemented yet. Windows hosting
-currently uses WSL2; the native Windows host experience still needs validation.
+1. Install/open Tailscale and connect it to your tailnet. The screen includes
+   the download link and a **check again** button.
+2. Click **set up phone access**. This configures persistent, private HTTPS Serve.
+   It reuses an existing matching private route, otherwise chooses port 443 or
+   an unused port from 8443–8542. It never resets or overwrites existing routes.
+3. If Tailscale requests HTTPS account approval, follow the displayed approval
+   link, then retry. Permission errors require the host administrator to grant
+   Serve access; the orchestrator never escalates privileges automatically.
+4. Install Tailscale on the phone, sign into the same tailnet, and open the
+   displayed phone address. Keep the host awake. The local address always uses
+   loopback; a configured route does not prove a phone can reach it.
 
-Publish the **new Linux/WSL node** on an unused HTTPS port, for example:
-
-```sh
-tailscale serve --bg --https=8443 http://127.0.0.1:8788
-```
-
-Use the HTTPS address printed by Tailscale from the phone or another device.
-Use `http://127.0.0.1:8788` on the new machine itself. The existing Mac's
-userspace Tailscale cannot resolve its tailnet hostname locally: use loopback
-there, and a reachable peer address when pairing. Do not alter that Mac's
-existing ports 80, 443, or 8787 or its serving rules.
+The launcher and web settings share the same status implementation. They
+separate an unavailable client, login required, missing HTTPS route and a
+configured route. Checks never change network settings. Hosting on Windows
+currently uses WSL2; phones need only Tailscale and a browser. Node pairing is
+separate from publishing a phone address:
 
 1. Open the new node's URL with its access token (`?t=TOKEN`) once to establish
    a browser cookie. The token is in your private `.orchestrator-node.env`.

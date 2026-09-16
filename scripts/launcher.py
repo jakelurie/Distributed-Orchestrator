@@ -52,8 +52,7 @@ def main():
                 if not stopping:
                     status.set('This machine: ' + info['localStatus'])
                 phone_status.set('Phone: ' + info['phoneStatus'])
-                if info['phoneUrl']:
-                    phone_url.set(info['phoneUrl'])
+                phone_url.set(info['phoneUrl'])
             except (ValueError, KeyError):
                 phone_status.set('Phone: status unavailable')
             window.after(6000, refresh_connections)

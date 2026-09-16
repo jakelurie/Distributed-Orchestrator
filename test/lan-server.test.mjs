@@ -91,6 +91,9 @@ check('incomplete SMS notifications can still be disabled', (await call('/api/no
   method: 'POST', body: JSON.stringify({ kind: 'sms', enabled: false }),
 })).status === 200);
 
+check('network setup requires authentication', (await fetch(`${root}/api/network/setup`, { method: 'POST' })).status === 401);
+check('network setup rejects form posts', (await call('/api/network/setup', { method: 'POST', headers: { 'Content-Type': 'text/plain' } })).status === 415);
+
 // ---- static + state ----
 const html = await (await call('/')).text();
 check('serves the phone UI', html.includes('<title>Distributed Orchestrator</title>') && html.includes('app.js'));

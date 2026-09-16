@@ -29,6 +29,7 @@ try {
   console.log('Created .orchestrator-node.env. Existing files and data were not overwritten.');
   console.log('Start with npm run node:serve. See docs/machines.md for pairing and startup-on-boot.');
   console.log(`Local address: http://127.0.0.1:${port}`);
+  console.log('Open Settings → Phone access · Tailscale to connect your phone, then Settings → Machines to pair hosts.');
 } catch (e) {
   console.error(e.code === 'EEXIST' ? 'Node config already exists; edit it explicitly instead of replacing it.' : e.message);
   process.exitCode = 1;

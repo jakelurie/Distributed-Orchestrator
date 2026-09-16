@@ -84,6 +84,12 @@ credential. To reach it away from home, put both devices on a private network �
 [Tailscale](https://tailscale.com) works well and needs no ports opened — rather
 than exposing it publicly.
 
+Open **Settings → Phone access · Tailscale** to check the host's connection and
+set up its private HTTPS address. Install Tailscale on your phone and sign into
+the same network, then use the displayed phone link. Setup preserves existing
+Serve routes and keeps the local address available. Standard Mac and Linux/WSL
+installations work without the former custom daemon. See [machine onboarding](docs/machines.md).
+
 ## Providers
 
 ### Voice dictation from a phone

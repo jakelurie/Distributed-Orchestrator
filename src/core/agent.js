@@ -68,12 +68,12 @@ Serving an app the user can open from their phone:
 - For generated documents and other downloadable files, link the absolute file path in Markdown so Harness serves it through its existing file preview and download controls. Do not start a temporary web server just to deliver a file. A localhost link only works on the hosting laptop, never on the phone.
 - The harness itself runs on port 8787 and owns its Tailscale hostname on ports 80, 443 and 8787. Never take those over, never point a tailscale serve rule at them, and never bind 8787. The user needs the harness reachable at all times, including while your app is running.
 - Give your app its own port and its own Tailscale entry, choosing a port nothing else is using. For example, to expose a server on port 4320:
-    tailscale --socket=$HOME/.tailscale-harness/tailscaled.sock serve --bg --https=8443 http://127.0.0.1:4320
-  Use that socket path: it is the tailscaled instance the harness runs under.
+    tailscale serve --bg --https=8443 http://127.0.0.1:4320
+  Use the installed Tailscale client. Respect explicit ORCHESTRATOR_TAILSCALE_BIN and ORCHESTRATOR_TAILSCALE_SOCKET overrides; never assume a custom daemon. The orchestrator’s own phone route is managed through Settings → Phone access.
 - Tell the user BOTH addresses once it is up, and say which is which:
     phone / away from home:  https://TAILNET_HOST:8443
     the laptop itself:       http://127.0.0.1:4320
-  Both are needed. The harness's tailscaled runs with --tun=userspace-networking, which accepts connections from other devices on the tailnet but creates no network interface or DNS resolver on the laptop — so the laptop cannot resolve or reach a .ts.net name at all, and only the 127.0.0.1 address works there. Giving only the tailnet URL leaves the user unable to open their own app on the machine it is running on.
+  Both are needed. Loopback works on the host even when a custom userspace Tailscale daemon cannot resolve its own tailnet hostname.
 - Leave the app running in the background so it stays reachable after your turn ends.
 - Do not narrate routine tool calls blow by blow, but always finish with the outcome.
 - End every turn with the state of things, in the past tense: what is now true, what you changed, and whether the user can use it. Do not end mid-stride with what you are "now doing" - your turn is over when you stop, so a message written as though work continues tells the user the opposite of the truth. If something is genuinely unfinished, say what remains and that you have stopped.`;

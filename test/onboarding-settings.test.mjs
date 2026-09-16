@@ -7,7 +7,7 @@ assert.deepEqual(await tailscaleCommand({}, 'darwin', fail), ['/Applications/Tai
 assert.deepEqual(await tailscaleCommand({ ORCHESTRATOR_TAILSCALE_SOCKET: '/explicit' }, 'darwin', fail), ['tailscale', '--socket', '/explicit']);
 assert.deepEqual(await tailscaleCommand({ ORCHESTRATOR_TAILSCALE_SOCKET: '' }, 'darwin', fail), ['tailscale']);
 for (const platform of ['linux', 'win32']) assert.deepEqual(await tailscaleCommand({}, platform, fail), ['tailscale']);
-assert.equal((await tailscaleCommand({}, 'darwin', async () => ({})))[1], '--socket');
+assert.deepEqual(await tailscaleCommand({}, 'darwin', async () => ({ stdout: '{"BackendState":"Running"}' })), ['/Applications/Tailscale.app/Contents/MacOS/Tailscale']);
 assert.match(notificationSetupError({ enabled: true, kind: 'sms' }), /Settings → Notifications/);
 assert.equal(notificationSetupError({ enabled: false, kind: 'sms' }), null);
 assert.equal(notificationSetupError({ enabled: true, kind: 'sms', gmailUser: 'test', gmailPass: 'test' }), null);
