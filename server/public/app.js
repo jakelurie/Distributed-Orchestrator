@@ -1961,7 +1961,7 @@ async function appsSheet() {
   // in when it lands; only the very first open of the session has nothing to
   // show. The two requests now go out together rather than one after the other.
   if (lastAppsData) renderAppsSheet(lastAppsData);
-  else openSheet('<h2>Projects &amp; sessions</h2><p class="dim">loading…</p>', 'apps');
+  else openSheet('<h2>Apps &amp; Chats</h2><p class="dim">loading…</p>', 'apps');
 
   let d;
   try { [d] = await Promise.all([api('/api/apps'), refreshState()]); }
@@ -1988,6 +1988,18 @@ function orderProjects(apps) {
   const rank = (app) => app.builtin ? 0 : app.start?.trim() || app.running ? 1 : 2;
   return [...apps].sort((a, b) => rank(a) - rank(b));
 }
+
+// Runtime history keeps an app classified as an app if its command is cleared.
+function projectGroups(apps) {
+  const visible = [], stopped = [], chats = [];
+  for (const app of apps) {
+    if (app.builtin || app.running) visible.push(app);
+    else if (app.start?.trim() || app.lastStartedAt) stopped.push(app);
+    else chats.push(app);
+  }
+  return { visible: orderProjects(visible), stopped, chats };
+}
+const openProjectGroups = new Set();
 
 let peerCatalog = null;
 async function showPeerSessions() {
@@ -2044,7 +2056,7 @@ function renderAppsSheet(d) {
          ${a.running && a.reachable && links.length ? `<div class="s app-links">${links.join('<br>')}</div>` : ''}`;
     const pill = a.builtin
       ? '<span class="pill self">self</span>'
-      : !launchable && !a.running ? '<span class="pill">workspace</span>'
+      : !launchable && !a.running && !a.lastStartedAt ? '<span class="pill">chat</span>'
       : `<span class="pill ${a.reachable ? 'ready' : a.running ? 'warm' : ''}">${label}</span>`;
     const actions = a.builtin
       ? `<div class="app-actions">
@@ -2072,16 +2084,30 @@ function renderAppsSheet(d) {
     </div>`;
   };
 
-  const appsHtml = d.apps.length ? orderProjects(d.apps).map(appCard).join('') : '<p class="dim">no projects yet — create an app or a workspace</p>';
-  const looseHtml = loose.length
-    ? `<h3>Other sessions</h3>${loose.map(sessionRow).join('')}`
-    : '';
+  const appsHtml = (() => {
+    const groups = projectGroups(d.apps);
+    const active = state.sessions.filter((session) => (state.busy ?? []).includes(session.id));
+    const inactiveLoose = loose.filter((session) => !(state.busy ?? []).includes(session.id));
+    const disclosure = (id, label, count, content) => count
+      ? `<details class="project-group" data-project-group="${id}"${openProjectGroups.has(id) ? ' open' : ''}><summary>${label} (${count})</summary>${content}</details>` : '';
+    return (active.length ? `<h3>Active sessions</h3>${active.map(sessionRow).join('')}` : '')
+      + groups.visible.map(appCard).join('')
+      + disclosure('stopped', 'Not running apps', groups.stopped.length, groups.stopped.map(appCard).join(''))
+      + disclosure('chats', 'Chats', groups.chats.length + inactiveLoose.length,
+        groups.chats.map(appCard).join('') + inactiveLoose.map(sessionRow).join(''));
+  })();
 
-  openSheet(`<h2>Projects &amp; sessions</h2><div class="actions"><button class="ghost" id="project-machines">machines</button></div>${appsHtml}${looseHtml}<div id="peer-sessions"></div>
+  openSheet(`<h2>Apps &amp; Chats</h2><div class="actions"><button class="ghost" id="project-machines">machines</button></div>${appsHtml}<div id="peer-sessions"></div>
     <div class="actions">
       <button class="primary" id="app-new">new project</button>
       <button class="ghost" id="sess-new">new session</button>
     </div>`, 'apps');
+  $('sheet').querySelectorAll('[data-project-group]').forEach((el) => {
+    el.ontoggle = () => {
+      if (el.open) openProjectGroups.add(el.dataset.projectGroup);
+      else openProjectGroups.delete(el.dataset.projectGroup);
+    };
+  });
   if (scroll) $('sheet').scrollTop = scroll;
 
   // --- app-level actions ---
@@ -2255,7 +2281,7 @@ function appEditSheet(app = null, draft = null) {
     <div class="row"><input id="ap-dir" value="${esc(a.dir ?? '')}" spellcheck="false" ${existing ? 'disabled' : ''} />
       ${existing ? '' : '<button class="ghost" id="ap-browse" style="flex:0 0 80px">browse</button>'}</div>
     <label>Start command (optional)</label>
-    <p class="dim">Leave empty for a workspace with sessions and no play button. Add a command to make it a launchable app.</p>
+    <p class="dim">Leave empty for a Chat with sessions and no play button. Add a command to make it a launchable app.</p>
     <input id="ap-start" value="${esc(a.start ?? '')}" spellcheck="false" placeholder="npm run dev" />
     <p class="dim">Runs in the app's folder with <span class="mono">PORT</span> set${existing ? ` to ${app.port}` : ' to the port this app is given'}.</p>
     <label>Repository (optional)</label>
