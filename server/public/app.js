@@ -1340,7 +1340,7 @@ async function machinesSheet() {
     if ($('machine-list') !== list) return;
     $('cluster-summary').textContent = `${data.hosts.filter((n) => n.member).length} hosts · ${data.viewers.filter((v) => v.active).length} connected viewers · ${data.mode}`;
     if (data.mode === 'two-host availability') $('cluster-summary').append(document.createTextNode('. Both hosts may become main during a network split; divergent history is preserved for recovery.'));
-    list.innerHTML = data.hosts.map((n) => `<div class="item machine-item"><div class="grow"><div class="t">${esc(n.name)}${n.id === data.self ? ' · this host' : ''}</div>
+    list.innerHTML = data.hosts.map((n) => `<div class="item machine-item"><div class="grow"><div class="t">${esc(n.name)}</div>
       <div class="s">${n.active ? 'active' : 'offline'} · ${n.id === data.leader ? 'main' : 'replica'}${n.id === data.preferred ? ' · preferred main' : ''}</div>
       <div class="s">Last contact: ${esc(seen(n.lastSeen))}</div></div>
       ${n.member && n.id !== data.preferred ? `<button class="ghost" data-prefer="${esc(n.id)}">prefer main</button>` : ''}</div>`).join('');
@@ -1374,7 +1374,7 @@ async function machinesSheet() {
     };
     const inventory = await call('devices');
     if ($('machine-list') !== list) return;
-    $('tailnet-list').innerHTML = inventory.devices.map((n) => `<div class="item machine-item"><div class="grow"><div class="t">${esc(n.name)}${n.local ? ' · this device' : ''}</div><div class="s">${n.active ? 'online on Tailscale' : 'offline on Tailscale'} · ${esc(n.platform || 'device')} · ${esc(seen(n.lastSeen))}</div></div></div>`).join('');
+    $('tailnet-list').innerHTML = inventory.devices.map((n) => `<div class="item machine-item"><div class="grow"><div class="t">${esc(n.name)}</div><div class="s">${n.active ? 'online on Tailscale' : 'offline on Tailscale'} · ${esc(n.platform || 'device')} · ${esc(seen(n.lastSeen))}</div></div></div>`).join('');
     if (inventory.error) $('tailnet-list').append(document.createTextNode(inventory.error));
   } catch (e) { if ($('machine-list') === list) $('machine-error').textContent = e.message; }
 }
@@ -1972,6 +1972,7 @@ const expandedApps = new Set();
 let lastAppsData = null;   // cached so expand/collapse re-renders without refetching
 
 async function appsSheet() {
+  if (sheetView !== 'apps') openProjectGroups.delete('recent');
   // Draw first, fetch second. This used to wait on /api/apps - which shells out
   // to lsof and tailscale - and then on /api/state, two round trips in series,
   // before a single pixel appeared, so tapping the sidebar felt dead for about
@@ -2099,10 +2100,16 @@ function renderAppsSheet(d) {
   const appsHtml = (() => {
     const groups = projectGroups(d.apps);
     const active = state.sessions.filter((session) => (state.busy ?? []).includes(session.id));
+    const recent = [...state.sessions]
+      .filter((session) => !(state.busy ?? []).includes(session.id))
+      .sort((a, b) => (b.updatedAt ?? b.createdAt ?? 0) - (a.updatedAt ?? a.createdAt ?? 0))
+      .slice(0, 10);
+    const recentSessions = [...active, ...recent];
     const inactiveLoose = loose.filter((session) => !(state.busy ?? []).includes(session.id));
     const disclosure = (id, label, count, content) => count
       ? `<details class="project-group" data-project-group="${id}"${openProjectGroups.has(id) ? ' open' : ''}><summary>${label} (${count})</summary>${content}</details>` : '';
-    return (active.length ? `<h3>Active sessions</h3>${active.map(sessionRow).join('')}` : '')
+    return disclosure('recent', `Recent sessions${active.length ? ` · ${active.length} active` : ''}`,
+      recentSessions.length, recentSessions.map(sessionRow).join(''))
       + groups.visible.map(appCard).join('')
       + disclosure('stopped', 'Not running apps', groups.stopped.length, groups.stopped.map(appCard).join(''))
       + disclosure('chats', 'Chats', groups.chats.length + inactiveLoose.length,

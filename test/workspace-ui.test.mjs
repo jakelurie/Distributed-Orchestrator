@@ -60,14 +60,33 @@ const context = {
 };
 const html = vm.runInNewContext(renderGroups, context);
 assert.ok(html.indexOf('<session>working') < html.indexOf('<app>self'));
-assert.ok(html.indexOf('<app>self') < html.indexOf('<details'));
+assert.ok(html.indexOf('data-project-group="recent"') < html.indexOf('<app>self'));
 assert.equal((html.match(/<session>working/g) ?? []).length, 1);
-assert.equal((html.match(/<details/g) ?? []).length, 2);
+assert.equal((html.match(/<details/g) ?? []).length, 3);
+assert.match(html, /Recent sessions · 1 active/);
+assert.doesNotMatch(html, /<h3>Active sessions/);
 assert.ok(!/<details[^>]*\sopen[ >]/.test(html));
 assert.match(html, /Chats \(2\)/);
 context.openProjectGroups.add('chats');
 assert.match(vm.runInNewContext(renderGroups, { ...context }), /data-project-group="chats" open/);
-console.log('PASS active sessions first, persistent orchestrator, default-collapsed groups and retained expansion');
+context.openProjectGroups.add('recent');
+assert.match(vm.runInNewContext(renderGroups, { ...context }), /data-project-group="recent" open/);
+const resetRecent = source.slice(source.indexOf('async function appsSheet() {') + 'async function appsSheet() {'.length,
+  source.indexOf('  // Draw first, fetch second.'));
+vm.runInNewContext(resetRecent, { sheetView: 'apps', openProjectGroups: context.openProjectGroups });
+assert.ok(context.openProjectGroups.has('recent'), 'refresh preserves an explicitly opened dropdown');
+vm.runInNewContext(resetRecent, { sheetView: null, openProjectGroups: context.openProjectGroups });
+assert.ok(!context.openProjectGroups.has('recent'), 'reopening starts collapsed');
+const manySessions = Array.from({ length: 15 }, (_, i) => ({ id: `idle-${i}`, updatedAt: i }));
+const recentHtml = vm.runInNewContext(renderGroups, { ...context,
+  state: { sessions: [{ id: 'working', updatedAt: 0 }, ...manySessions], busy: ['working'] }, loose: [] });
+assert.match(recentHtml, /Recent sessions · 1 active \(11\)/);
+assert.ok(recentHtml.indexOf('<session>working') < recentHtml.indexOf('<session>idle-14'));
+assert.ok(recentHtml.indexOf('<session>idle-14') < recentHtml.indexOf('<session>idle-13'));
+assert.doesNotMatch(recentHtml, /<session>idle-4</);
+assert.doesNotMatch(vm.runInNewContext(renderGroups, { ...context, state: { sessions: [], busy: [] }, loose: [] }),
+  /data-project-group="recent"/);
+console.log('PASS recent sessions collapse on reopen, retain expansion during refresh, and list active then recent sessions');
 const remembered = { id: 'simulation', hasBeenApp: true, start: '', running: false };
 assert.equal(group([remembered]).stopped[0].id, 'simulation');
 assert.ok(!card({ ...base, ...remembered }).includes('>chat<'));
