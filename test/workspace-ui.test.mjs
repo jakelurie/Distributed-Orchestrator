@@ -3,6 +3,9 @@ import fs from 'node:fs/promises';
 import vm from 'node:vm';
 
 const source = await fs.readFile(new URL('../server/public/app.js', import.meta.url), 'utf8');
+assert.doesNotMatch(source, /project-machines/);
+assert.match(source, /id="h-machines"/);
+assert.match(source, /\$\('h-machines'\)\.onclick = machinesSheet/);
 const start = source.indexOf('  const appCard = (a) => {');
 const end = source.indexOf('\n  const appsHtml', start);
 const card = vm.runInNewContext(source.slice(start, end) + '\nappCard;', {
@@ -91,3 +94,15 @@ const remembered = { id: 'simulation', hasBeenApp: true, start: '', running: fal
 assert.equal(group([remembered]).stopped[0].id, 'simulation');
 assert.ok(!card({ ...base, ...remembered }).includes('>chat<'));
 console.log('PASS previously detected apps remain stopped apps without a start command');
+
+const row = vm.runInNewContext(source.slice(source.indexOf('  const sessionRow ='),
+  source.indexOf('  const appCard =')) + '\nsessionRow;', {
+  d: { apps: [{ id: 'one', name: 'First app' }, { id: 'two', name: 'Second app' }] },
+  state: {}, esc: (s) => String(s).replaceAll('<', '&lt;'), sessionStatus: () => '',
+});
+assert.match(row({ id: 's1', appId: 'one', name: 'Tab 1' }), /First app · Tab 1/);
+assert.match(row({ id: 's2', appId: 'two', name: 'Tab 1' }), /Second app · Tab 1/);
+assert.match(row({ id: 's3', appId: 'one', name: '<custom>' }), /First app · &lt;custom>/);
+assert.match(row({ id: 's4', name: 'Standalone' }), /class="t">Standalone /);
+assert.match(row({ id: 's5', appId: 'missing', name: 'Orphan' }), />Orphan /);
+console.log('PASS session rows distinguish apps with App · Tab labels and preserve standalone names');

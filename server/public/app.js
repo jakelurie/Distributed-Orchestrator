@@ -2048,13 +2048,17 @@ function renderAppsSheet(d) {
   const known = new Set(d.apps.map((a) => a.id));
   const loose = state.sessions.filter((x) => !x.appId || !known.has(x.appId));
 
-  const sessionRow = (sn) => `
+  const sessionRow = (sn) => {
+    const app = d.apps.find((a) => a.id === sn.appId);
+    const label = app ? `${app.name} · ${sn.name}` : sn.name;
+    return `
     <div class="item sub-session${sn.id === state.session?.id ? ' on' : ''}" data-open="${esc(sn.id)}">
-      <div class="grow"><div class="t">${esc(sn.name)} ${sessionStatus(sn)}</div>
+      <div class="grow"><div class="t">${esc(label)} ${sessionStatus(sn)}</div>
         <div class="s">${esc(sn.model)} · ${sn.turns} turns</div></div>
       <button class="x" data-rename="${esc(sn.id)}" title="Edit session">✎</button>
       <button class="x" data-del="${esc(sn.id)}" title="Delete">×</button>
     </div>`;
+  };
 
   const appCard = (a) => {
     const launchable = Boolean(a.start?.trim());
@@ -2116,7 +2120,7 @@ function renderAppsSheet(d) {
         groups.chats.map(appCard).join('') + inactiveLoose.map(sessionRow).join(''));
   })();
 
-  openSheet(`<h2>Apps &amp; Chats</h2><div class="actions"><button class="ghost" id="project-machines">machines</button></div>${appsHtml}<div id="peer-sessions"></div>
+  openSheet(`<h2>Apps &amp; Chats</h2>${appsHtml}<div id="peer-sessions"></div>
     <div class="actions">
       <button class="primary" id="app-new">new project</button>
       <button class="ghost" id="sess-new">new session</button>
@@ -2130,7 +2134,6 @@ function renderAppsSheet(d) {
   if (scroll) $('sheet').scrollTop = scroll;
 
   // --- app-level actions ---
-  $('project-machines').onclick = machinesSheet;
   showPeerSessions();
   $('app-new').onclick = () => appEditSheet(null);
   $('sess-new').onclick = () => { draft = {}; newSheet(); };
