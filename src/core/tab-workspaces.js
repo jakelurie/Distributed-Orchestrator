@@ -85,11 +85,26 @@ async function validate(dir, log, base, signal) {
   if (!custom && !pkg?.scripts?.test) throw new Error('No automated integration check configured. Add a package.json test script or .harness-integration.json with a command; the tab commit has been kept without changing the project.');
   const output = await fs.open(log, 'w');
   const run = async (command, args) => new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: dir, timeout: 600_000, signal,
+    signal?.throwIfAborted();
+    const child = spawn(command, args, { cwd: dir, detached: process.platform !== 'win32',
       stdio: ['ignore', output.fd, output.fd], windowsHide: true });
-    child.once('error', reject);
-    child.once('close', (code) => code === 0 ? resolve()
-      : reject(new Error(`Integration check failed (${args.join(' ')}). See ${log}`)));
+    let stopped = false;
+    const stop = () => {
+      stopped = true;
+      if (!child.pid) return;
+      if (process.platform === 'win32') execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], () => {});
+      else { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* already exited */ } }
+    };
+    const timer = setTimeout(stop, 600_000);
+    signal?.addEventListener('abort', stop, { once: true });
+    const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', stop); };
+    child.once('error', (e) => { cleanup(); reject(e); });
+    child.once('close', (code) => {
+      cleanup();
+      if (code === 0 && !stopped) resolve();
+      else reject(new Error(`Integration check ${stopped ? 'cancelled or timed out' : 'failed'} (${args.join(' ')}). See ${log}`));
+    });
+    if (signal?.aborted) stop();
   });
   try {
     if (custom) {

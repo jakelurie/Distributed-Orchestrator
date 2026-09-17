@@ -87,6 +87,13 @@ try {
   await assert.rejects(fs.stat(path.join(root, 'stopped.txt')), { code: 'ENOENT' });
   assert.equal(await fs.readFile(path.join(stopped.tabWorkspace.dir, 'stopped.txt'), 'utf8'), 'not ready\n');
   console.log('PASS cancelled integration retains tab edits without publishing');
+  const during = session('cancel-during-check'); await prepareTab(during);
+  await write(during, '.harness-integration.json', JSON.stringify({ command: 'node -e "setTimeout(() => {}, 30000)"' }));
+  const activeCheck = new AbortController();
+  const pending = integrateTab(during, { signal: activeCheck.signal, onCheck: () => { setTimeout(() => activeCheck.abort(), 300); } });
+  await assert.rejects(pending, /cancelled/);
+  assert.equal(await fs.readFile(path.join(root, '.harness-integration.json'), 'utf8'), JSON.stringify({ command: 'node check.cjs' }));
+  console.log('PASS stopping an active check kills its process tree and keeps the shared project unchanged');
   await exec('git', ['init', '--bare', remote]);
   await git('remote', 'add', 'origin', remote);
   const publication = await integrateTab(noCheck, { push: true, retryPush: true });
