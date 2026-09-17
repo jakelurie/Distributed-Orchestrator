@@ -323,7 +323,7 @@ function activityChip(turn, key, running) {
 
   const tone = endedBadly ? 'bad' : failures ? 'warn' : silent ? 'warn' : 'ok';
   const label = running
-    ? `working · ${esc(last?.call?.name ?? '')}`
+    ? 'working'
     : endedBadly
       ? `stopped on ${esc(last.call.name)}`
       : silent
@@ -368,8 +368,8 @@ function turnUsage(turn) {
  *
  * Keyed by the user message's own id rather than a position, because the
  * transcript re-renders on every streamed event and an index-keyed set would
- * silently reassign what the reader had opened. The newest turn is open by
- * default; anything explicitly closed stays closed.
+ * silently reassign what the reader had opened. Progress opens while running
+ * and closes on completion unless the reader chose otherwise.
  */
 const openedFolds = new Set();
 const closedFolds = new Set();
@@ -378,10 +378,9 @@ const foldKey = (turn, i) => turn.user?.id ?? `t${i}`;
 
 function foldIsOpen(turn, i, isLast, running) {
   const key = foldKey(turn, i);
-  if (running) return true;                    // watch work as it happens
   if (openedFolds.has(key)) return true;
   if (closedFolds.has(key)) return false;
-  return isLast;                               // the latest result is what you came back for
+  return running; // completed progress closes independently of the final reply
 }
 
 /** One line describing everything a question set off. */
@@ -400,7 +399,7 @@ function foldSummary(turn, running) {
   const tone = endedBadly ? 'bad' : (failures || silent || stoppedShort) ? 'warn' : 'ok';
   const parts = [];
   if (running) {
-    parts.push(`working${last?.call?.name ? ` · ${esc(last.call.name)}` : ''}`);
+    parts.push('working');
   } else if (endedBadly) {
     parts.push(`stopped on ${esc(last.call.name)}`);
   } else {
@@ -414,6 +413,11 @@ function foldSummary(turn, running) {
   // A turn that produced nothing at all is not a green outcome.
   const empty = !running && !turn.texts.length && !turn.steps.length;
   return { tone: empty ? 'warn' : tone, text: parts.join(' · ') };
+}
+
+function messageToggle(key, label) {
+  const open = !closedFolds.has(key);
+  return `<button class="message-toggle" data-fold="${esc(key)}" aria-label="Toggle ${label}" aria-expanded="${open}"><span class="act-caret">${open ? '▴' : '▾'}</span></button>`;
 }
 
 function turnHtml(turn, i, running, number, isLast) {
@@ -431,8 +435,8 @@ function turnHtml(turn, i, running, number, isLast) {
 
     bits.push(`<div class="turn user">
       <div class="who"><span class="qn">${number}</span> you
-        <span class="at">${clock(turn.user.ts)}</span></div>
-      <div class="bubble">${esc(turn.user.text)}${
+        <span class="at">${clock(turn.user.ts)}</span>${messageToggle(key + '-input', 'your message')}</div>
+      <div id="fold-${esc(key)}-input"${closedFolds.has(key + '-input') ? ' hidden' : ''}><div class="bubble">${esc(turn.user.text)}${
   (turn.user.attachments ?? []).length
     ? `<div class="shots">${turn.user.attachments.map((a) => (a.role === 'document'
       ? `<button class="file-card sent-doc" data-open-file="${esc(a.path)}" data-file-kind="${a.mime === 'application/pdf' ? 'pdf' : 'text'}">
@@ -442,11 +446,12 @@ function turnHtml(turn, i, running, number, isLast) {
          </button>`
       : `<img src="${nodeApi('/api/file')}?path=${encodeURIComponent(a.path)}" alt="${esc(a.name)}">`)).join('')}</div>`
     : ''}</div>
-      ${cost.length ? `<div class="usage turn-cost">${cost.join(' · ')}</div>` : ''}</div>`);
+      ${cost.length ? `<div class="usage turn-cost">${cost.join(' · ')}</div>` : ''}</div></div>`);
   }
 
-  // Everything the question caused - what was said back and what was run -
-  // lives inside one fold, with the step list as a further fold inside it.
+  // Only the terminal reply is final; earlier commentary belongs to progress.
+  const finalIndex = !running && turn.endedOn === 'reply' && !turn.texts.at(-1)?.toolCalls?.length ? turn.texts.length - 1 : -1;
+  let finalReply = '';
   const inner = [];
   for (const [j, a] of turn.texts.entries()) {
     const think = a.thinking ? `<div class="thinking">${esc(a.thinking)}</div>` : '';
@@ -454,14 +459,17 @@ function turnHtml(turn, i, running, number, isLast) {
     // are exactly what makes it worth pasting somewhere else.
     const copyId = `${key}-${j}`;
     copyTexts.set(copyId, a.text);
-    inner.push(`<div class="turn assistant">
+    const isFinal = j === finalIndex;
+    const replyKey = key + '-final';
+    const reply = `<div class="turn assistant${isFinal ? ' final-reply' : ''}">
       <div class="who"><span class="tag">${esc(a.model)}</span>
         ${a.servedModel && a.servedModel !== a.model
           ? `<span class="served">${esc(a.servedModel)}</span>` : ''}
         <span class="at">${clock(a.ts)}</span>
         <button class="copy-reply" data-copy="${esc(copyId)}"
-          aria-label="Copy this reply as plain text">copy</button></div>
-      ${think}<div class="body">${render(a.text)}</div></div>`);
+          aria-label="Copy this reply as plain text">copy</button>${isFinal ? messageToggle(replyKey, 'final reply') : ''}</div>
+      <div${isFinal ? ` id="fold-${esc(replyKey)}"${closedFolds.has(replyKey) ? ' hidden' : ''}` : ''}>${think}<div class="body">${render(a.text)}</div></div></div>`;
+    if (isFinal) finalReply = reply; else inner.push(reply);
   }
   inner.push(activityChip(turn, key, running));
   for (const n of turn.notes) {
@@ -470,7 +478,14 @@ function turnHtml(turn, i, running, number, isLast) {
   }
 
   const body = inner.join('').trim();
-  if (!body) return bits.join('');
+
+  const sum = foldSummary(turn, running);
+  if (body) bits.push(`<button class="fold ${sum.tone}${running ? ' live' : ''}" data-fold="${esc(key)}">
+      <span class="act-dot"></span>
+      <span class="fold-label">Progress · ${sum.text}</span>
+      <span class="act-caret">${open ? '▴' : '▾'}</span>
+    </button>
+    <div class="fold-body" id="fold-${esc(key)}"${open ? '' : ' hidden'}>${body}</div>`);
 
   // Files the turn produced, shown as part of the reply rather than filed away
   // somewhere else to be hunted for.
@@ -494,13 +509,7 @@ function turnHtml(turn, i, running, number, isLast) {
     </div></details>`);
   }
 
-  const sum = foldSummary(turn, running);
-  bits.push(`<button class="fold ${sum.tone}${running ? ' live' : ''}" data-fold="${esc(key)}">
-      <span class="act-dot"></span>
-      <span class="fold-label">${sum.text}</span>
-      <span class="act-caret">${open ? '▴' : '▾'}</span>
-    </button>
-    <div class="fold-body" id="fold-${esc(key)}"${open ? '' : ' hidden'}>${body}</div>`);
+  bits.push(finalReply);
 
   return bits.join('');
 }
@@ -597,7 +606,6 @@ async function openSession(id) {
   clearLive('chat');
   showSession();
   listen('chat', id);
-  refreshBackground();
 }
 
 function projectSession(app) {
@@ -709,15 +717,12 @@ function setRunning(on, startedAt = null, last = null, tab = state.tab) {
   $('stop').hidden = !on;
   $('working').hidden = !on;
   $('input').placeholder = on ? 'working — tap stop to interrupt' : idlePlaceholder();
-  if (last !== null) setActivity(last);
   if (on) startClock(startedAt); else stopClock();
 }
 
 const idlePlaceholder = () => 'Describe what to build…';
 
-function setActivity(name) {
-  $('working-what').textContent = name ? `· ${name}` : '';
-}
+
 
 // A turn can be quiet for a long time. Show that it is alive, and for how long.
 let clockFrom = 0;
@@ -738,7 +743,6 @@ function startClock(startedAt) {
 function stopClock() {
   clearInterval(clockTimer);
   clockTimer = null;
-  setActivity('');
 }
 
 function listen(tab, id) {
@@ -765,7 +769,6 @@ function listen(tab, id) {
         el.textContent += d.text;
       } else if (d.kind === 'tool_start') {
         liveTurn(tab).insertAdjacentHTML('beforeend', toolBlock(d.call, null));
-        if (active) setActivity(d.call?.name);
       } else if (d.kind === 'tool_end') {
         const el = liveTurn(tab).querySelector(`[data-call="${CSS.escape(d.result.callId)}"] .tool-status`);
         if (el) {
@@ -796,9 +799,7 @@ function listen(tab, id) {
         // would otherwise keep claiming "working" after the turn had ended.
         drawTranscript();
         refreshState();
-        refreshBackground();
       }
-
     }
   };
   es.onerror = () => {}; // EventSource reconnects on its own
@@ -2654,7 +2655,7 @@ $('transcript').addEventListener('click', async (e) => {
     return;
   }
 
-  const fold = e.target.closest('.fold');
+  const fold = e.target.closest('[data-fold]');
   if (fold) {
     const key = fold.dataset.fold;
     const body = $(`fold-${key}`);
@@ -2664,6 +2665,7 @@ $('transcript').addEventListener('click', async (e) => {
       // reopen something just closed.
       if (body.hidden) { closedFolds.add(key); openedFolds.delete(key); }
       else { openedFolds.add(key); closedFolds.delete(key); }
+      fold.setAttribute('aria-expanded', String(!body.hidden));
       fold.querySelector('.act-caret').textContent = body.hidden ? '▾' : '▴';
     }
     return;
@@ -2702,35 +2704,8 @@ async function reconcile() {
   if (document.hidden || !state.session) return;
   try {
     await refreshState();
-    await refreshBackground();
   } catch {
     // offline for the moment; the next tick will try again
-  }
-}
-
-/** Background work can outlive a turn; keep its status visible in the session. */
-async function refreshBackground() {
-  const bar = $('background');
-  if (!bar || !state.session) return;
-  if (cur().running) { bar.hidden = true; return; }   // the working bar covers this
-
-  let d;
-  try {
-    d = await api(`/api/activity?session=${encodeURIComponent(state.session.id)}&raw=1`);
-  } catch {
-    return;
-  }
-  const busy = d.procs.filter((p) => p.cpu >= 0.5);
-  const idle = d.procs.length - busy.length;
-
-  bar.hidden = d.procs.length === 0;
-  if (d.procs.length) {
-    const names = d.procs.slice(0, 2).map((p) => p.command.split(' ').slice(0, 2).join(' ')).join(', ');
-    bar.innerHTML = `<span class="pulse-dot${busy.length ? '' : ' off'}"></span>
-      <span class="bg-label">${d.procs.length} background ${d.procs.length === 1 ? 'process' : 'processes'}
-        · ${esc(names)}${idle && !busy.length ? ' · idle' : ''}</span>
-      `;
-
   }
 }
 

@@ -4,7 +4,7 @@ import vm from 'node:vm';
 
 const source = await fs.readFile(new URL('../server/public/app.js', import.meta.url), 'utf8');
 const start = source.indexOf('  if (turn.files.length) {');
-const end = source.indexOf('\n  const sum = foldSummary', start);
+const end = source.indexOf('\n  bits.push(finalReply)', start);
 function render(files) {
   const context = { turn: { files }, bits: [], esc: String, humanSize: String,
     FILE_ICON: {}, nodeApi: (url) => url, encodeURIComponent };
