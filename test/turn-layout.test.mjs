@@ -24,9 +24,12 @@ assert.doesNotMatch(source, /refreshBackground|setActivity/);
 console.log('PASS separate final reply, collapsed progress, top message controls and simplified activity');
 
 const css = await fs.readFile('server/public/styles.css', 'utf8');
-const userStyle = css.match(/\.turn\.user \.bubble \{([^}]+)\}/)[1];
+const userStyle = css.match(/\.turn\.user \.user-message \{([^}]+)\}/)[1];
 const assistantStyle = css.match(/\.turn\.assistant \.body \{([^}]+)\}/)[1];
 assert.doesNotMatch(assistantStyle, /background:|border:|padding:/);
 assert.doesNotMatch(userStyle, /background:|border:|padding:/);
 for (const style of [userStyle, assistantStyle]) assert.match(style, /overflow-wrap: anywhere/);
 console.log('PASS plain user messages and unchanged plain assistant replies with long-text wrapping');
+
+assert.match(html, /class="user-message"/);
+assert.doesNotMatch(html, /class="bubble"/);

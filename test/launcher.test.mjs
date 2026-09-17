@@ -14,6 +14,7 @@ spec.loader.exec_module(m)
 with tempfile.TemporaryDirectory() as d:
     m.ROOT = Path(d)
     (m.ROOT / '.orchestrator-node.env').write_text('HARNESS_PORT="9898"\\nORCHESTRATOR_NODE_NAME="Desktop"\\n')
+    os.environ.pop('ORCHESTRATOR_NODE_NAME', None)  # isolate the file fallback from the test runner's host name
     os.environ['HARNESS_PORT'] = '9899'
     result = m.configuration()
     assert result['HARNESS_PORT'] == '9899'

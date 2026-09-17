@@ -436,7 +436,7 @@ function turnHtml(turn, i, running, number, isLast) {
     bits.push(`<div class="turn user">
       <div class="who"><span class="qn">${number}</span> you
         <span class="at">${clock(turn.user.ts)}</span>${messageToggle(key + '-input', 'your message')}</div>
-      <div id="fold-${esc(key)}-input"${closedFolds.has(key + '-input') ? ' hidden' : ''}><div class="bubble">${esc(turn.user.text)}${
+      <div id="fold-${esc(key)}-input"${closedFolds.has(key + '-input') ? ' hidden' : ''}><div class="user-message">${esc(turn.user.text)}${
   (turn.user.attachments ?? []).length
     ? `<div class="shots">${turn.user.attachments.map((a) => (a.role === 'document'
       ? `<button class="file-card sent-doc" data-open-file="${esc(a.path)}" data-file-kind="${a.mime === 'application/pdf' ? 'pdf' : 'text'}">
@@ -697,14 +697,20 @@ function showBanner(msg, warn = false) {
   b.classList.toggle('warn', warn);
 }
 
+function paintComposerAction() {
+  const busy = cur().running;
+  const hasDraft = Boolean($('input').value.trim()) || pendingShots.length > 0;
+  $('send').hidden = busy;
+  $('stop').hidden = !busy || hasDraft;
+  $('queue').hidden = !busy || !hasDraft;
+}
+
 function setRunning(on, startedAt = null, last = null, tab = state.tab) {
   const changed = tabs[tab].running !== on;
   tabs[tab].running = on;
   if (startedAt) tabs[tab].startedAt = startedAt;
   if (tab !== state.tab) return;   // background tab: remember, do not repaint
-  $('send').hidden = on;
-  $('stop').hidden = !on;
-  $('queue').hidden = !on;
+  paintComposerAction();
   $('working').hidden = !on;
   $('input').placeholder = on ? 'Write a follow-up, then tap Queue next…' : idlePlaceholder();
   if (on) startClock(startedAt); else stopClock();
@@ -2652,6 +2658,7 @@ async function viewFile(file, kind) {
 $('menu').onclick = sessionsSheet;
 $('gear').onclick = settingsSheet;
 function paintPending() {
+  paintComposerAction();
   const box = $('pending');
   box.hidden = pendingShots.length === 0;
   box.innerHTML = pendingShots.map((a, i) => `
@@ -2730,6 +2737,7 @@ $('sheet-back').onclick = (e) => {
 };
 
 $('input').addEventListener('input', (e) => {
+  paintComposerAction();
   e.target.style.height = 'auto';
   e.target.style.height = `${Math.min(e.target.scrollHeight, window.innerHeight * 0.4)}px`;
 });

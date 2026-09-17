@@ -245,6 +245,11 @@ async function readBody(req, limit = 4_000_000) {
 }
 
 function authorized(req, url) {
+  // Serve strips incoming identity headers and supplies its authenticated user.
+  // Only trust these headers from its local proxy, never from a remote socket.
+  const peer = req.socket.remoteAddress;
+  if (['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(peer) &&
+      req.headers['tailscale-user-login'] && !req.headers['tailscale-funnel-request']) return true;
   if (cluster?.trusted(req)) return true;
   if (!TOKEN) return true; // open by default
   const supplied =

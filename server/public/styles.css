@@ -100,7 +100,7 @@ body {
 }
 .who .tag { color: var(--accent); }
 
-.turn.user .bubble {
+.turn.user .user-message {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -171,8 +171,6 @@ body {
   font: 16px/1.4 inherit;   /* 16px or iOS zooms the page on focus */
   resize: none; min-height: 46px; max-height: 40vh; outline: none;
 }
-#composer:has(#queue:not([hidden])) { flex-wrap: wrap; }
-#composer:has(#queue:not([hidden])) #input { flex-basis: 100%; }
 #queue { min-height: 44px; }
 #input:focus { border-color: var(--fg-faint); }
 #dictate.recording { background: var(--bg-3); border-color: var(--accent); color: var(--accent); }

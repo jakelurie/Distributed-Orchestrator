@@ -31,3 +31,16 @@ const page = await fs.readFile('server/public/index.html', 'utf8');
 assert.match(page, /id="queue"[^>]*hidden/);
 assert.ok(page.indexOf('id="queue"') < page.indexOf('id="stop"'));
 console.log('PASS busy composer queues to the current tab, keeps rejected drafts, and exposes a separate queue button');
+
+elements.stop = {};
+vm.runInContext(source.slice(source.indexOf('function paintComposerAction()'), source.indexOf('function setRunning(')), ctx);
+for (const [running, text, shots, expected] of [
+  [true, '', [], 'stop'], [true, 'hello', [], 'queue'],
+  [true, '   ', [], 'stop'], [true, '', [{ path: '/image.png' }], 'queue'],
+  [false, 'hello', [], 'send'],
+]) {
+  tab.running = running; elements.input.value = text; ctx.pendingShots = shots;
+  ctx.paintComposerAction();
+  assert.deepEqual(['send', 'stop', 'queue'].filter(id => !elements[id].hidden), [expected]);
+}
+console.log('PASS busy action switches Stop to Queue and back as draft content changes');

@@ -89,6 +89,10 @@ for (let i = 0; i < 60; i += 1) {
 // ---- auth ----
 check('rejects a request with no token', (await fetch(`${root}/api/state`)).status === 401);
 check('rejects a wrong token', (await fetch(`${root}/api/state`, { headers: { 'x-harness-token': 'nope' } })).status === 401);
+check('Tailscale Serve user opens the app without a second token',
+  (await fetch(`${root}/api/state`, { headers: { 'tailscale-user-login': 'phone@example.test' } })).status === 200);
+check('public Funnel traffic does not inherit private phone access',
+  (await fetch(`${root}/api/state`, { headers: { 'tailscale-user-login': 'phone@example.test', 'tailscale-funnel-request': '1' } })).status === 401);
 check('accepts the token in the query string', (await fetch(`${root}/api/state?t=${TOKEN}`)).status === 200);
 
 const incompleteNotifications = await call('/api/notify', {

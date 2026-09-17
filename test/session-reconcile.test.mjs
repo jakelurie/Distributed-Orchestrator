@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
 const source = await fs.readFile('server/public/app.js', 'utf8');
-const nodes = {};
+const nodes = { input: { value: '' } };
 const t = { running: true, session: { id: 'one', events: [] } };
 let fetchSession;
 const paints = [];
 const context = {
+  cur: () => t, pendingShots: [],
   tabs: { chat: t }, state: { tab: 'chat', session: t.session },
   $: id => nodes[id] ??= {},
   drawTranscript: () => paints.push(t.running), clearLive() {}, paintSessionTabs() {},
@@ -16,7 +17,7 @@ const context = {
   api: async url => url === '/api/state' ? { running: [] } : fetchSession(),
 };
 vm.createContext(context);
-vm.runInContext(source.slice(source.indexOf('function setRunning('), source.indexOf('async function send(')), context);
+vm.runInContext(source.slice(source.indexOf('function paintComposerAction('), source.indexOf('async function send(')), context);
 vm.runInContext(source.slice(source.indexOf('async function refreshState('), source.indexOf('function modelOptions(')), context);
 const flush = () => new Promise(resolve => setImmediate(resolve));
 fetchSession = async () => { throw new Error('offline'); };
