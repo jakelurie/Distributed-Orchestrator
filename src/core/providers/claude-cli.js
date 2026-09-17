@@ -14,6 +14,8 @@
  */
 
 import spawn from 'cross-spawn';
+import os from 'node:os';
+import path from 'node:path';
 
 import { renderForPrompt } from '../transcript.js';
 
@@ -28,8 +30,11 @@ export function makeClient(spec) {
  * is launched from one. Stripping those keeps the child a clean, independent
  * session instead of a confused child of ours.
  */
-function childEnv() {
-  const env = { ...process.env };
+export function childEnv(source = process.env, home = os.homedir()) {
+  const env = { ...source };
+  // Desktop launchers do not load the shell profile that adds Claude's
+  // native install directory. Keep existing PATH choices ahead of it.
+  env.PATH = [env.PATH, path.join(home, '.local', 'bin')].filter(Boolean).join(path.delimiter);
   for (const k of Object.keys(env)) {
     if (k.startsWith('CLAUDE_CODE_') || k === 'CLAUDECODE' || k === 'CLAUDE_PID' || k === 'CLAUDE_EFFORT') {
       delete env[k];

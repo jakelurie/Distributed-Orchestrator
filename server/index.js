@@ -34,6 +34,7 @@ import { setSecret } from '../src/core/secrets.js';
 import { transcribe, transcriptionKey } from '../src/core/transcription.js';
 import * as attachments from '../src/core/attachments.js';
 import * as git from '../src/core/git.js';
+import { prepareTab, integrateTab } from '../src/core/tab-workspaces.js';
 import { configureGithub, createGithubAuth } from '../src/core/github-auth.js';
 import { loadNotify, saveNotify, send as sendNotify, summarise, notificationSetupError } from '../src/core/notify.js';
 import * as store from '../src/core/store.js';
@@ -920,8 +921,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && pathname === '/api/git/push') {
       const { session: id } = await readBody(req);
       const session = live.get(id) ?? (await store.load(id, { repair: false }));
+      if (running.has(id)) return json(res, 409, { error: 'Wait for the tab to finish before integrating.' });
+      if (!session.tabWorkspace) return json(res, 409, { error: 'Start an isolated coding turn before integrating changes.' });
       const last = [...session.events].reverse().find((e) => e.type === 'assistant');
-      return json(res, 200, await git.commitAndPush(session.projectDir, {
+      return json(res, 200, await integrateTab(session, {
         push: (await github.status()).authenticated,
         model: session.model, servedModel: last?.servedModel,
       }));
@@ -1199,6 +1202,10 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'PATCH' && id) {
         const session = live.get(id) ?? (await store.load(id, { repair: !running.has(id) }));
         const patch = await readBody(req);
+        if (running.has(id)) return json(res, 409, { error: 'Wait for the current turn and integration to finish before editing this session.' });
+        delete patch.tabWorkspace;
+        delete patch.integrationLog;
+        if (patch.projectDir && patch.projectDir !== session.projectDir) delete session.tabWorkspace;
         const badDir = refuseAsProjectDir(patch.projectDir);
         if (badDir) return json(res, 400, { error: badDir });
         if (patch.projectDir) await fs.mkdir(patch.projectDir, { recursive: true });
@@ -1326,6 +1333,7 @@ const server = http.createServer(async (req, res) => {
         const cfg = await loadConfig(USER_DATA);
         if (cfg.error) return json(res, 400, { error: cfg.error });
 
+        if (running.has(id)) return json(res, 409, { error: 'a turn is already running' });
         const sentAt = session.events.length;
         const controller = new AbortController();
         const turn = { controller, startedAt: Date.now(), last: null };
@@ -1335,7 +1343,16 @@ const server = http.createServer(async (req, res) => {
         beacons.start(id, { model: session.model, stallMs: stallMsFor(cfg.models[session.model]) });
         json(res, 200, { ok: true }); // answer now; the work streams over SSE
 
-        runTurn({
+        let prepared = false;
+        let turnFailed = false;
+        Promise.resolve().then(async () => {
+          if (session.mode !== 'chat' && !session.monitorFor) {
+            if (cluster.shared()) throw new Error('Isolated coding turns currently require a single execution host. Cluster workspace migration cannot yet preserve tab branches; no shared files were edited.');
+            await prepareTab(session);
+            prepared = true;
+            await store.save(session);
+          }
+          return runTurn({
           session,
           models: cfg.models,
           userText: text,
@@ -1369,19 +1386,25 @@ const server = http.createServer(async (req, res) => {
             }
             broadcast(id, { kind: 'delta', delta });
           },
+          });
         })
-          .catch((e) => broadcast(id, { kind: 'error', error: e?.message ?? String(e) }))
+          .catch(async (e) => {
+            turnFailed = true;
+            const event = noteEvent(e?.message ?? String(e));
+            session.events.push(event);
+            await store.save(session);
+            broadcast(id, { kind: 'event', event });
+          })
           .finally(async () => {
-            running.delete(id);
             beacons.stop(id);
-            live.delete(id);
 
             // Commit whatever the turn changed on disk. Failures are reported
             // into the transcript rather than thrown: a git problem should not
             // look like the turn itself failed.
             // On by default: only an explicit false turns it off, so sessions
             // created before this became the default still push.
-            if (session.gitPush !== false) {
+            const endedWithError = session.events.slice(sentAt).some((e) => e.type === 'note');
+            if (prepared && !turnFailed && !controller.signal.aborted && !endedWithError && session.gitPush !== false) {
               try {
                 const last = [...session.events].reverse().find((e) => e.type === 'assistant');
                 // Auto-create a repo only for a session that belongs to an app —
@@ -1391,7 +1414,7 @@ const server = http.createServer(async (req, res) => {
                 // brand-new GitHub repo out of a temp folder.
                 const app = session.appId
                   ? (await apps.load(USER_DATA)).find((a) => a.id === session.appId) : null;
-                const res = await git.commitAndPush(session.projectDir, {
+                const res = await integrateTab(session, {
                   push: (await github.status()).authenticated,
                   appName: app?.name,
                   model: session.model,
@@ -1417,7 +1440,10 @@ const server = http.createServer(async (req, res) => {
                   broadcast(id, { kind: 'event', event: session.events.at(-1) });
                 }
               } catch (e) {
-                broadcast(id, { kind: 'error', error: `git: ${e?.message ?? e}` });
+                const event = noteEvent(`git: ${e?.message ?? e}`);
+                session.events.push(event);
+                await store.save(session);
+                broadcast(id, { kind: 'event', event });
               }
             }
 
@@ -1425,7 +1451,7 @@ const server = http.createServer(async (req, res) => {
             // hunting for it is the thing this avoids: it is attached to the
             // reply that made it.
             try {
-              const made = await filesChangedSince(session.projectDir, turn.startedAt, 30);
+              const made = await filesChangedSince(session.tabWorkspace?.dir ?? session.projectDir, turn.startedAt, 30);
               if (made.length) {
                 session.events.push({
                   id: `f_${Date.now().toString(36)}`,
@@ -1438,6 +1464,8 @@ const server = http.createServer(async (req, res) => {
               }
             } catch { /* a scan failure must not affect the turn */ }
 
+            running.delete(id);
+            live.delete(id);
             broadcast(id, { kind: 'done' });
             collectUsage().catch(() => {}); // fold the turn in; never block the reply
 
