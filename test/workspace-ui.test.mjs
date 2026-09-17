@@ -68,7 +68,7 @@ assert.ok(html.indexOf('<session>working') < html.indexOf('<app>self'));
 assert.ok(html.indexOf('data-project-group="recent"') < html.indexOf('<app>self'));
 assert.equal((html.match(/<session>working/g) ?? []).length, 1);
 assert.equal((html.match(/<details/g) ?? []).length, 3);
-assert.match(html, /Recent sessions · 1 active/);
+assert.match(html, /Recent sessions — last 24 hours · 1 active/);
 assert.doesNotMatch(html, /<h3>Active sessions/);
 assert.ok(!/<details[^>]*\sopen[ >]/.test(html));
 assert.match(html, /Chats \(2\)/);
@@ -85,7 +85,7 @@ assert.ok(!context.openProjectGroups.has('recent'), 'reopening starts collapsed'
 const manySessions = Array.from({ length: 15 }, (_, i) => ({ id: `idle-${i}`, updatedAt: now - 15 + i }));
 const recentHtml = vm.runInNewContext(renderGroups, { ...context,
   state: { sessions: [{ id: 'working', updatedAt: now }, ...manySessions], busy: ['working'] }, loose: [] });
-assert.match(recentHtml, /Recent sessions · 1 active \(11\)/);
+assert.match(recentHtml, /Recent sessions — last 24 hours · 1 active \(11\)/);
 assert.ok(recentHtml.indexOf('<session>working') < recentHtml.indexOf('<session>idle-14'));
 assert.ok(recentHtml.indexOf('<session>idle-14') < recentHtml.indexOf('<session>idle-13'));
 assert.doesNotMatch(recentHtml, /<session>idle-4</);
@@ -113,10 +113,15 @@ assert.equal(group([remembered]).stopped[0].id, 'simulation');
 assert.ok(!card({ ...base, ...remembered }).includes('>chat<'));
 console.log('PASS previously detected apps remain stopped apps without a start command');
 
+const clock = vm.runInNewContext(source.slice(source.indexOf('const clock ='), source.indexOf('const compact =')) + '\nclock;');
+const dated = new Date(2026, 8, 16, 14, 30).getTime();
+assert.equal(clock(dated), new Date(dated).toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }));
+assert.notEqual(clock(dated), clock(dated - 86400000));
+
 const row = vm.runInNewContext(source.slice(source.indexOf('  const sessionRow ='),
   source.indexOf('  const appCard =')) + '\nsessionRow;', {
   d: { apps: [{ id: 'one', name: 'First app' }, { id: 'two', name: 'Second app' }] },
-  state: {}, esc: (s) => String(s).replaceAll('<', '&lt;'), sessionStatus: () => '',
+  state: {}, clock, esc: (s) => String(s).replaceAll('<', '&lt;'), sessionStatus: () => '',
 });
 assert.match(row({ id: 's1', appId: 'one', name: 'Tab 1' }), /First app · Tab 1/);
 assert.match(row({ id: 's2', appId: 'two', name: 'Tab 1' }), /Second app · Tab 1/);
@@ -124,3 +129,7 @@ assert.match(row({ id: 's3', appId: 'one', name: '<custom>' }), /First app · &l
 assert.match(row({ id: 's4', name: 'Standalone' }), /class="t">Standalone /);
 assert.match(row({ id: 's5', appId: 'missing', name: 'Orphan' }), />Orphan /);
 console.log('PASS session rows distinguish apps with App · Tab labels and preserve standalone names');
+
+assert.ok(row({ id: 'dated', updatedAt: dated }).includes(`Last activity: ${clock(dated)}`));
+assert.ok(row({ id: 'created', createdAt: dated }).includes(`Last activity: ${clock(dated)}`));
+assert.match(row({ id: 'unknown' }), /Last activity: unknown/);

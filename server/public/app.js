@@ -130,9 +130,9 @@ function emphasis(t) {
     .replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>');
 }
 
-/** Minimal wall-clock stamp: what time did this happen. */
+/** Local date and time, so chats from different days are distinguishable. */
 const clock = (ts) => (ts
-  ? new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  ? new Date(ts).toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })
   : '');
 
 const compact = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
@@ -2054,7 +2054,8 @@ function renderAppsSheet(d) {
     return `
     <div class="item sub-session${sn.id === state.session?.id ? ' on' : ''}" data-open="${esc(sn.id)}">
       <div class="grow"><div class="t">${esc(label)} ${sessionStatus(sn)}</div>
-        <div class="s">${esc(sn.model)} · ${sn.turns} turns</div></div>
+        <div class="s">${esc(sn.model)} · ${sn.turns} turns</div>
+        <div class="s">Last activity: ${esc(clock(sn.updatedAt ?? sn.createdAt) || 'unknown')}</div></div>
       <button class="x" data-rename="${esc(sn.id)}" title="Edit session">✎</button>
       <button class="x" data-del="${esc(sn.id)}" title="Delete">×</button>
     </div>`;
@@ -2114,7 +2115,7 @@ function renderAppsSheet(d) {
     const inactiveLoose = loose.filter((session) => !(state.busy ?? []).includes(session.id));
     const disclosure = (id, label, count, content) => count
       ? `<details class="project-group" data-project-group="${id}"${openProjectGroups.has(id) ? ' open' : ''}><summary>${label} (${count})</summary>${content}</details>` : '';
-    return disclosure('recent', `Recent sessions${active.length ? ` · ${active.length} active` : ''}`,
+    return disclosure('recent', `Recent sessions — last 24 hours${active.length ? ` · ${active.length} active` : ''}`,
       recentSessions.length, recentSessions.map(sessionRow).join(''))
       + groups.visible.map(appCard).join('')
       + disclosure('stopped', 'Not running apps', groups.stopped.length, groups.stopped.map(appCard).join(''))
