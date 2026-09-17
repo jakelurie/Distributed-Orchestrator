@@ -1450,7 +1450,8 @@ function sourceSheet() {
 function notifySheet() {
   openSheet(`<h2>Notifications</h2>
     <p class="dim">When a turn finishes, and when one stalls.</p>
-    <div id="s-notify"><p class="dim">loading…</p></div>${backToSettings}`);
+    <div id="s-notify"><p class="dim">loading…</p></div>
+    <p id="notify-status" class="dim" role="status" aria-live="polite"></p>${backToSettings}`);
   $('sub-back').onclick = settingsSheet;
   paintNotify();
 }
@@ -1524,6 +1525,8 @@ async function paintEmail() {
 async function paintNotify() {
   const box = $('s-notify');
   if (!box) return;
+  const status = $('notify-status');
+  const feedback = (message) => { if (status) status.textContent = message; };
   let n;
   try { n = await api('/api/notify'); } catch (e) { box.innerHTML = `<p class="dim">${esc(e.message)}</p>`; return; }
 
@@ -1602,20 +1605,30 @@ async function paintNotify() {
     if (pass) body.gmailPass = pass;
     await api('/api/email', { method: 'POST', body: JSON.stringify(body) });
   };
-  $('n-save').onclick = async () => { await saveGmail(); await patch(fields()); showBanner('notification settings saved'); };
+  $('n-save').onclick = async () => {
+    feedback('saving…');
+    try {
+      await saveGmail();
+      await patch(fields());
+      feedback('Notification settings saved.');
+    } catch (e) {
+      feedback(`Could not save: ${e.message}`);
+    }
+  };
   $('n-test').onclick = async () => {
     const btn = $('n-test');
     btn.textContent = 'sending…';
     btn.disabled = true;
+    feedback('Sending test…');
     try {
       await saveGmail();
       await api('/api/notify', { method: 'POST', body: JSON.stringify(fields()) });
       const r = await api('/api/notify/test', { method: 'POST', body: JSON.stringify({}) });
-      showBanner(r.ok ? `sent (${r.via})` : `failed: ${r.reason}`, !r.ok);
+      feedback(r.ok ? `sent (${r.via})` : `failed: ${r.reason}`);
     } catch (e) {
       // A thrown request used to leave the button reading "sending…" for good,
       // which is indistinguishable from the thing still being in flight.
-      showBanner(`test failed: ${e.message}`, true);
+      feedback(`test failed: ${e.message}`);
     } finally {
       btn.disabled = false;
       paintNotify();
