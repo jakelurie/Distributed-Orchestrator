@@ -570,7 +570,7 @@ async function openSession(id) {
   closeSheet();
   const meta = state.sessions.find((x) => x.id === id);
   if (meta) {
-    $('title-name').textContent = meta.name;
+    $('title-name').textContent = state.apps?.find((a) => a.id === meta.appId)?.name || 'Distributed Orchestrator';
     $('title-sub').textContent = `Model: ${state.models[meta.model]?.label || meta.model}`;
   }
   $('transcript').innerHTML = '<div class="empty"><p class="dim">loading…</p></div>';
@@ -676,8 +676,7 @@ function showSession() {
 function paintHeader() {
   const s = state.session;
   const t = cur();
-  $('title-app').textContent = s ? `App: ${state.apps?.find((a) => a.id === s.appId)?.name || 'No app'}` : '';
-  $('title-name').textContent = s ? `Session: ${s.name}` : 'Distributed Orchestrator';
+  $('title-name').textContent = state.apps?.find((a) => a.id === s?.appId)?.name || 'Distributed Orchestrator';
   $('title-sub').textContent = s
     ? `Model: ${state.models[s.model]?.label || s.model}`
     : 'pick a session';
