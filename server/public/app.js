@@ -1615,9 +1615,23 @@ async function paintNotify() {
       <button class="ghost" id="n-test">send a test</button>
     </div>`;
 
-  const patch = async (body) => { await api('/api/notify', { method: 'POST', body: JSON.stringify(body) }); paintNotify(); };
+  const patch = async (body) => { await api('/api/notify', { method: 'POST', body: JSON.stringify(body) }); await paintNotify(); };
   box.querySelectorAll('[data-notify]').forEach((el) => {
-    el.onclick = () => patch({ enabled: el.dataset.notify === 'on' }).catch((e) => feedback(e.message));
+    el.onclick = async () => {
+      const enabled = el.dataset.notify === 'on';
+      const body = enabled ? { ...fields(), enabled } : { enabled };
+      el.disabled = true;
+      feedback(enabled ? 'Saving and enabling…' : 'Turning off…');
+      try {
+        if (enabled) await saveGmail();
+        await patch(body);
+        feedback(enabled ? 'Text notifications enabled.' : 'Text notifications off.');
+      } catch (e) {
+        feedback(`Could not ${enabled ? 'enable' : 'disable'}: ${e.message}`);
+      } finally {
+        el.disabled = false;
+      }
+    };
   });
   box.querySelectorAll('[data-nkind]').forEach((el) => {
     el.onclick = () => patch({ kind: el.dataset.nkind });
