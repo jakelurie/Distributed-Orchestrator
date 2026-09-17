@@ -704,8 +704,9 @@ function setRunning(on, startedAt = null, last = null, tab = state.tab) {
   if (tab !== state.tab) return;   // background tab: remember, do not repaint
   $('send').hidden = on;
   $('stop').hidden = !on;
+  $('queue').hidden = !on;
   $('working').hidden = !on;
-  $('input').placeholder = on ? 'working — tap stop to interrupt' : idlePlaceholder();
+  $('input').placeholder = on ? 'Write a follow-up, then tap Queue next…' : idlePlaceholder();
   if (on) startClock(startedAt); else stopClock();
   if (changed) drawTranscript();
 }
@@ -799,6 +800,7 @@ function listen(tab, id) {
       return;
     }
 
+    if (p.kind === 'started') setRunning(true, p.startedAt, null, tab);
     if (p.kind === 'event') {
       clearLive(tab);
       t.session?.events.push(p.event);
@@ -824,7 +826,7 @@ function listen(tab, id) {
   es.onerror = () => {}; // EventSource reconnects on its own
 }
 
-async function send() {
+async function send(queue = false) {
   if (window.dictationBusy?.()) return showBanner('Finish or cancel dictation before sending.');
   const text = $('input').value.trim();
   const shots = pendingShots.filter((a) => !a.uploading && a.path);
@@ -832,26 +834,36 @@ async function send() {
   if (pendingShots.some((a) => a.uploading)) return showBanner('still uploading — one moment');
   const t = cur();
   if (!t.session) return showBanner('open a session first — tap ☰');
-  if (t.running) return showBanner('a turn is already running — tap stop to interrupt it');
-  $('input').value = '';
-  $('input').style.height = 'auto';
-  setRunning(true);
+  if (t.running && !queue) return showBanner('Tap Queue next to send after this turn, or Stop to interrupt.');
+  const sessionId = t.session.id;
+  const draft = $('input').value;
+  const button = $(queue ? 'queue' : 'send');
+  if (button.disabled) return;
+  button.disabled = true;
+  if (!queue) setRunning(true);
   showBanner('');
   pinned = true;
   try {
-    await api(`/api/sessions/${t.session.id}/send`, {
+    const result = await api(`/api/sessions/${sessionId}/${queue ? 'queue' : 'send'}`, {
       method: 'POST',
       body: JSON.stringify({
         text,
         attachments: shots.map(({ name, path, mime, bytes }) => ({ name, path, mime, bytes })),
       }),
     });
-    pendingShots = [];
-    paintPending();
+    if (cur().session?.id === sessionId) {
+      if ($('input').value === draft) {
+        $('input').value = '';
+        $('input').style.height = 'auto';
+      }
+      pendingShots = pendingShots.filter(a => !shots.includes(a));
+      paintPending();
+      if (result.queued) showBanner('Message queued for this tab. Stop cancels the queued message too.');
+    }
   } catch (e) {
-    setRunning(false);
+    if (!queue && cur().session?.id === sessionId) setRunning(false);
     showBanner(e.message);
-  }
+  } finally { button.disabled = false; }
 }
 
 // ------------------------------------------------------------------ menus
@@ -2699,7 +2711,8 @@ $('input').addEventListener('paste', (event) => {
   attachFiles(files);
 });
 
-$('send').onclick = send;
+$('send').onclick = () => send();
+$('queue').onclick = () => send(true);
 $('stop').onclick = () => api(`/api/sessions/${cur().session.id}/stop`, { method: 'POST' });
 
 $('sheet-back').onclick = (e) => {

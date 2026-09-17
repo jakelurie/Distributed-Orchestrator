@@ -11,6 +11,7 @@
  * URL once and then kept in a cookie.
  */
 
+import { createMessageQueue } from '../src/core/message-queue.js';
 import { defaultDataDir } from '../src/core/platform.js';
 import { execFile, spawn } from 'node:child_process';
 import { openSync } from 'node:fs';
@@ -114,6 +115,7 @@ async function collectUsage({ force = false } = {}) {
   return added;
 }
 
+const messageQueue = createMessageQueue();
 const running = new Map();   // sessionId -> { controller, startedAt, last }
 const live = new Map();      // sessionId -> the session object a turn is mutating
 const providerLimits = new Map(); // model alias -> its last reported rate-limit info
@@ -390,6 +392,203 @@ async function serveStatic(res, name) {
   } catch {
     json(res, 404, { error: 'not found' });
   }
+}
+
+async function dispatchMessage(id, body, reply) {
+  if (cluster.shared() && !cluster.replica.writable()) return reply(409, { error: 'Coordinator changed; resend this message on the active host.' });
+  if (running.has(id)) return reply(409, { error: 'a turn is already running' });
+
+  const { text, attachments: atts } = body;
+  const session = await store.load(id);
+  if (cluster.shared()) {
+    if (session.tabWorkspace && session.tabWorkspace.ownerNode !== cluster.self.id) return reply(409, { error: 'This tab has a Git worktree on another host. Reconnect that host to continue; tab branches are not yet migrated between hosts.' });
+    await clusterAssets.session(session);
+    for (const attachment of atts || []) await clusterAssets.restore(attachment);
+    const previousOwner = session.ownerNode;
+    await workspaces.prepare(session);
+    if (previousOwner && previousOwner !== cluster.self.id && session.appId && !session.editsHarness && session.appId !== '__harness') {
+      await apps.update(USER_DATA, session.appId, { dir: session.projectDir, ownerNode: cluster.self.id, pid: null });
+      await snapshotSettings();
+    }
+    await workspaces.capture(session);
+    await store.save(session);
+  }
+  live.set(id, session);
+  const cfg = await loadConfig(USER_DATA);
+  if (cfg.error) return reply(400, { error: cfg.error });
+
+  if (running.has(id)) return reply(409, { error: 'a turn is already running' });
+  const sentAt = session.events.length;
+  const controller = new AbortController();
+  const turn = { controller, startedAt: Date.now(), last: null };
+  running.set(id, turn);
+  // The threshold depends on the backend: an agent CLI legitimately
+  // goes quiet for many minutes while running its own loop.
+  beacons.start(id, { model: session.model, stallMs: stallMsFor(cfg.models[session.model]) });
+  reply(200, { ok: true }); // answer now; the work streams over SSE
+  broadcast(id, { kind: 'started', startedAt: turn.startedAt });
+
+  let prepared = false;
+  let turnFailed = false;
+  await Promise.resolve().then(async () => {
+    if (session.mode !== 'chat' && !session.monitorFor) {
+      await prepareTab(session);
+      if (cluster.shared()) session.tabWorkspace.ownerNode = cluster.self.id;
+      prepared = true;
+      await store.save(session);
+    }
+    return runTurn({
+      session,
+      models: cfg.models,
+      userText: text,
+      attachments: Array.isArray(atts) ? atts : [],
+      signal: controller.signal,
+      save: async (s) => {
+        if (cluster.shared()) {
+          if (!cluster.replica.writable()) throw new Error('Coordinator lost quorum; turn stopped.');
+          await workspaces.capture(s);
+        }
+        return store.save(s);
+      },
+      monitorsFile: monitorsPath(USER_DATA),
+      tailnetHost: await apps.tailnetHost().catch(() => null),
+      // A ready-to-run command for the monitor companion, so a custom view
+      // can reuse the server's own process discovery instead of redoing it.
+      activityCmd: `curl -s "http://127.0.0.1:${PORT}/api/activity?session=${
+        encodeURIComponent(session.monitorFor ?? session.id)
+      }&raw=1&t=$(cat ${JSON.stringify(path.join(USER_DATA, 'server-token'))})"`,
+      onEvent: (event) => broadcast(id, { kind: 'event', event }),
+      onDelta: (delta) => {
+        // Any sign of life counts: a token, a tool starting, a tool ending.
+        beacons.touch(id, delta.kind === 'tool_start' ? `${delta.call?.name} ${describeArg(delta.call)}` : delta.kind);
+        if (delta.kind === 'tool_start') turn.last = delta.call?.name ?? null;
+        if (delta.kind === 'rate_limit') {
+          providerLimits.set(session.model, { info: delta.info, at: Date.now() });
+          if (usage) {
+            usage.limits[session.model] = { info: delta.info, at: Date.now() };
+            usageDirty = true;
+          }
+        }
+        broadcast(id, { kind: 'delta', delta });
+      },
+    });
+  })
+    .catch(async (e) => {
+      turnFailed = true;
+      const event = noteEvent(e?.message ?? String(e));
+      session.events.push(event);
+      await store.save(session);
+      broadcast(id, { kind: 'event', event });
+    })
+    .finally(async () => {
+      beacons.stop(id);
+
+      // Integrate only this tab's tested work. Failures are reported
+      // into the transcript rather than thrown: a git problem should not
+      // look like the turn itself failed.
+      // On by default: only an explicit false turns it off, so sessions
+      // created before this became the default still push.
+      const endedWithError = session.events.slice(sentAt).some((e) => e.type === 'note');
+      if (prepared && !turnFailed && !controller.signal.aborted && !endedWithError && session.gitPush !== false) {
+        try {
+          const last = [...session.events].reverse().find((e) => e.type === 'assistant');
+          // Auto-create a repo only for a session that belongs to an app —
+          // that is what "every project pushes and is private" means. A
+          // loose or scratch session (no app, e.g. a test run) commits
+          // locally or pushes to an existing remote, but never conjures a
+          // brand-new GitHub repo out of a temp folder.
+          const app = session.appId
+            ? (await apps.load(USER_DATA)).find((a) => a.id === session.appId) : null;
+          const res = await integrateTab(session, {
+            signal: controller.signal,
+            onCheck: (log) => upsertMonitor(USER_DATA, { id: `integration-${id}`, label: 'Integration checks', kind: 'file', path: log, session: id }),
+            push: (await github.status()).authenticated,
+            appName: app?.name,
+            model: session.model,
+            servedModel: last?.servedModel,
+            autoCreatePrivate: Boolean(session.appId),
+          });
+          if (res.integrated && cluster.shared()) await workspaces.capture(session);
+          if (app && !app.builtin && !app.repo && res.created) {
+            const linked = await git.status(session.projectDir);
+            if (linked.remote) await apps.update(USER_DATA, app.id, { repo: linked.remote });
+          }
+          if (res.skipped === 'no changes') {
+            // Nothing to say: a turn that changed no files is normal.
+          } else if (!res.ok) {
+            session.events.push(noteEvent(`git: ${res.error ?? res.skipped}`));
+          } else {
+            const where = res.pushed ? 'integrated and pushed' : `integrated locally (not pushed — ${res.reason})`;
+            session.events.push(noteEvent(
+              `git: ${where} ${res.files.length} file${res.files.length === 1 ? '' : 's'} · ${res.sha}`,
+            ));
+          }
+          if (session.events.at(-1)?.type === 'note') {
+            await store.save(session);
+            broadcast(id, { kind: 'event', event: session.events.at(-1) });
+          }
+        } catch (e) {
+          const event = noteEvent(`git: ${e?.message ?? e}`);
+          session.events.push(event);
+          await store.save(session);
+          broadcast(id, { kind: 'event', event });
+        }
+      }
+
+      // What this turn actually produced. Asking for a file and then
+      // hunting for it is the thing this avoids: it is attached to the
+      // reply that made it.
+      try {
+        const made = await filesChangedSince(session.tabWorkspace?.dir ?? session.projectDir, turn.startedAt, 30);
+        if (made.length) {
+          session.events.push({
+            id: `f_${Date.now().toString(36)}`,
+            ts: Date.now(),
+            type: 'files',
+            files: made,
+          });
+          await store.save(session);
+          broadcast(id, { kind: 'event', event: session.events.at(-1) });
+        }
+      } catch { /* a scan failure must not affect the turn */ }
+
+      running.delete(id);
+      live.delete(id);
+      broadcast(id, { kind: 'done' });
+      collectUsage().catch(() => {}); // fold the turn in; never block the reply
+
+      // Tell the user it finished. Deliberately after `done`, and never
+      // awaited by anything that matters: a notifier is not allowed to
+      // delay or break a turn.
+      (async () => {
+        const cfg = await notifyConfig();
+        const seconds = (Date.now() - turn.startedAt) / 1000;
+        if (!cfg.enabled || seconds < (cfg.minSeconds ?? 0)) return;
+
+        const since = session.events.slice(sentAt);
+        const last = [...since].reverse().find((e) => e.type === 'assistant' && e.text?.trim());
+        const res = await sendNotify(cfg, summarise({
+          sessionName: session.name,
+          model: session.model,
+          steps: since.filter((e) => e.type === 'tool_result').length,
+          seconds,
+          failed: since.some((e) => e.type === 'note' && /error|failed/i.test(e.text)),
+          lastText: last?.text,
+        }));
+        if (!res.ok) {
+          session.events.push(noteEvent(`notify: ${res.reason}`));
+          await store.save(session);
+          broadcast(id, { kind: 'event', event: session.events.at(-1) });
+        }
+      })().catch(() => {});
+    }).catch((e) => {
+      running.delete(id);
+      live.delete(id);
+      beacons.stop(id);
+      broadcast(id, { kind: 'error', error: e?.message ?? String(e) });
+      broadcast(id, { kind: 'done' });
+    });
+  return undefined;
 }
 
 async function joinHost(body) {
@@ -1288,6 +1487,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, tally(session.events, models));
       }
       if (req.method === 'POST' && id && verb === 'stop') {
+        messageQueue.cancel(id);
         running.get(id)?.controller.abort();
         return json(res, 200, { ok: true });
       }
@@ -1343,198 +1543,22 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
-      if (req.method === 'POST' && id && verb === 'send') {
-        if (running.has(id)) return json(res, 409, { error: 'a turn is already running' });
-
-        const { text, attachments: atts } = await readBody(req);
-        const session = await store.load(id);
-        if (cluster.shared()) {
-          if (session.tabWorkspace && session.tabWorkspace.ownerNode !== cluster.self.id) return json(res, 409, { error: 'This tab has a Git worktree on another host. Reconnect that host to continue; tab branches are not yet migrated between hosts.' });
-          await clusterAssets.session(session);
-          for (const attachment of atts || []) await clusterAssets.restore(attachment);
-          const previousOwner = session.ownerNode;
-          await workspaces.prepare(session);
-          if (previousOwner && previousOwner !== cluster.self.id && session.appId && !session.editsHarness && session.appId !== '__harness') {
-            await apps.update(USER_DATA, session.appId, { dir: session.projectDir, ownerNode: cluster.self.id, pid: null });
-            await snapshotSettings();
-          }
-          await workspaces.capture(session);
-          await store.save(session);
-        }
-        live.set(id, session);
-        const cfg = await loadConfig(USER_DATA);
-        if (cfg.error) return json(res, 400, { error: cfg.error });
-
-        if (running.has(id)) return json(res, 409, { error: 'a turn is already running' });
-        const sentAt = session.events.length;
-        const controller = new AbortController();
-        const turn = { controller, startedAt: Date.now(), last: null };
-        running.set(id, turn);
-        // The threshold depends on the backend: an agent CLI legitimately
-        // goes quiet for many minutes while running its own loop.
-        beacons.start(id, { model: session.model, stallMs: stallMsFor(cfg.models[session.model]) });
-        json(res, 200, { ok: true }); // answer now; the work streams over SSE
-
-        let prepared = false;
-        let turnFailed = false;
-        Promise.resolve().then(async () => {
-          if (session.mode !== 'chat' && !session.monitorFor) {
-            await prepareTab(session);
-            if (cluster.shared()) session.tabWorkspace.ownerNode = cluster.self.id;
-            prepared = true;
-            await store.save(session);
-          }
-          return runTurn({
-            session,
-            models: cfg.models,
-            userText: text,
-            attachments: Array.isArray(atts) ? atts : [],
-            signal: controller.signal,
-            save: async (s) => {
-              if (cluster.shared()) {
-                if (!cluster.replica.writable()) throw new Error('Coordinator lost quorum; turn stopped.');
-                await workspaces.capture(s);
-              }
-              return store.save(s);
-            },
-            monitorsFile: monitorsPath(USER_DATA),
-            tailnetHost: await apps.tailnetHost().catch(() => null),
-            // A ready-to-run command for the monitor companion, so a custom view
-            // can reuse the server's own process discovery instead of redoing it.
-            activityCmd: `curl -s "http://127.0.0.1:${PORT}/api/activity?session=${
-              encodeURIComponent(session.monitorFor ?? session.id)
-            }&raw=1&t=$(cat ${JSON.stringify(path.join(USER_DATA, 'server-token'))})"`,
-            onEvent: (event) => broadcast(id, { kind: 'event', event }),
-            onDelta: (delta) => {
-              // Any sign of life counts: a token, a tool starting, a tool ending.
-              beacons.touch(id, delta.kind === 'tool_start' ? `${delta.call?.name} ${describeArg(delta.call)}` : delta.kind);
-              if (delta.kind === 'tool_start') turn.last = delta.call?.name ?? null;
-              if (delta.kind === 'rate_limit') {
-                providerLimits.set(session.model, { info: delta.info, at: Date.now() });
-                if (usage) {
-                  usage.limits[session.model] = { info: delta.info, at: Date.now() };
-                  usageDirty = true;
-                }
-              }
-              broadcast(id, { kind: 'delta', delta });
-            },
-          });
-        })
-          .catch(async (e) => {
-            turnFailed = true;
-            const event = noteEvent(e?.message ?? String(e));
-            session.events.push(event);
-            await store.save(session);
-            broadcast(id, { kind: 'event', event });
-          })
-          .finally(async () => {
-            beacons.stop(id);
-
-            // Integrate only this tab's tested work. Failures are reported
-            // into the transcript rather than thrown: a git problem should not
-            // look like the turn itself failed.
-            // On by default: only an explicit false turns it off, so sessions
-            // created before this became the default still push.
-            const endedWithError = session.events.slice(sentAt).some((e) => e.type === 'note');
-            if (prepared && !turnFailed && !controller.signal.aborted && !endedWithError && session.gitPush !== false) {
-              try {
-                const last = [...session.events].reverse().find((e) => e.type === 'assistant');
-                // Auto-create a repo only for a session that belongs to an app —
-                // that is what "every project pushes and is private" means. A
-                // loose or scratch session (no app, e.g. a test run) commits
-                // locally or pushes to an existing remote, but never conjures a
-                // brand-new GitHub repo out of a temp folder.
-                const app = session.appId
-                  ? (await apps.load(USER_DATA)).find((a) => a.id === session.appId) : null;
-                const res = await integrateTab(session, {
-                  signal: controller.signal,
-                  onCheck: (log) => upsertMonitor(USER_DATA, { id: `integration-${id}`, label: 'Integration checks', kind: 'file', path: log, session: id }),
-                  push: (await github.status()).authenticated,
-                  appName: app?.name,
-                  model: session.model,
-                  servedModel: last?.servedModel,
-                  autoCreatePrivate: Boolean(session.appId),
-                });
-                if (res.integrated && cluster.shared()) await workspaces.capture(session);
-                if (app && !app.builtin && !app.repo && res.created) {
-                  const linked = await git.status(session.projectDir);
-                  if (linked.remote) await apps.update(USER_DATA, app.id, { repo: linked.remote });
-                }
-                if (res.skipped === 'no changes') {
-                  // Nothing to say: a turn that changed no files is normal.
-                } else if (!res.ok) {
-                  session.events.push(noteEvent(`git: ${res.error ?? res.skipped}`));
-                } else {
-                  const where = res.pushed ? 'integrated and pushed' : `integrated locally (not pushed — ${res.reason})`;
-                  session.events.push(noteEvent(
-                    `git: ${where} ${res.files.length} file${res.files.length === 1 ? '' : 's'} · ${res.sha}`,
-                  ));
-                }
-                if (session.events.at(-1)?.type === 'note') {
-                  await store.save(session);
-                  broadcast(id, { kind: 'event', event: session.events.at(-1) });
-                }
-              } catch (e) {
-                const event = noteEvent(`git: ${e?.message ?? e}`);
-                session.events.push(event);
-                await store.save(session);
-                broadcast(id, { kind: 'event', event });
-              }
-            }
-
-            // What this turn actually produced. Asking for a file and then
-            // hunting for it is the thing this avoids: it is attached to the
-            // reply that made it.
-            try {
-              const made = await filesChangedSince(session.tabWorkspace?.dir ?? session.projectDir, turn.startedAt, 30);
-              if (made.length) {
-                session.events.push({
-                  id: `f_${Date.now().toString(36)}`,
-                  ts: Date.now(),
-                  type: 'files',
-                  files: made,
-                });
-                await store.save(session);
-                broadcast(id, { kind: 'event', event: session.events.at(-1) });
-              }
-            } catch { /* a scan failure must not affect the turn */ }
-
-            running.delete(id);
-            live.delete(id);
-            broadcast(id, { kind: 'done' });
-            collectUsage().catch(() => {}); // fold the turn in; never block the reply
-
-            // Tell the user it finished. Deliberately after `done`, and never
-            // awaited by anything that matters: a notifier is not allowed to
-            // delay or break a turn.
-            (async () => {
-              const cfg = await notifyConfig();
-              const seconds = (Date.now() - turn.startedAt) / 1000;
-              if (!cfg.enabled || seconds < (cfg.minSeconds ?? 0)) return;
-
-              const since = session.events.slice(sentAt);
-              const last = [...since].reverse().find((e) => e.type === 'assistant' && e.text?.trim());
-              const res = await sendNotify(cfg, summarise({
-                sessionName: session.name,
-                model: session.model,
-                steps: since.filter((e) => e.type === 'tool_result').length,
-                seconds,
-                failed: since.some((e) => e.type === 'note' && /error|failed/i.test(e.text)),
-                lastText: last?.text,
-              }));
-              if (!res.ok) {
-                session.events.push(noteEvent(`notify: ${res.reason}`));
-                await store.save(session);
-                broadcast(id, { kind: 'event', event: session.events.at(-1) });
-              }
-            })().catch(() => {});
-          }).catch((e) => {
-            running.delete(id);
-            live.delete(id);
-            beacons.stop(id);
-            broadcast(id, { kind: 'error', error: e?.message ?? String(e) });
-            broadcast(id, { kind: 'done' });
-          });
+      if (req.method === 'POST' && id && ['send', 'queue'].includes(verb)) {
+        const body = await readBody(req);
+        if ((!body.text || !String(body.text).trim()) && !body.attachments?.length) return json(res, 400, { error: 'Enter a message or attach a file.' });
+        // Integration-only tasks cannot accept a follow-up until they finish.
+        if (running.has(id) && !messageQueue.busy(id)) return json(res, 409, { error: 'Wait for integration to finish.' });
+        try {
+          const queued = messageQueue.busy(id);
+          messageQueue.submit(id, () => dispatchMessage(id, body, (code, value) => {
+            if (!queued) return json(res, code, value);
+            if (code >= 400) throw new Error(value.error);
+          }), { queue: verb === 'queue', onError: (e) => {
+            if (!res.headersSent) json(res, 400, { error: e.message });
+            else broadcast(id, { kind: 'error', error: `Queued message: ${e.message}` });
+          } });
+          if (queued) return json(res, 202, { ok: true, queued: true });
+        } catch (e) { return json(res, 409, { error: e.message }); }
         return undefined;
       }
     }

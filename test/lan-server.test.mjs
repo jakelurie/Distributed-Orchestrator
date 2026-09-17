@@ -21,6 +21,15 @@ let turns = 0;
 const upstream = http.createServer((req, res) => {
   req.on('data', () => {});
   req.on('end', () => {
+    if (req.url.includes('queued=1')) {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      setTimeout(() => {
+        sse(res, { ...base, choices: [{ index: 0, delta: { content: 'Queued test reply' } }] });
+        sse(res, { ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
+        res.end('data: [DONE]\n\n');
+      }, 600);
+      return;
+    }
     // The "slow" model asks for a tool and then never answers, so the harness
     // sits in the legitimately-mid-tool state the repair path used to mangle.
     if (req.url.includes('slow=1')) {
@@ -54,6 +63,7 @@ await fs.writeFile(path.join(dataDir, 'models.json'), JSON.stringify({
   default: 'mock',
   models: {
     mock: { provider: 'openai', model: 'mock-1', label: 'Mock', baseUrl: upstreamUrl },
+    queued: { provider: 'openai', model: 'queue-test', baseUrl: `${upstreamUrl}?queued=1` },
     slow: { provider: 'openai', model: 'slow-1', label: 'Slow', baseUrl: `${upstreamUrl}?slow=1` },
   },
 }, null, 2));
@@ -334,6 +344,28 @@ check('a repointed session is no longer flagged',
   check('and no fabricated failed tool result',
     !midRead.events.some((e) => e.type === 'tool_result' && /interrupted/.test(e.output ?? '')));
   await call(`/api/sessions/${s5.id}/stop`, { method: 'POST' });
+}
+
+// A follow-up lives on the server and runs after the first reply, without SSE.
+{
+  const queued = await (await call('/api/sessions', { method: 'POST', body: JSON.stringify({
+    name: 'queue-test', model: 'queued', projectDir, mode: 'chat', gitPush: false,
+  }) })).json();
+  const post = (verb, text) => call(`/api/sessions/${queued.id}/${verb}`, {
+    method: 'POST', body: JSON.stringify({ text }),
+  });
+  check('queue test starts a turn', (await post('send', 'first')).status === 200);
+  check('a busy tab accepts one follow-up', (await post('queue', 'second')).status === 202);
+  check('another follow-up is rejected without replacing it', (await post('queue', 'third')).status === 409);
+  let saved;
+  for (let i = 0; i < 100; i++) {
+    saved = await (await call(`/api/sessions/${queued.id}`)).json();
+    if (saved.events.filter(e => e.type === 'assistant').length >= 2) break;
+    await new Promise(r => setTimeout(r, 100));
+  }
+  check('queued text runs in order without an open browser stream',
+    JSON.stringify(saved.events.filter(e => e.type === 'user').map(e => e.text)) === JSON.stringify(['first', 'second']));
+  check('both turns produce replies', saved.events.filter(e => e.type === 'assistant').length === 2);
 }
 
 // ---- browsing files, not just folders ----
