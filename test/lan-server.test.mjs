@@ -220,7 +220,11 @@ check('streamed a tool_start delta', frames.some((f) => f.kind === 'delta' && f.
 check('streamed persisted events', frames.some((f) => f.kind === 'event' && f.event?.type === 'assistant'));
 check('stream closed with done', frames.at(-1)?.kind === 'done');
 
-const wrote = await fs.readFile(path.join(projectDir, 'phone.txt'), 'utf8').catch(() => null);
+const isolated = await (await call(`/api/sessions/${session.id}`)).json();
+check('coding turn uses its own worktree', isolated.tabWorkspace?.dir && isolated.tabWorkspace.dir !== projectDir);
+const wrote = await fs.readFile(path.join(isolated.tabWorkspace?.dir ?? projectDir, 'phone.txt'), 'utf8').catch(() => null);
+check('without integration checks the shared folder stays unchanged', !(await fs.stat(path.join(projectDir, 'phone.txt')).catch(() => null)));
+check('missing integration checks are reported in the transcript', isolated.events.some((e) => e.type === 'note' && e.text?.includes('No automated integration check')));
 check('the turn actually wrote the file on the laptop', wrote === 'from the phone', JSON.stringify(wrote));
 
 const reloaded = await (await call(`/api/sessions/${session.id}`)).json();

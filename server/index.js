@@ -899,7 +899,7 @@ const server = http.createServer(async (req, res) => {
       const id = url.searchParams.get('session');
       const session = id ? (live.get(id) ?? (await store.load(id, { repair: false }).catch(() => null))) : null;
       if (!session) return json(res, 404, { error: 'no such session' });
-      return json(res, 200, { ...(await git.status(session.projectDir)), enabled: session.gitPush !== false });
+      return json(res, 200, { ...(await git.status(session.tabWorkspace?.dir ?? session.projectDir)), isolated: Boolean(session.tabWorkspace), enabled: session.gitPush !== false });
     }
 
     if (req.method === 'POST' && pathname === '/api/git/connect') {
@@ -924,10 +924,15 @@ const server = http.createServer(async (req, res) => {
       if (running.has(id)) return json(res, 409, { error: 'Wait for the tab to finish before integrating.' });
       if (!session.tabWorkspace) return json(res, 409, { error: 'Start an isolated coding turn before integrating changes.' });
       const last = [...session.events].reverse().find((e) => e.type === 'assistant');
-      return json(res, 200, await integrateTab(session, {
-        push: (await github.status()).authenticated,
-        model: session.model, servedModel: last?.servedModel,
-      }));
+      running.set(id, { controller: new AbortController(), startedAt: Date.now(), last: 'integration' });
+      try {
+        const result = await integrateTab(session, {
+          push: (await github.status()).authenticated,
+          model: session.model, servedModel: last?.servedModel,
+        });
+        await store.save(session);
+        return json(res, 200, result);
+      } finally { running.delete(id); }
     }
 
     // ---- monitors: whatever the user or the agent asked to watch
@@ -1194,7 +1199,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, session);
       }
       if (req.method === 'DELETE' && id) {
-        running.get(id)?.controller.abort();
+        if (running.has(id)) return json(res, 409, { error: 'Stop the turn and wait for it to finish before deleting this session.' });
         live.delete(id);
         await store.remove(id);
         return json(res, 200, { ok: true });
@@ -1318,6 +1323,7 @@ const server = http.createServer(async (req, res) => {
         const { text, attachments: atts } = await readBody(req);
         const session = await store.load(id);
         if (cluster.shared()) {
+          if (session.tabWorkspace && session.tabWorkspace.ownerNode !== cluster.self.id) return json(res, 409, { error: 'This tab has a Git worktree on another host. Reconnect that host to continue; tab branches are not yet migrated between hosts.' });
           await clusterAssets.session(session);
           for (const attachment of atts || []) await clusterAssets.restore(attachment);
           const previousOwner = session.ownerNode;
@@ -1347,45 +1353,45 @@ const server = http.createServer(async (req, res) => {
         let turnFailed = false;
         Promise.resolve().then(async () => {
           if (session.mode !== 'chat' && !session.monitorFor) {
-            if (cluster.shared()) throw new Error('Isolated coding turns currently require a single execution host. Cluster workspace migration cannot yet preserve tab branches; no shared files were edited.');
             await prepareTab(session);
+            if (cluster.shared()) session.tabWorkspace.ownerNode = cluster.self.id;
             prepared = true;
             await store.save(session);
           }
           return runTurn({
-          session,
-          models: cfg.models,
-          userText: text,
-          attachments: Array.isArray(atts) ? atts : [],
-          signal: controller.signal,
-          save: async (s) => {
-            if (cluster.shared()) {
-              if (!cluster.replica.writable()) throw new Error('Coordinator lost quorum; turn stopped.');
-              await workspaces.capture(s);
-            }
-            return store.save(s);
-          },
-          monitorsFile: monitorsPath(USER_DATA),
-          tailnetHost: await apps.tailnetHost().catch(() => null),
-          // A ready-to-run command for the monitor companion, so a custom view
-          // can reuse the server's own process discovery instead of redoing it.
-          activityCmd: `curl -s "http://127.0.0.1:${PORT}/api/activity?session=${
-            encodeURIComponent(session.monitorFor ?? session.id)
-          }&raw=1&t=$(cat ${JSON.stringify(path.join(USER_DATA, 'server-token'))})"`,
-          onEvent: (event) => broadcast(id, { kind: 'event', event }),
-          onDelta: (delta) => {
-            // Any sign of life counts: a token, a tool starting, a tool ending.
-            beacons.touch(id, delta.kind === 'tool_start' ? `${delta.call?.name} ${describeArg(delta.call)}` : delta.kind);
-            if (delta.kind === 'tool_start') turn.last = delta.call?.name ?? null;
-            if (delta.kind === 'rate_limit') {
-              providerLimits.set(session.model, { info: delta.info, at: Date.now() });
-              if (usage) {
-                usage.limits[session.model] = { info: delta.info, at: Date.now() };
-                usageDirty = true;
+            session,
+            models: cfg.models,
+            userText: text,
+            attachments: Array.isArray(atts) ? atts : [],
+            signal: controller.signal,
+            save: async (s) => {
+              if (cluster.shared()) {
+                if (!cluster.replica.writable()) throw new Error('Coordinator lost quorum; turn stopped.');
+                await workspaces.capture(s);
               }
-            }
-            broadcast(id, { kind: 'delta', delta });
-          },
+              return store.save(s);
+            },
+            monitorsFile: monitorsPath(USER_DATA),
+            tailnetHost: await apps.tailnetHost().catch(() => null),
+            // A ready-to-run command for the monitor companion, so a custom view
+            // can reuse the server's own process discovery instead of redoing it.
+            activityCmd: `curl -s "http://127.0.0.1:${PORT}/api/activity?session=${
+              encodeURIComponent(session.monitorFor ?? session.id)
+            }&raw=1&t=$(cat ${JSON.stringify(path.join(USER_DATA, 'server-token'))})"`,
+            onEvent: (event) => broadcast(id, { kind: 'event', event }),
+            onDelta: (delta) => {
+              // Any sign of life counts: a token, a tool starting, a tool ending.
+              beacons.touch(id, delta.kind === 'tool_start' ? `${delta.call?.name} ${describeArg(delta.call)}` : delta.kind);
+              if (delta.kind === 'tool_start') turn.last = delta.call?.name ?? null;
+              if (delta.kind === 'rate_limit') {
+                providerLimits.set(session.model, { info: delta.info, at: Date.now() });
+                if (usage) {
+                  usage.limits[session.model] = { info: delta.info, at: Date.now() };
+                  usageDirty = true;
+                }
+              }
+              broadcast(id, { kind: 'delta', delta });
+            },
           });
         })
           .catch(async (e) => {
@@ -1398,7 +1404,7 @@ const server = http.createServer(async (req, res) => {
           .finally(async () => {
             beacons.stop(id);
 
-            // Commit whatever the turn changed on disk. Failures are reported
+            // Integrate only this tab's tested work. Failures are reported
             // into the transcript rather than thrown: a git problem should not
             // look like the turn itself failed.
             // On by default: only an explicit false turns it off, so sessions
@@ -1415,6 +1421,7 @@ const server = http.createServer(async (req, res) => {
                 const app = session.appId
                   ? (await apps.load(USER_DATA)).find((a) => a.id === session.appId) : null;
                 const res = await integrateTab(session, {
+                  signal: controller.signal,
                   push: (await github.status()).authenticated,
                   appName: app?.name,
                   model: session.model,
@@ -1430,7 +1437,7 @@ const server = http.createServer(async (req, res) => {
                 } else if (!res.ok) {
                   session.events.push(noteEvent(`git: ${res.error ?? res.skipped}`));
                 } else {
-                  const where = res.pushed ? 'pushed' : `committed (not pushed — ${res.reason})`;
+                  const where = res.pushed ? 'integrated and pushed' : `integrated locally (not pushed — ${res.reason})`;
                   session.events.push(noteEvent(
                     `git: ${where} ${res.files.length} file${res.files.length === 1 ? '' : 's'} · ${res.sha}`,
                   ));
@@ -1493,6 +1500,12 @@ const server = http.createServer(async (req, res) => {
                 broadcast(id, { kind: 'event', event: session.events.at(-1) });
               }
             })().catch(() => {});
+          }).catch((e) => {
+            running.delete(id);
+            live.delete(id);
+            beacons.stop(id);
+            broadcast(id, { kind: 'error', error: e?.message ?? String(e) });
+            broadcast(id, { kind: 'done' });
           });
         return undefined;
       }

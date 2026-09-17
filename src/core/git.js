@@ -182,7 +182,7 @@ export async function deleteAppRepo(app, confirmation, execute = promisify(execF
   return repo;
 }
 
-async function createPrivateRepo(root, branch, appName) {
+export async function createPrivateRepo(root, branch, appName) {
   const name = defaultRepoName(root, appName);
   const env = await githubEnv();
   const res = await new Promise((resolve) => {

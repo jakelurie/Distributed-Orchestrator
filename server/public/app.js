@@ -1078,10 +1078,20 @@ async function settingsSheet() {
 }
 
 async function githubSheet() {
-  openSheet(`<h2>GitHub connection</h2><p id="github-status" class="dim">Checking connection…</p>
+  openSheet(`<h2>GitHub connection</h2>
+    <div class="item"><div class="grow"><div id="github-status" role="status">Checking connection…</div></div></div>
+    <div id="github-code-panel" class="github-code-panel" hidden>
+      <p class="dim">Enter this confirmation code on GitHub</p>
+      <output id="github-code" class="github-code" aria-label="GitHub confirmation code"></output>
+      <button class="ghost" id="github-copy">Copy code</button>
+      <p class="dim">After approving, return here. We’ll connect automatically.</p>
+    </div>
     <div id="github-actions" class="actions"></div>
-    <p class="dim">Without GitHub, work stays on your hosts and synchronizes within your paired cluster. Connecting enables repository pushes for sessions with automatic Git enabled. New app repositories are private; change visibility in Edit session → Git &amp; GitHub.</p>
-    <p class="dim">A system connection is stored privately and shared with paired hosts. GitHub receives project files and commit history, not your session transcripts or saved integration credentials. Connecting does not publish all existing projects immediately; their next changed turn can create or update the repository.</p>
+    <p class="dim">Back up your projects to private GitHub repositories.</p>
+    <details class="github-details"><summary>What gets shared</summary>
+      <p class="dim">GitHub receives project files and commit history, not chat transcripts or saved integration credentials. The connection is shared with your paired hosts.</p>
+      <p class="dim">Projects with automatic Git enabled are pushed after their next changed turn. New repositories are private. Manage visibility in Edit session → Git &amp; GitHub.</p>
+    </details>
     ${backToSettings}`);
   const box = $('github-status');
   $('sub-back').onclick = settingsSheet;
@@ -1099,7 +1109,13 @@ async function githubSheet() {
         box.textContent = result.error || 'No login in progress. Reopen GitHub connection to try again.';
         return;
       }
-      box.textContent = result.code ? `Enter this code on GitHub: ${result.code}` : 'Preparing GitHub login…';
+      box.textContent = result.code ? 'Waiting for approval' : 'Preparing GitHub login…';
+      $('github-code-panel').hidden = !result.code;
+      $('github-code').textContent = result.code || '';
+      $('github-copy').onclick = async () => {
+        const copied = await copyText(result.code);
+        if (present()) $('github-copy').textContent = copied ? 'Copied' : 'Select the code to copy';
+      };
       $('github-actions').innerHTML = result.code
         ? '<a class="primary" href="https://github.com/login/device" target="_blank" rel="noopener noreferrer">Continue on GitHub</a>' : '';
       setTimeout(poll, 2000);
@@ -1109,7 +1125,7 @@ async function githubSheet() {
     const status = await api('/api/github');
     if (!present()) return;
     box.textContent = status.authenticated
-      ? `Connected as ${status.login} · system connection`
+      ? `Connected as ${status.login}`
       : 'GitHub is not connected. Your work stays on your hosts.';
     if (status.authenticated) return;
     $('github-actions').innerHTML = `<button class="primary" id="github-connect">Connect GitHub</button>`;
@@ -1724,12 +1740,13 @@ async function paintGit(session) {
         <div class="row"><input id="g-remote" placeholder="git@github.com:you/repo.git" spellcheck="false" />
         <button class="ghost" id="g-connect" style="flex:0 0 80px">connect</button></div>`}
       <div id="g-vis"></div>
-      <div class="actions"><button class="ghost" id="g-now">commit &amp; push now</button></div>`;
+      <div class="actions"><button class="ghost" id="g-now">check &amp; integrate now</button></div>`;
   }
 
+  if (g.isolated) box.insertAdjacentHTML('afterbegin', '<p class="dim">This tab has its own working copy. Changes reach the project only after merging and passing integration checks.</p>');
   box.insertAdjacentHTML('afterbegin', `<div class="row">
     <button class="ghost${g.enabled ? '' : ' on'}" data-git="off">automatic commits off</button>
-    <button class="ghost${g.enabled ? ' on' : ''}" data-git="on">commit &amp; push after each turn</button>
+    <button class="ghost${g.enabled ? ' on' : ''}" data-git="on">check &amp; integrate after each turn</button>
   </div>`);
 
   box.querySelectorAll('[data-git]').forEach((el) => {
@@ -1785,13 +1802,17 @@ async function paintGit(session) {
   }
   if ($('g-now')) {
     $('g-now').onclick = async () => {
-      $('g-now').textContent = 'working…';
-      const r = await api('/api/git/push', { method: 'POST', body: JSON.stringify({ session: session.id }) });
-      showBanner(r.skipped === 'no changes' ? 'nothing to commit'
-        : !r.ok ? `git: ${r.error}`
-          : r.pushed ? `pushed ${r.files.length} files · ${r.sha}`
-            : `committed ${r.sha} — not pushed: ${r.reason}`);
-      paintGit(session);
+      const button = $('g-now');
+      button.textContent = 'checking…';
+      button.disabled = true;
+      try {
+        const r = await api('/api/git/push', { method: 'POST', body: JSON.stringify({ session: session.id }) });
+        showBanner(r.skipped === 'no changes' ? 'nothing to integrate'
+          : !r.ok ? `git: ${r.error}`
+            : r.pushed ? `integrated and pushed ${r.files.length} files · ${r.sha}`
+              : `integrated ${r.sha} — not pushed: ${r.reason}`);
+      } catch (e) { showBanner(e.message, true); }
+      finally { await paintGit(session); }
     };
   }
 }

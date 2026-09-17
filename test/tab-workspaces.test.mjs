@@ -1,0 +1,89 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { prepareTab, integrateTab } from '../src/core/tab-workspaces.js';
+import { systemPromptFor } from '../src/core/agent.js';
+const exec = promisify(execFile);
+const root = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-tabs-'));
+const git = async (...args) => (await exec('git', args, { cwd: root })).stdout.trim();
+const session = (id) => ({ id, mode: 'agent', projectDir: root });
+const write = (s, name, text) => fs.writeFile(path.join(s.tabWorkspace.dir, name), text);
+try {
+  await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({ scripts: { test: 'node check.cjs' } }));
+  await fs.writeFile(path.join(root, 'check.cjs'), "const fs = require('node:fs'); if (fs.existsSync('bad')) process.exit(1);\n");
+  await fs.writeFile(path.join(root, 'shared.txt'), 'original\n');
+  const large = session('large'), small = session('small');
+  await prepareTab(large);
+  await prepareTab(small);
+  assert.notEqual(large.tabWorkspace.dir, small.tabWorkspace.dir);
+  assert.match(systemPromptFor(large), /isolated Git worktree/);
+  await write(large, 'large.txt', 'unfinished\n');
+  await write(small, 'small.txt', 'ready\n');
+  assert.equal((await integrateTab(small)).integrated, true);
+  assert.equal(await fs.readFile(path.join(root, 'small.txt'), 'utf8'), 'ready\n');
+  await assert.rejects(fs.stat(path.join(root, 'large.txt')), { code: 'ENOENT' });
+  assert.equal(await fs.readFile(path.join(large.tabWorkspace.dir, 'large.txt'), 'utf8'), 'unfinished\n');
+  assert.equal((await integrateTab(large)).integrated, true);
+  assert.equal(await fs.readFile(path.join(root, 'large.txt'), 'utf8'), 'unfinished\n');
+  console.log('PASS small tab lands independently; later tab incorporates the earlier merge');
+
+  const a = session('a'), b = session('b');
+  await Promise.all([prepareTab(a), prepareTab(b)]);
+  await write(a, 'a.txt', 'a\n'); await write(b, 'b.txt', 'b\n');
+  const results = await Promise.all([integrateTab(a), integrateTab(b)]);
+  assert.ok(results.every((r) => r.integrated));
+  assert.equal(await git('status', '--porcelain'), '');
+  console.log('PASS simultaneous finishes serialize and both changes survive');
+
+  const first = session('first'), conflict = session('conflict');
+  await prepareTab(first); await prepareTab(conflict);
+  await write(first, 'shared.txt', 'first\n'); await write(conflict, 'shared.txt', 'second\n');
+  await integrateTab(first);
+  await assert.rejects(integrateTab(conflict), /Merge conflict/);
+  assert.equal(await fs.readFile(path.join(root, 'shared.txt'), 'utf8'), 'first\n');
+  assert.equal(await fs.readFile(path.join(conflict.tabWorkspace.dir, 'shared.txt'), 'utf8'), 'second\n');
+  const restored = session('conflict'); await prepareTab(restored);
+  assert.equal(restored.tabWorkspace.dir, conflict.tabWorkspace.dir);
+  console.log('PASS conflicts preserve the main project and the tab, including reopen');
+
+  const failing = session('failing'); await prepareTab(failing);
+  await write(failing, 'bad', 'fail\n');
+  const before = await git('rev-parse', 'HEAD');
+  await assert.rejects(integrateTab(failing), /Integration check failed/);
+  assert.equal(await git('rev-parse', 'HEAD'), before);
+  assert.match(await fs.readFile(failing.integrationLog, 'utf8'), /node check.cjs/);
+  await fs.unlink(path.join(failing.tabWorkspace.dir, 'bad'));
+  assert.equal((await integrateTab(failing)).integrated, true);
+  console.log('PASS failing tests block integration and a corrected tab can retry');
+
+  const dirty = session('dirty'); await prepareTab(dirty); await write(dirty, 'new.txt', 'new\n');
+  await fs.writeFile(path.join(root, 'manual.txt'), 'manual\n');
+  await assert.rejects(integrateTab(dirty), /uncommitted edits/);
+  await assert.rejects(prepareTab(session('blocked')), /uncommitted changes/);
+  assert.equal(await fs.readFile(path.join(root, 'manual.txt'), 'utf8'), 'manual\n');
+  await fs.unlink(path.join(root, 'manual.txt'));
+  console.log('PASS manual shared edits are never swept into tab commits');
+
+  const noCheck = session('no-check'); await prepareTab(noCheck);
+  await write(noCheck, 'package.json', '{}\n');
+  await assert.rejects(integrateTab(noCheck), /No automated integration check/);
+  const lock = path.join(noCheck.tabWorkspace.common, 'harness-integration.lock');
+  await fs.mkdir(lock);
+  await assert.rejects(prepareTab(session('locked')), /integration lock/);
+  await fs.rmdir(lock);
+  console.log('PASS missing checks and another process lock fail safely');
+  await write(noCheck, '.harness-integration.json', JSON.stringify({ command: 'node check.cjs' }));
+  assert.equal((await integrateTab(noCheck)).integrated, true);
+  console.log('PASS custom integration commands support non-npm projects');
+
+  const stopped = session('stopped'); await prepareTab(stopped);
+  await write(stopped, 'stopped.txt', 'not ready\n');
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(integrateTab(stopped, { signal: controller.signal }), /abort/i);
+  await assert.rejects(fs.stat(path.join(root, 'stopped.txt')), { code: 'ENOENT' });
+  assert.equal(await fs.readFile(path.join(stopped.tabWorkspace.dir, 'stopped.txt'), 'utf8'), 'not ready\n');
+  console.log('PASS cancelled integration retains tab edits without publishing');
+} finally { await fs.rm(root, { recursive: true, force: true }); }

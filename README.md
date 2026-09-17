@@ -142,9 +142,35 @@ Each session has a project directory, a model, and a mode:
 A session is confined to its project directory. It can be granted other folders
 as **read-only**, for one project that consumes another's output.
 
-Turn on **push after each turn** and the file changes a turn produced are
-committed and pushed. Commit messages describe the files and which model changed
-them — never what you typed.
+Coding tabs use separate Git worktrees. With **check & integrate after each turn**
+enabled, finished tabs enter a per-project queue. The harness commits only that
+tab, merges the current project branch into it, runs checks, and fast-forwards the
+shared project only if checks pass. Small tasks can land while other tabs keep
+working. Conflicts, failed checks, cancellation, and uncommitted shared edits do
+not publish the tab. Its files and branch remain available for correction.
+
+Checks default to `npm ci` (when dependencies are declared) followed by `npm test`.
+For other projects, commit `.harness-integration.json` containing, for example,
+`{"command":"python -m pytest"}`. This command runs in the tab worktree and should
+install any needed dependencies and run the project's checks. Without a test
+script or custom command, integration stops and preserves the tab commit. Logs
+are in the repository's Git directory under `harness-tabs`, and failures include
+the log path. Use **check & integrate now** to retry after resolving the problem.
+
+New repositories receive an initial snapshot before tabs are created. Existing
+repositories must have a clean shared checkout; existing uncommitted work is
+never silently swept into a tab. Dependencies and ignored files are not copied
+between tabs. Turning automatic integration off keeps work in the tab; it does
+not restore shared editing. Tab worktrees and branches are retained when sessions
+are deleted, for recovery. A process interrupted during integration may leave
+`harness-integration.lock` in the Git directory; remove that empty directory only
+after confirming no harness process is integrating the project.
+
+Tabs can operate on their current cluster host, but their Git worktrees cannot
+yet migrate between hosts. Reconnect the original host to resume such a tab.
+Independent external editors and Git commands do not participate in the harness
+queue; keep the shared checkout idle during integration. Changes to the running
+harness still require a restart after integration.
 
 ## Layout
 

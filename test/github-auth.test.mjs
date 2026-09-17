@@ -68,3 +68,24 @@ await context.$('github-connect').onclick();
 assert.match(context.$('github-status').textContent, /Connected as user/);
 assert.ok(!calls.includes('/api/github/share'));
 console.log('PASS frontend has one connection flow');
+
+// Waiting approval has a selectable code, copy feedback, and a distinct action.
+let copied;
+context.copyText = async (value) => { copied = value; return true; };
+context.setTimeout = () => {};
+context.api = async (url) => url.endsWith('/login')
+  ? { state: 'waiting', code: 'ABCD-1234' } : { authenticated: false };
+await context.githubSheet();
+assert.match(rendered, /<details class="github-details"><summary>What gets shared/);
+assert.doesNotMatch(rendered, /github-details" open/);
+assert.equal(context.$('github-code-panel').hidden, false);
+assert.equal(context.$('github-code').textContent, 'ABCD-1234');
+assert.equal(context.$('github-status').textContent, 'Waiting for approval');
+assert.match(context.$('github-actions').innerHTML, /Continue on GitHub/);
+await context.$('github-copy').onclick();
+assert.equal(copied, 'ABCD-1234');
+assert.equal(context.$('github-copy').textContent, 'Copied');
+context.copyText = async () => false;
+await context.$('github-copy').onclick();
+assert.equal(context.$('github-copy').textContent, 'Select the code to copy');
+console.log('PASS GitHub approval code and copy feedback are separate from collapsed details');

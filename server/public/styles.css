@@ -714,3 +714,24 @@ button.primary.danger:active { background: #db5f78; }
 @media (prefers-reduced-motion: reduce) {
   .session-busy-dot { animation: none; }
 }
+
+/* GitHub device approval keeps the code distinct from supporting details. */
+.github-code-panel {
+  margin-top: 16px; padding: 16px; text-align: center;
+  background: var(--bg-2); border: 1px solid var(--accent); border-radius: 12px;
+}
+.github-code-panel[hidden] { display: none; }
+.github-code {
+  display: block; margin: 16px 0; font-family: var(--mono);
+  font-size: clamp(24px, 7vw, 34px); letter-spacing: .12em;
+  color: var(--fg); overflow-wrap: anywhere; user-select: all;
+}
+.github-code-panel .ghost { width: 100%; }
+.github-details { margin-top: 16px; }
+.github-details summary {
+  min-height: 44px; display: flex; align-items: center;
+  color: var(--fg-dim); cursor: pointer;
+}
+.github-details summary::before { content: '›'; margin-right: 8px; }
+.github-details[open] summary::before { content: '⌄'; }
+#github-status { overflow-wrap: anywhere; }

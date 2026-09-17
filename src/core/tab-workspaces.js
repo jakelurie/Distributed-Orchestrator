@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { commitAndPush } from './git.js';
+import { commitAndPush, createPrivateRepo } from './git.js';
 
 const exec = promisify(execFile);
 const identity = ['-c', 'user.name=Harness', '-c', 'user.email=harness@localhost'];
@@ -36,10 +36,19 @@ async function locked(repo, action) {
 export async function prepareTab(session) {
   let repo;
   try { repo = await repository(session.projectDir); }
-  catch { throw new Error('Parallel tabs need an initialized Git repository with an initial commit. Initialize and commit the project before starting a coding turn.'); }
+  catch {
+    await git(session.projectDir, 'init', '-b', 'main');
+    repo = await repository(session.projectDir);
+  }
   return locked(repo, async () => {
     const branch = await git(repo.root, 'symbolic-ref', '--short', 'HEAD');
-    const head = await git(repo.root, 'rev-parse', 'HEAD');
+    let head;
+    try { head = await git(repo.root, 'rev-parse', 'HEAD'); }
+    catch {
+      await git(repo.root, 'add', '-A');
+      await git(repo.root, 'commit', '--allow-empty', '-m', 'harness: initial project snapshot');
+      head = await git(repo.root, 'rev-parse', 'HEAD');
+    }
     if (!await clean(repo.root)) throw new Error('The shared project has uncommitted changes. Commit or move those changes before starting an isolated tab; they will not be included automatically.');
     const key = crypto.createHash('sha256').update(session.id).digest('hex').slice(0, 24);
     const dir = path.join(repo.common, 'harness-tabs', key);
@@ -63,23 +72,32 @@ export async function prepareTab(session) {
   });
 }
 
-async function validate(dir, log) {
-  await git(dir, 'diff', '--check', 'HEAD^', 'HEAD').catch(async () => { await git(dir, 'diff', '--check'); });
+async function validate(dir, log, base, signal) {
+  await git(dir, 'diff', '--check', base, 'HEAD');
   let pkg;
   try { pkg = JSON.parse(await fs.readFile(path.join(dir, 'package.json'), 'utf8')); }
   catch (e) { if (e.code !== 'ENOENT') throw e; }
-  if (!pkg?.scripts?.test) throw new Error('No automated integration check configured. Add a package.json test script; the tab commit has been kept without changing the project.');
+  let custom;
+  try { custom = JSON.parse(await fs.readFile(path.join(dir, '.harness-integration.json'), 'utf8')).command; }
+  catch (e) { if (e.code !== 'ENOENT') throw e; }
+  if (custom !== undefined && (typeof custom !== 'string' || !custom.trim())) throw new Error('.harness-integration.json needs a nonempty command string.');
+  if (!custom && !pkg?.scripts?.test) throw new Error('No automated integration check configured. Add a package.json test script or .harness-integration.json with a command; the tab commit has been kept without changing the project.');
   const output = await fs.open(log, 'w');
-  const run = async (args) => new Promise((resolve, reject) => {
-    execFile(process.platform === 'win32' ? 'npm.cmd' : 'npm', args,
-      { cwd: dir, timeout: 600_000, maxBuffer: 16e6 }, async (error, stdout, stderr) => {
+  const run = async (command, args) => new Promise((resolve, reject) => {
+    execFile(command, args,
+      { cwd: dir, timeout: 600_000, maxBuffer: 16e6, signal }, async (error, stdout, stderr) => {
         try { await output.writeFile(stdout + stderr); error ? reject(new Error(`Integration check failed (${args.join(' ')}). See ${log}`)) : resolve(); }
         catch (e) { reject(e); }
       });
   });
   try {
-    if (Object.keys(pkg.dependencies ?? {}).length || Object.keys(pkg.devDependencies ?? {}).length) await run(['ci', '--no-audit', '--no-fund']);
-    await run(['test']);
+    if (custom) {
+      await run(process.platform === 'win32' ? 'cmd.exe' : '/bin/sh', process.platform === 'win32' ? ['/d', '/s', '/c', custom] : ['-c', custom]);
+    } else {
+      const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+      if (Object.keys(pkg.dependencies ?? {}).length || Object.keys(pkg.devDependencies ?? {}).length) await run(npm, ['ci', '--no-audit', '--no-fund']);
+      await run(npm, ['test']);
+    }
   } finally { await output.close(); }
   if (!await clean(dir)) throw new Error('Integration checks changed tracked or unignored files; review the tab before integrating.');
 }
@@ -91,6 +109,7 @@ export async function integrateTab(session, options = {}) {
   if (repo.root !== ws.root || repo.common !== ws.common) throw new Error('The project moved; reopen the tab before integrating.');
   return locked(repo, async () => {
     if (await git(ws.dir, 'symbolic-ref', '--short', 'HEAD') !== ws.branch) throw new Error('Tab branch changed; integration stopped.');
+    options.signal?.throwIfAborted();
     const saved = await commitAndPush(ws.dir, { push: false });
     if (!saved.ok) return saved;
     const head = await git(repo.root, 'rev-parse', 'HEAD');
@@ -108,7 +127,8 @@ export async function integrateTab(session, options = {}) {
     const candidate = await git(ws.dir, 'rev-parse', 'HEAD');
     const log = path.join(repo.common, 'harness-tabs', `${path.basename(ws.dir)}-checks.log`);
     session.integrationLog = log;
-    await validate(ws.dir, log);
+    await validate(ws.dir, log, head, options.signal);
+    options.signal?.throwIfAborted();
     if (await git(ws.dir, 'rev-parse', 'HEAD') !== candidate || !await clean(ws.dir)) throw new Error('Tab changed during checks; retry integration.');
     if (await git(repo.root, 'rev-parse', 'HEAD') !== head || !await clean(repo.root)
       || await git(repo.root, 'symbolic-ref', '--short', 'HEAD') !== ws.target) throw new Error('Shared project changed during checks; retry integration.');
@@ -116,11 +136,17 @@ export async function integrateTab(session, options = {}) {
     await git(repo.root, 'merge', '--ff-only', candidate);
     // Publish the integrated target, never the private tab branch. A push failure
     // leaves the validated commit in the local project for a later retry.
-    let pushed = false, reason = 'push disabled';
+    let pushed = false, created, reason = 'push disabled';
     if (options.push) {
-      try { await git(repo.root, 'push', '-u', 'origin', ws.target); pushed = true; reason = null; }
+      try {
+        const remotes = await git(repo.root, 'remote');
+        if (!remotes.split('\n').includes('origin') && options.autoCreatePrivate) {
+          const result = await createPrivateRepo(repo.root, ws.target, options.appName);
+          pushed = result.ok; created = result.repo; reason = result.reason;
+        } else { await git(repo.root, 'push', '-u', 'origin', ws.target); pushed = true; reason = null; }
+      }
       catch (e) { reason = e.stderr || e.message; }
     }
-    return { ok: true, committed: true, integrated: true, sha: candidate.slice(0, 8), files, pushed, reason };
+    return { ok: true, committed: true, integrated: true, sha: candidate.slice(0, 8), files, pushed, reason, created };
   });
 }

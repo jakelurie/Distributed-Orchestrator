@@ -49,8 +49,9 @@ await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const port = server.address().port;
 
 const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-e2e-'));
+const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-e2e-tab-'));
 const session = {
-  id: 's1', name: 'e2e', model: 'mock', projectDir,
+  id: 's1', name: 'e2e', model: 'mock', projectDir, tabWorkspace: { dir: workDir },
   confineToProjectDir: true, system: '', events: [],
 };
 const models = {
@@ -77,7 +78,8 @@ const check = (label, cond, extra = '') => {
 const kinds = session.events.map((e) => e.type);
 check('two requests were made (tool call, then follow-up)', calls === 2, `calls=${calls}`);
 
-const written = await fs.readFile(path.join(projectDir, 'greeting.txt'), 'utf8').catch(() => null);
+const written = await fs.readFile(path.join(workDir, 'greeting.txt'), 'utf8').catch(() => null);
+check('shared project was not edited', !(await fs.stat(path.join(projectDir, 'greeting.txt')).catch(() => null)));
 check('tool actually wrote the file', written === 'hello from the harness\n', JSON.stringify(written));
 
 const assistants = session.events.filter((e) => e.type === 'assistant');
@@ -100,7 +102,7 @@ check('follow-up request replays the assistant tool_call', Boolean(asstWithTool)
 check('follow-up request includes a matching tool result',
   toolMsg?.tool_call_id === asstWithTool?.tool_calls?.[0]?.id,
   `${toolMsg?.tool_call_id} vs ${asstWithTool?.tool_calls?.[0]?.id}`);
-check('system prompt sent as a system message', second[0]?.role === 'system' && second[0].content.includes(projectDir));
+check('system prompt sent as a system message', second[0]?.role === 'system' && second[0].content.includes(workDir));
 
 console.log(`\n${fail.length ? `${fail.length} FAILED` : 'all green'}`);
 process.exit(fail.length ? 1 : 0);
