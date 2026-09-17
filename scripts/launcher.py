@@ -4,8 +4,6 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
-import tkinter as tk
-from tkinter import ttk, messagebox
 import urllib.request
 import urllib.error
 import webbrowser
@@ -24,6 +22,9 @@ def configuration():
     return env
 
 def main():
+    # Configuration is also used without a GUI (including integration checks).
+    import tkinter as tk
+    from tkinter import ttk, messagebox
     env = configuration()
     url = 'http://127.0.0.1:' + env.get('HARNESS_PORT', '8787')
     window = tk.Tk()

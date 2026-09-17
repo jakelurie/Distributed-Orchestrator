@@ -5,7 +5,9 @@ const pkg = JSON.parse(await fs.readFile('package.json'));
 assert.equal(pkg.scripts.start, 'node scripts/launch.mjs');
 assert.equal(pkg.devDependencies?.electron, undefined);
 assert.equal(pkg.build, undefined);
-const result = spawnSync('python3', ['-c', `
+// The Mac launcher uses platform tools; do not inherit an unrelated Homebrew Python.
+const python = process.platform === 'darwin' ? '/usr/bin/python3' : 'python3';
+const result = spawnSync(python, ['-c', `
 import importlib.util, os, tempfile
 from pathlib import Path
 spec = importlib.util.spec_from_file_location('launcher', 'scripts/launcher.py')
@@ -30,7 +32,7 @@ for (const extension of ['command', 'cmd', 'sh']) {
   await assert.rejects(fs.access('Launch Distributed Orchestrator.' + extension));
 }
 if (process.platform === 'darwin') {
-  const build = spawnSync('python3', ['scripts/build-launcher.py'], { encoding: 'utf8' });
+  const build = spawnSync(python, ['scripts/build-launcher.py'], { encoding: 'utf8' });
   assert.equal(build.status, 0, build.stderr);
   const bundle = 'Launch Distributed Orchestrator.app';
   await fs.access(bundle + '/Contents/MacOS/OrchestratorLauncher', fs.constants.X_OK);

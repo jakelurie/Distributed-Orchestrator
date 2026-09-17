@@ -4,6 +4,8 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 
 import { loadMonitors, sample, sampleAll, upsertMonitor, removeMonitor } from '../src/core/monitors.js';
 import { systemPromptFor } from '../src/core/agent.js';
@@ -33,8 +35,20 @@ check('and does not ship the whole file', fileSample.text.length <= 8000, String
 
 // process
 await upsertMonitor(dir, { id: 'self', label: 'This node', kind: 'process', match: 'node' });
-const proc = await sample({ id: 'self', kind: 'process', match: 'node' });
-check('a process monitor counts matches', proc.ok && proc.count > 0, `count=${proc.count}`);
+// Own the monitored process; the integration runner may have no unrelated Node processes.
+const marker = `orchestrator-monitor-fixture-${process.pid}`;
+const fixture = spawn(process.execPath, ['-e', 'process.send("ready"); setInterval(() => {}, 1000)', marker], {
+  stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+});
+const fixtureExit = once(fixture, 'exit');
+try {
+  await once(fixture, 'message');
+  const proc = await sample({ id: 'self', kind: 'process', match: marker });
+  check('a process monitor counts matches', proc.ok && proc.count === 1 && proc.text.includes(String(fixture.pid)), `count=${proc.count}`);
+} finally {
+  fixture.kill();
+  await fixtureExit;
+}
 const absent = await sample({ id: 'x', kind: 'process', match: 'definitely-not-a-real-process-xyz' });
 check('an absent process reports not running', absent.count === 0 && absent.text === 'not running');
 
