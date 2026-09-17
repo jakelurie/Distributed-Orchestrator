@@ -1053,7 +1053,6 @@ async function settingsSheet() {
       <button class="rowlink" id="h-models"><span>AI sources</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-voice"><span>Voice setup</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-notify"><span>Notifications</span><span class="chev">›</span></button>
-      <button class="rowlink" id="h-email"><span>Email</span><span class="chev">›</span></button>
     </div>
     <div class="actions"><button class="primary" id="s-close">done</button></div>`);
 
@@ -1064,7 +1063,6 @@ async function settingsSheet() {
   $('h-models').onclick = modelsSheet;
   $('h-voice').onclick = () => window.voiceSetup();
   $('h-notify').onclick = notifySheet;
-  $('h-email').onclick = emailSheet;
 
   $('s-close').onclick = closeSheet;
 }
@@ -1449,18 +1447,32 @@ function sourceSheet() {
 
 function notifySheet() {
   openSheet(`<h2>Notifications</h2>
+    <p class="dim">Choose which ways the harness can reach you. Email and Text can each be enabled independently.</p>
+    <div class="rowlinks">
+      <button class="rowlink" id="h-email"><span>Email</span><span class="chev">›</span></button>
+      <button class="rowlink" id="h-text"><span>Text</span><span class="chev">›</span></button>
+    </div>${backToSettings}`);
+  $('sub-back').onclick = settingsSheet;
+  $('h-email').onclick = emailSheet;
+  $('h-text').onclick = textSheet;
+}
+
+const backToNotifications = '<div class="actions"><button class="ghost" id="sub-back">‹ notifications</button></div>';
+
+function textSheet() {
+  openSheet(`<h2>Text</h2>
     <p class="dim">When a turn finishes, and when one stalls.</p>
     <div id="s-notify"><p class="dim">loading…</p></div>
-    <p id="notify-status" class="dim" role="status" aria-live="polite"></p>${backToSettings}`);
-  $('sub-back').onclick = settingsSheet;
+    <p id="notify-status" class="dim" role="status" aria-live="polite"></p>${backToNotifications}`);
+  $('sub-back').onclick = notifySheet;
   paintNotify();
 }
 
 function emailSheet() {
   openSheet(`<h2>Email</h2>
-    <p class="dim">Any session can email you with <span class="mono">send_email</span> — useful when a long run finishes and you are not watching.</p>
-    <div id="s-email"><p class="dim">loading…</p></div>${backToSettings}`);
-  $('sub-back').onclick = settingsSheet;
+    <p class="dim">Receive email when a turn stalls or a session sends you an update.</p>
+    <div id="s-email"><p class="dim">loading…</p></div>${backToNotifications}`);
+  $('sub-back').onclick = notifySheet;
   paintEmail();
 }
 
@@ -1493,16 +1505,29 @@ async function paintEmail() {
   try { e = await api('/api/email'); } catch (err) { box.innerHTML = `<p class="dim">${esc(err.message)}</p>`; return; }
 
   box.innerHTML = `
+    <label>Email notifications</label>
+    <div class="row">
+      <button class="ghost${e.enabled ? '' : ' on'}" data-email="off" aria-pressed="${!e.enabled}">off</button>
+      <button class="ghost${e.enabled ? ' on' : ''}" data-email="on" aria-pressed="${Boolean(e.enabled)}">on</button>
+    </div>
     <label>Send to</label>
     <input id="em-to" value="${esc(e.to ?? '')}" placeholder="you@example.com" inputmode="email" spellcheck="false" />
     <label>Resend API key ${e.hasKey ? '<span class="pill ready">saved</span>' : '<span class="pill missing">none</span>'}</label>
     <input id="em-key" value="" placeholder="${e.hasKey ? 'saved — type to replace' : 're_...'}" spellcheck="false" />
     <div class="actions">
       <button class="ghost" id="em-save">save</button>
-      <button class="ghost" id="em-test"${e.hasKey && e.to ? '' : ' disabled'}>send test</button>
+      <button class="ghost" id="em-test"${e.enabled && e.hasKey && e.to ? '' : ' disabled'}>send test</button>
     </div>
     <p class="dim" id="em-msg"></p>`;
 
+  box.querySelectorAll('[data-email]').forEach((el) => {
+    el.onclick = async () => {
+      try {
+        await api('/api/email', { method: 'POST', body: JSON.stringify({ enabled: el.dataset.email === 'on' }) });
+        await paintEmail();
+      } catch (err) { $('em-msg').textContent = err.message; }
+    };
+  });
   $('em-save').onclick = async () => {
     const body = { to: $('em-to').value.trim() };
     // An empty box means "leave it alone", not "erase the key".
@@ -1580,7 +1605,7 @@ async function paintNotify() {
 
   const patch = async (body) => { await api('/api/notify', { method: 'POST', body: JSON.stringify(body) }); paintNotify(); };
   box.querySelectorAll('[data-notify]').forEach((el) => {
-    el.onclick = () => patch({ enabled: el.dataset.notify === 'on' });
+    el.onclick = () => patch({ enabled: el.dataset.notify === 'on' }).catch((e) => feedback(e.message));
   });
   box.querySelectorAll('[data-nkind]').forEach((el) => {
     el.onclick = () => patch({ kind: el.dataset.nkind });

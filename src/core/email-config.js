@@ -27,6 +27,7 @@ export async function loadEmailConfig(userDataDir) {
 
   const secrets = await loadSecrets(userDataDir);
   return {
+    enabled: file.enabled ?? Boolean(file.to && (secrets[RESEND_ALIAS] || process.env.RESEND_API_KEY)),
     to: file.to ?? null,
     from: file.from ?? null,
     // The environment stays a fallback, matching how model keys behave.
@@ -39,12 +40,13 @@ export async function loadEmailConfig(userDataDir) {
   };
 }
 
-export async function saveEmailConfig(userDataDir, { to, from, apiKey, gmailUser, gmailPass, carrier }) {
+export async function saveEmailConfig(userDataDir, { enabled, to, from, apiKey, gmailUser, gmailPass, carrier }) {
   if (apiKey !== undefined) await setSecret(userDataDir, RESEND_ALIAS, apiKey);
   if (gmailPass !== undefined) await setSecret(userDataDir, GMAIL_ALIAS, gmailPass);
 
   const current = await loadEmailConfig(userDataDir);
   const next = {
+    enabled: enabled ?? current.enabled,
     to: to ?? current.to,
     from: from ?? current.from,
     gmailUser: gmailUser ?? current.gmailUser,

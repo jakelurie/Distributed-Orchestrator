@@ -822,12 +822,13 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/api/email') {
       const cfg = await loadEmailConfig(USER_DATA);
       // The key itself never leaves the machine; only whether there is one.
-      return json(res, 200, { to: cfg.to, from: cfg.from, hasKey: Boolean(cfg.apiKey) });
+      return json(res, 200, { enabled: cfg.enabled, to: cfg.to, from: cfg.from, hasKey: Boolean(cfg.apiKey) });
     }
     if (req.method === 'POST' && pathname === '/api/email') {
-      const { to, from, apiKey } = await readBody(req);
-      const cfg = await saveEmailConfig(USER_DATA, { to, from, apiKey });
-      return json(res, 200, { to: cfg.to, from: cfg.from, hasKey: Boolean(cfg.apiKey) });
+      const { enabled, to, from, apiKey, gmailUser, gmailPass, carrier } = await readBody(req);
+      if (enabled !== undefined && typeof enabled !== 'boolean') return json(res, 400, { error: 'enabled must be a boolean' });
+      const cfg = await saveEmailConfig(USER_DATA, { enabled, to, from, apiKey, gmailUser, gmailPass, carrier });
+      return json(res, 200, { enabled: cfg.enabled, to: cfg.to, from: cfg.from, hasKey: Boolean(cfg.apiKey) });
     }
     // ---- restart the harness to apply edits made to its own source
     // A harness-editing session changes files, but the running process keeps
@@ -1548,7 +1549,7 @@ async function checkForStalls() {
     const cfg = await notifyConfig().catch(() => null);
     if (cfg?.enabled) await sendNotify(cfg, text).catch(() => {});
     const email = await loadEmailConfig(USER_DATA).catch(() => null);
-    if (email?.apiKey && email?.to) {
+    if (email?.enabled && email?.apiKey && email?.to) {
       await sendEmail(email, { subject: 'A harness turn has stalled', text, session: stall.sessionId }).catch(() => {});
     }
   }

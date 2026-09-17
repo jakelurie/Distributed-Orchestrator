@@ -21,7 +21,7 @@ const ENDPOINT = 'https://api.resend.com/emails';
 const DEFAULT_FROM = 'Harness <onboarding@resend.dev>';
 
 export function isConfigured(cfg) {
-  return Boolean(cfg?.apiKey && cfg?.to);
+  return Boolean(cfg?.enabled !== false && cfg?.apiKey && cfg?.to);
 }
 
 /**
@@ -29,6 +29,7 @@ export function isConfigured(cfg) {
  * @param msg  { subject, text, session? }
  */
 export async function sendEmail(cfg, { subject, text, session }, { fetchImpl = fetch } = {}) {
+  if (cfg?.enabled === false) throw new Error('Email notifications are off — enable Email in Settings → Notifications');
   if (!cfg?.apiKey) throw new Error('no Resend API key configured — add one in the harness settings');
   if (!cfg?.to) throw new Error('no destination address configured in the harness settings');
   if (!subject?.trim()) throw new Error('an email needs a subject');
