@@ -2103,8 +2103,10 @@ function renderAppsSheet(d) {
 
   const appsHtml = (() => {
     const groups = projectGroups(d.apps);
-    const active = state.sessions.filter((session) => (state.busy ?? []).includes(session.id));
-    const recent = [...state.sessions]
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    const recentCandidates = state.sessions.filter((session) => (session.updatedAt ?? session.createdAt ?? 0) >= cutoff);
+    const active = recentCandidates.filter((session) => (state.busy ?? []).includes(session.id));
+    const recent = recentCandidates
       .filter((session) => !(state.busy ?? []).includes(session.id))
       .sort((a, b) => (b.updatedAt ?? b.createdAt ?? 0) - (a.updatedAt ?? a.createdAt ?? 0))
       .slice(0, 10);

@@ -54,10 +54,12 @@ console.log('PASS running apps stay visible; stopped and previously launched app
 
 const renderGroups = source.slice(source.indexOf('  const appsHtml = (() =>'),
   source.indexOf('  openSheet(`<h2>Apps &amp; Chats</h2>')) + '\nappsHtml;';
+const now = 1_800_000_000_000;
 const context = {
+  Date: { now: () => now },
   d: { apps: [{ id: 'self', builtin: true }, { id: 'stopped', start: 'npm start' }, { id: 'chat' }] },
   projectGroups: group, openProjectGroups: new Set(),
-  state: { sessions: [{ id: 'working' }, { id: 'idle' }], busy: ['working'] },
+  state: { sessions: [{ id: 'working', updatedAt: now }, { id: 'idle', updatedAt: now }], busy: ['working'] },
   loose: [{ id: 'working' }, { id: 'idle' }],
   sessionRow: (s) => `<session>${s.id}</session>`, appCard: (a) => `<app>${a.id}</app>`,
 };
@@ -80,9 +82,9 @@ vm.runInNewContext(resetRecent, { sheetView: 'apps', openProjectGroups: context.
 assert.ok(context.openProjectGroups.has('recent'), 'refresh preserves an explicitly opened dropdown');
 vm.runInNewContext(resetRecent, { sheetView: null, openProjectGroups: context.openProjectGroups });
 assert.ok(!context.openProjectGroups.has('recent'), 'reopening starts collapsed');
-const manySessions = Array.from({ length: 15 }, (_, i) => ({ id: `idle-${i}`, updatedAt: i }));
+const manySessions = Array.from({ length: 15 }, (_, i) => ({ id: `idle-${i}`, updatedAt: now - 15 + i }));
 const recentHtml = vm.runInNewContext(renderGroups, { ...context,
-  state: { sessions: [{ id: 'working', updatedAt: 0 }, ...manySessions], busy: ['working'] }, loose: [] });
+  state: { sessions: [{ id: 'working', updatedAt: now }, ...manySessions], busy: ['working'] }, loose: [] });
 assert.match(recentHtml, /Recent sessions · 1 active \(11\)/);
 assert.ok(recentHtml.indexOf('<session>working') < recentHtml.indexOf('<session>idle-14'));
 assert.ok(recentHtml.indexOf('<session>idle-14') < recentHtml.indexOf('<session>idle-13'));
@@ -90,6 +92,22 @@ assert.doesNotMatch(recentHtml, /<session>idle-4</);
 assert.doesNotMatch(vm.runInNewContext(renderGroups, { ...context, state: { sessions: [], busy: [] }, loose: [] }),
   /data-project-group="recent"/);
 console.log('PASS recent sessions collapse on reopen, retain expansion during refresh, and list active then recent sessions');
+const cutoff = now - 24 * 60 * 60 * 1000;
+const agedSessions = [
+  { id: 'boundary', updatedAt: cutoff },
+  { id: 'expired', updatedAt: cutoff - 1 },
+  { id: 'created-recently', createdAt: now },
+  { id: 'revived', createdAt: cutoff - 1000, updatedAt: now },
+  { id: 'expired-active', updatedAt: cutoff - 1 },
+  { id: 'undated' },
+];
+const agedHtml = vm.runInNewContext(renderGroups, { ...context,
+  state: { sessions: agedSessions, busy: ['expired-active'] }, loose: [] });
+for (const id of ['boundary', 'created-recently', 'revived']) assert.ok(agedHtml.includes(`<session>${id}</session>`));
+for (const id of ['expired', 'expired-active', 'undated']) assert.ok(!agedHtml.includes(`<session>${id}</session>`));
+assert.doesNotMatch(vm.runInNewContext(renderGroups, { ...context,
+  state: { sessions: [{ id: 'old', updatedAt: cutoff - 1 }], busy: [] }, loose: [] }), /data-project-group="recent"/);
+console.log('PASS Recent sessions excludes activity older than 24 hours and uses creation time when needed');
 const remembered = { id: 'simulation', hasBeenApp: true, start: '', running: false };
 assert.equal(group([remembered]).stopped[0].id, 'simulation');
 assert.ok(!card({ ...base, ...remembered }).includes('>chat<'));
