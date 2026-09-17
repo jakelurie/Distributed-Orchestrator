@@ -2083,6 +2083,30 @@ async function showPeerSessions() {
   } catch { if ($('peer-sessions') === box) box.textContent = 'Could not load connected machines.'; }
 }
 
+async function restartOrchestrator(button) {
+  button.disabled = true;
+  closeSheet(); // Feedback must be visible, including a refused restart.
+  showBanner('Requesting restart…');
+  try {
+    const expected = await api('/api/harness/restart', { method: 'POST' });
+    if (!expected.restartId) throw new Error('The old server accepted the restart but cannot verify it. Wait a few seconds, then refresh to load the updated restart control.');
+    showBanner('Restarting — waiting for the replacement server…');
+    const deadline = Date.now() + 45_000;
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 700));
+      try {
+        const current = await api('/api/harness/status', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
+        if (current.restartId === expected.restartId && current.instanceId !== expected.instanceId && current.node === expected.node) {
+          location.reload();
+          return;
+        }
+      } catch { /* The listener is unavailable during a normal restart. */ }
+    }
+    throw new Error('Restart could not be verified. The old server may still be running, or its replacement failed. Check the server log on this host.');
+  } catch (error) { showBanner(error.message, true); }
+  finally { button.disabled = false; }
+}
+
 function renderAppsSheet(d) {
   // Redrawing throws the scroll position away, which is wrong both for an
   // expander tap and for the refresh that lands a moment after the sheet opens.
@@ -2201,24 +2225,7 @@ function renderAppsSheet(d) {
   $('sheet').querySelectorAll('[data-harness-restart]').forEach((el) => {
     el.onclick = async (e) => {
       e.stopPropagation();
-      // Two taps: restarting drops every live connection for a few seconds.
-      if (el.dataset.armed !== '1') {
-        el.dataset.armed = '1'; el.textContent = '⟳?'; el.title = 'Tap again to restart the orchestrator';
-        setTimeout(() => { el.dataset.armed = ''; el.textContent = '⟳'; }, 3000);
-        return;
-      }
-      el.disabled = true; el.textContent = '…';
-      try {
-        await api('/api/harness/restart', { method: 'POST' });
-        showBanner('restarting the orchestrator — back in a few seconds…');
-        // Poll until it answers again, then reload so the new code is what runs.
-        const started = Date.now();
-        const tick = async () => {
-          try { await api('/api/state', { cache: 'no-store' }); location.reload(); }
-          catch { if (Date.now() - started < 30_000) setTimeout(tick, 700); else showBanner('the orchestrator did not come back — check server.log in its data folder', true); }
-        };
-        setTimeout(tick, 1500);
-      } catch (err) { showBanner(err.message, true); el.disabled = false; el.textContent = '⟳'; }
+      await restartOrchestrator(el);
     };
   });
   $('sheet').querySelectorAll('[data-new-in]').forEach((el) => {

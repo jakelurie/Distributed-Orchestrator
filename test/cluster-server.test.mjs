@@ -46,6 +46,10 @@ try {
   assert.equal(reused.status, 401, 'join codes are one-use');
   await c.call('/api/cluster/join', 'POST', { url: a.origin, ownUrl: c.origin, token: 'cluster-test' });
   assert.equal((await b.call('/api/sessions/' + session.id)).name, 'shared');
+  const mainProcess = await a.call('/api/harness/status');
+  const followerProcess = await b.call('/api/harness/status');
+  assert.notEqual(followerProcess.instanceId, mainProcess.instanceId, 'restart status identifies the addressed host, not the leader');
+  assert.equal(followerProcess.pid, b.child.pid);
   await c.call('/api/cluster/viewer', 'POST', { id: 'test-phone-123456789' });
   await a.call('/api/sessions/' + session.id, 'PATCH', { name: 'replicated rename' });
   await a.call('/api/models/key', 'POST', { alias: '__transcription', apiKey: 'test-replicated-key' });

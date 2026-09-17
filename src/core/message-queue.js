@@ -13,6 +13,7 @@ export function createMessageQueue() {
     }
   }
   return {
+    get size() { return active.size; },
     busy: id => active.has(id),
     cancel(id) { const entry = active.get(id); if (entry) entry.next = null; },
     submit(id, run, { queue = false, onError = () => {} } = {}) {

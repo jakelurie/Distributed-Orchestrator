@@ -3,6 +3,7 @@ import net from 'node:net';
 import { spawn } from 'node:child_process';
 const port = Number(process.argv[2]);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid port');
+process.send?.({ ready: true });
 let available = false;
 for (let i = 0; i < 150; i++) {
   await new Promise((resolve) => setTimeout(resolve, 200));

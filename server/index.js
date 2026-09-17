@@ -14,7 +14,7 @@
 import { createMessageQueue } from '../src/core/message-queue.js';
 import { defaultDataDir } from '../src/core/platform.js';
 import { execFile, spawn } from 'node:child_process';
-import { openSync } from 'node:fs';
+import { openSync, closeSync } from 'node:fs';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import http from 'node:http';
@@ -58,6 +58,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(__dirname, 'public');
 
 const PORT = Number(process.env.HARNESS_PORT ?? 8787);
+const instanceId = crypto.randomUUID();
+let restarting = false;
 
 // Share the desktop app's data directory so both frontends see one set of
 // sessions. This is Electron's app.getPath('userData') for productName Harness.
@@ -696,7 +698,7 @@ const server = http.createServer(async (req, res) => {
     // Shared workspace requests always execute through the elected main. Host
     // setup/inspection stays local and no uncertain mutation is retried.
     if (cluster.shared() && pathname.startsWith('/api/') &&
-        !/^\/api\/(network|node-info|nodes)(?:[/?]|$)/.test(pathname)) {
+        !/^\/api\/(network|node-info|nodes|harness)(?:[/?]|$)/.test(pathname)) {
       if (cluster.replica.role !== 'leader') {
         if (cluster.trusted(req)) return json(res, 503, { error: 'Coordinator changed. Refresh before retrying.' });
         return cluster.proxy(req, res);
@@ -1057,21 +1059,50 @@ const server = http.createServer(async (req, res) => {
     // A harness-editing session changes files, but the running process keeps
     // the old code until it restarts. Without this, every self-edit looks
     // broken: new endpoints 404, new UI never appears.
+    if (req.method === 'GET' && pathname === '/api/harness/status') {
+      return json(res, 200, { instanceId, restartId: process.env.ORCHESTRATOR_RESTART_ID || null,
+        node: cluster.self.id, pid: process.pid });
+    }
     if (req.method === 'POST' && pathname === '/api/harness/restart') {
-      if (running.size) {
-        return json(res, 409, { error: `a turn is still running (${[...running.keys()].join(', ')}) — wait for it to finish, then restart` });
+      if (restarting) return json(res, 409, { error: 'A restart is already in progress.' });
+      if (running.size || messageQueue.size) {
+        return json(res, 409, { error: 'A turn or queued message is still running — wait for it to finish, then restart.' });
       }
-      json(res, 200, { ok: true, restarting: true });
-      // A detached relauncher waits for this process to release the port, then
-      // starts a fresh server with the same environment, logging to the data dir
-      // so a failed start is diagnosable rather than silent.
-      const logFile = path.join(USER_DATA, 'server.log');
-      const out = openSync(logFile, 'a');
-      spawn(process.execPath, [path.join(__dirname, '../scripts/restart-server.mjs'), String(PORT), path.join(__dirname, 'index.js')], {
-        windowsHide: true,
-        detached: true, stdio: ['ignore', out, out], cwd: path.join(__dirname, '..'), env: process.env,
-      }).unref();
-      setTimeout(() => shutdown('restart'), 400);
+      restarting = true;
+      let out, helper;
+      try {
+        const restartId = crypto.randomUUID();
+        out = openSync(path.join(USER_DATA, 'server.log'), 'a');
+        helper = spawn(process.execPath, [path.join(__dirname, '../scripts/restart-server.mjs'), String(PORT), path.join(__dirname, 'index.js')], {
+          windowsHide: true, detached: true, stdio: ['ignore', out, out, 'ipc'],
+          cwd: path.join(__dirname, '..'),
+          env: { ...process.env, HARNESS_PORT: String(PORT), HARNESS_DATA_DIR: USER_DATA, ORCHESTRATOR_RESTART_ID: restartId },
+        });
+        // Do not stop this server until the relauncher has loaded successfully.
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => finish(new Error('Restart helper did not become ready.')), 5000);
+          const finish = (error) => {
+            clearTimeout(timer);
+            helper.removeListener('error', finish);
+            helper.removeListener('exit', exited);
+            helper.removeListener('message', ready);
+            error ? reject(error) : resolve();
+          };
+          const exited = () => finish(new Error('Restart helper exited before it was ready.'));
+          const ready = (message) => { if (message?.ready) finish(); };
+          helper.once('error', finish);
+          helper.once('exit', exited);
+          helper.on('message', ready);
+        });
+        helper.disconnect();
+        helper.unref();
+        await json(res, 200, { ok: true, restarting: true, instanceId, restartId, node: cluster.self.id });
+        setTimeout(() => shutdown('restart'), 400);
+      } catch (error) {
+        helper?.kill();
+        restarting = false;
+        return json(res, 500, { error: `Could not restart: ${error.message}` });
+      } finally { if (out !== undefined) closeSync(out); }
       return undefined;
     }
 
@@ -1544,6 +1575,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       if (req.method === 'POST' && id && ['send', 'queue'].includes(verb)) {
+        if (restarting) return json(res, 409, { error: 'The server is restarting. Try again when it reconnects.' });
         const body = await readBody(req);
         if ((!body.text || !String(body.text).trim()) && !body.attachments?.length) return json(res, 400, { error: 'Enter a message or attach a file.' });
         // Integration-only tasks cannot accept a follow-up until they finish.
