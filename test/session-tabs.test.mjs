@@ -31,6 +31,22 @@ assert.doesNotMatch($('session-tabs').innerHTML, /Other/);
 assert.match($('session-tabs').innerHTML, /aria-current="page"/);
 $('session-add').onclick();
 assert.equal(context.draft.appId, 'a');
+state.sessions = [
+  { id: 'newest', appId: 'a', name: 'Newest', createdAt: 300 },
+  { id: 'oldest', appId: 'a', name: 'Oldest', createdAt: 100 },
+  { id: 'middle', appId: 'a', name: 'Middle', createdAt: 200 },
+];
+state.session = state.sessions[0];
+const tabIds = () => [...$('session-tabs').innerHTML.matchAll(/data-session-id="([^"]+)"/g)].map((m) => m[1]);
+context.paintSessionTabs();
+assert.deepEqual(tabIds(), ['oldest', 'middle', 'newest']);
+assert.equal(state.sessions[0].id, 'newest', 'tab sorting leaves the browser list untouched');
+state.sessions.reverse(); // A refresh can reorder summaries by recent activity.
+context.paintSessionTabs();
+assert.deepEqual(tabIds(), ['oldest', 'middle', 'newest']);
+state.session = { id: 'added', appId: 'a', name: 'Added', createdAt: 400 };
+context.paintSessionTabs();
+assert.deepEqual(tabIds(), ['oldest', 'middle', 'newest', 'added']);
 state.session = null;
 context.paintSessionTabs();
 assert.equal($('session-tabs').hidden, true);

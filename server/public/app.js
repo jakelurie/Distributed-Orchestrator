@@ -635,6 +635,8 @@ function paintSessionTabs() {
   if (!current) { bar.innerHTML = ''; return; }
   const sessions = current.appId ? state.sessions.filter((s) => s.appId === current.appId) : [current];
   if (!sessions.some((s) => s.id === current.id)) sessions.push(current);
+  // Tabs follow creation order, not the recently-active ordering of the browser.
+  sessions.sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0) || a.id.localeCompare(b.id));
   bar.innerHTML = `<div class="session-tab-list" aria-label="Sessions">${sessions.map((s) =>
     `<button class="ghost${s.id === current.id ? ' on' : ''}" data-session-id="${esc(s.id)}" aria-current="${s.id === current.id ? 'page' : 'false'}" title="${esc(s.name)}">${esc(s.name)}${(state.busy ?? []).includes(s.id) ? ' · working' : ''}</button>`).join('')}</div>
     <button class="tap" id="session-add" aria-label="New session" title="New session">＋</button>

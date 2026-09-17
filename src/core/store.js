@@ -153,7 +153,7 @@ export async function load(id, { repair = true } = {}) {
 export async function list() {
   if (shared()) return Object.values(cluster.replica.state.sessions).map((s) => ({
     id: s.id, name: s.name, model: s.model, appId: s.appId ?? null, projectDir: s.projectDir,
-    ownerNode: s.ownerNode, updatedAt: s.updatedAt, forkedFrom: s.forkedFrom,
+    ownerNode: s.ownerNode, createdAt: s.createdAt, updatedAt: s.updatedAt, forkedFrom: s.forkedFrom,
     turns: (s.events || []).filter((e) => e.type === 'assistant').length,
     modelsUsed: [...new Set((s.events || []).filter((e) => e.type === 'assistant').map((e) => e.model))],
   })).sort((a, b) => b.updatedAt - a.updatedAt);
@@ -174,6 +174,7 @@ export async function list() {
         model: s.model,
         appId: s.appId ?? null,
         projectDir: s.projectDir,
+        createdAt: s.createdAt,
         updatedAt: s.updatedAt,
         forkedFrom: s.forkedFrom,
         turns: (s.events ?? []).filter((e) => e.type === 'assistant').length,
