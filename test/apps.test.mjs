@@ -247,14 +247,23 @@ if (process.platform === 'darwin') {
 
   const dUp = await fs.mkdtemp(path.join(os.tmpdir(), 'linkup-'));
   await fs.writeFile(path.join(dUp, 'apps.json'),
-    JSON.stringify({ apps: [{ id: 'up', name: 'Up', dir: '/tmp/nowhere-up', port: 4398, servePort: 8498, pid: null }] }));
+    JSON.stringify({ apps: [{ id: 'up', name: 'Up', start: 'node server.js', dir: '/tmp/nowhere-up', port: 4398, servePort: 8498, pid: null }] }));
+  const configuredUp = await fs.readFile(path.join(dUp, 'apps.json'), 'utf8');
+  const workspace = JSON.parse(configuredUp);
+  workspace.apps[0].start = '';
+  workspace.apps[0].hasBeenApp = true; // legacy auto-detection flag
+  await fs.writeFile(path.join(dUp, 'apps.json'), JSON.stringify(workspace));
+  const chat = (await apps.listWithStatus(dUp)).find((x) => x.id === 'up');
+  check('a workspace stays a chat even with a live listener on its assigned port',
+    !chat.running && !chat.hasBeenApp && chat.urls.desktop === null && chat.pids.length === 0);
+  await fs.writeFile(path.join(dUp, 'apps.json'), configuredUp);
   const au = (await apps.listWithStatus(dUp)).find((x) => x.id === 'up');
   check('an answering app is reachable', au.reachable === true, JSON.stringify({ r: au.reachable, run: au.running }));
   check('and gets a laptop link on its live port', au.urls.desktop === 'http://127.0.0.1:4398', String(au.urls.desktop));
 
   const dHung = await fs.mkdtemp(path.join(os.tmpdir(), 'linkhung-'));
   await fs.writeFile(path.join(dHung, 'apps.json'),
-    JSON.stringify({ apps: [{ id: 'h', name: 'Hung', dir: '/tmp/nowhere-hung', port: 4397, servePort: 8497, pid: null }] }));
+    JSON.stringify({ apps: [{ id: 'h', name: 'Hung', start: 'node server.js', dir: '/tmp/nowhere-hung', port: 4397, servePort: 8497, pid: null }] }));
   const ah = (await apps.listWithStatus(dHung)).find((x) => x.id === 'h');
   check('a held-but-silent port is not reachable', ah.reachable === false, JSON.stringify({ r: ah.reachable, run: ah.running }));
   check('and offers no link', ah.urls.desktop === null && ah.urls.phone === null);

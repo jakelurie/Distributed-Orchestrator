@@ -60,13 +60,14 @@ function harnessApp() {
   };
 }
 
-// Separate monotonic markers avoid overwriting app edits during status polling.
+// Only explicit launch configuration is remembered. Legacy app-history markers
+// were also written for temporary servers and must not classify workspaces.
 function appHistoryPath(userDataDir, id) {
-  return path.join(userDataDir, 'app-history', encodeURIComponent(id) + '.json');
+  return path.join(userDataDir, 'app-launch-history', encodeURIComponent(id) + '.json');
 }
 
 export async function rememberApp(userDataDir, app) {
-  if (app.builtin) return;
+  if (app.builtin || !(app.start?.trim() || app.lastStartedAt || app.hasBeenApp)) return;
   const file = appHistoryPath(userDataDir, app.id);
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(file, '{}', { flag: 'wx', mode: 0o600 }).catch((e) => {
@@ -82,7 +83,7 @@ export async function load(userDataDir) {
     stored = Array.isArray(raw.apps) ? raw.apps : [];
   } catch { /* none yet */ }
   await Promise.all(stored.map(async (app) => {
-    app.hasBeenApp = Boolean(app.hasBeenApp || app.start?.trim() || app.lastStartedAt);
+    app.hasBeenApp = Boolean(app.start?.trim() || app.lastStartedAt);
     if (app.hasBeenApp) await rememberApp(userDataDir, app);
     else app.hasBeenApp = await fs.access(appHistoryPath(userDataDir, app.id)).then(() => true, () => false);
   }));
@@ -615,14 +616,16 @@ export async function listWithStatus(userDataDir) {
   ]);
 
   return Promise.all(apps.map(async (app) => {
-    const info = runningInfo(app, procs);
+    // A listener alone is not an app: chats can run temporary download servers.
+    const info = app.hasBeenApp
+      ? runningInfo(app, procs)
+      : { running: false, pids: [], adopted: false };
     let reachable = false;
     let served = false;
     let phone = null;
     let desktop = null;
 
     if (info.running) {
-      await rememberApp(userDataDir, app);
       // "Running" must mean it actually answers, not just that the port is held
       // while it starts up. A link is only offered once this is true.
       reachable = await httpReachable(info.port);

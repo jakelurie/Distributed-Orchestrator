@@ -148,7 +148,7 @@ export function systemPromptFor(session, monitorsFile, activityCmd, tailnetHost 
   // The machine's own tailnet name is substituted here rather than written
   // into the source: it is this user's infrastructure, not part of the tool.
   const base = BASE_SYSTEM.replace(/TAILNET_HOST/g, tailnetHost ?? '<this machine>.ts.net');
-  const parts = [base, `\nProject directory: ${session.tabWorkspace?.dir ?? session.projectDir}`,
+  const parts = [base, `\nProject directory: ${session.tabWorkspace?.cwd ?? session.tabWorkspace?.dir ?? session.projectDir}`,
     process.platform === 'win32' ? 'Execution host: native Windows. Shell commands use cmd.exe; use Windows paths and commands, or invoke PowerShell explicitly. Do not assume WSL or Unix tools.' : `Execution host: ${process.platform}.`];
   if (session.tabWorkspace) parts.push('This tab has an isolated Git worktree. Work only in the project directory above, even if older messages name a different directory. Do not switch branches, push, or edit the shared checkout or other worktrees. Install dependencies locally when needed. The harness will merge the latest project changes, run integration tests, and integrate this tab after the turn. If integration reports a conflict, resolve it here in a subsequent turn. Changes are not live until integration succeeds.');
   if (monitorsFile) {
@@ -255,7 +255,7 @@ async function closeOutTurn(opts, before) {
     useTools: false,
     onText: (text) => onDelta?.({ kind: 'text', text }),
     signal,
-    cwd: session.tabWorkspace?.dir ?? session.projectDir,
+    cwd: session.tabWorkspace?.cwd ?? session.tabWorkspace?.dir ?? session.projectDir,
   });
 
   const text = (reply.text ?? '').trim();
@@ -336,7 +336,7 @@ async function runTurnInner({
         useTools: usesTools(session),
         longContext: Boolean(session.allowLongContext),
         signal,
-        cwd: session.tabWorkspace?.dir ?? session.projectDir,
+        cwd: session.tabWorkspace?.cwd ?? session.tabWorkspace?.dir ?? session.projectDir,
       });
     } catch (e) {
       await append(noteEvent(`${spec.alias}: ${e?.message ?? String(e)}`));
@@ -387,7 +387,7 @@ async function runTurnInner({
       }
       onDelta?.({ kind: 'tool_start', call });
       const result = await boundedTool(call, {
-        projectDir: session.tabWorkspace?.dir ?? session.projectDir,
+        projectDir: session.tabWorkspace?.cwd ?? session.tabWorkspace?.dir ?? session.projectDir,
         allowOutside: !session.confineToProjectDir,
         // The Harness app's sessions may edit the harness source (never its data).
         allowHarnessSource: Boolean(session.editsHarness),

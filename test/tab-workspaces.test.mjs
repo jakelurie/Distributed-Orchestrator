@@ -8,6 +8,7 @@ import { prepareTab, integrateTab } from '../src/core/tab-workspaces.js';
 import { systemPromptFor } from '../src/core/agent.js';
 const exec = promisify(execFile);
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-tabs-'));
+const remote = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-tabs-remote-'));
 const git = async (...args) => (await exec('git', args, { cwd: root })).stdout.trim();
 const session = (id) => ({ id, mode: 'agent', projectDir: root });
 const write = (s, name, text) => fs.writeFile(path.join(s.tabWorkspace.dir, name), text);
@@ -86,4 +87,11 @@ try {
   await assert.rejects(fs.stat(path.join(root, 'stopped.txt')), { code: 'ENOENT' });
   assert.equal(await fs.readFile(path.join(stopped.tabWorkspace.dir, 'stopped.txt'), 'utf8'), 'not ready\n');
   console.log('PASS cancelled integration retains tab edits without publishing');
-} finally { await fs.rm(root, { recursive: true, force: true }); }
+  await exec('git', ['init', '--bare', remote]);
+  await git('remote', 'add', 'origin', remote);
+  const publication = await integrateTab(noCheck, { push: true, retryPush: true });
+  assert.equal(publication.pushed, true);
+  const remoteHead = (await exec('git', ['--git-dir', remote, 'rev-parse', 'refs/heads/main'])).stdout.trim();
+  assert.equal(remoteHead, await git('rev-parse', 'HEAD'));
+  console.log('PASS a later push publishes the integrated project branch without another edit');
+} finally { await fs.rm(root, { recursive: true, force: true }); await fs.rm(remote, { recursive: true, force: true }); }

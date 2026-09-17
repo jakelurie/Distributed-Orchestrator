@@ -2,7 +2,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { commitAndPush, createPrivateRepo } from './git.js';
 
@@ -16,7 +16,7 @@ async function clean(dir) { return !(await git(dir, 'status', '--porcelain')); }
 async function repository(dir) {
   const root = await git(dir, 'rev-parse', '--show-toplevel');
   const common = await git(root, 'rev-parse', '--path-format=absolute', '--git-common-dir');
-  return { root: await fs.realpath(root), common };
+  return { root: await fs.realpath(root), common: await fs.realpath(common) };
 }
 const queues = new Map();
 // The file lock also excludes another harness process on the same host. Never
@@ -67,7 +67,8 @@ export async function prepareTab(session) {
       try { await git(dir, 'merge', '--no-edit', head); }
       catch { await git(dir, 'merge', '--abort').catch(() => {}); }
     }
-    session.tabWorkspace = { root: repo.root, common: repo.common, dir, branch: tabBranch, target: branch };
+    const relative = path.relative(repo.root, await fs.realpath(session.projectDir));
+    session.tabWorkspace = { root: repo.root, common: repo.common, dir, cwd: path.join(dir, relative), branch: tabBranch, target: branch };
     return session.tabWorkspace;
   });
 }
@@ -84,11 +85,11 @@ async function validate(dir, log, base, signal) {
   if (!custom && !pkg?.scripts?.test) throw new Error('No automated integration check configured. Add a package.json test script or .harness-integration.json with a command; the tab commit has been kept without changing the project.');
   const output = await fs.open(log, 'w');
   const run = async (command, args) => new Promise((resolve, reject) => {
-    execFile(command, args,
-      { cwd: dir, timeout: 600_000, maxBuffer: 16e6, signal }, async (error, stdout, stderr) => {
-        try { await output.writeFile(stdout + stderr); error ? reject(new Error(`Integration check failed (${args.join(' ')}). See ${log}`)) : resolve(); }
-        catch (e) { reject(e); }
-      });
+    const child = spawn(command, args, { cwd: dir, timeout: 600_000, signal,
+      stdio: ['ignore', output.fd, output.fd], windowsHide: true });
+    child.once('error', reject);
+    child.once('close', (code) => code === 0 ? resolve()
+      : reject(new Error(`Integration check failed (${args.join(' ')}). See ${log}`)));
   });
   try {
     if (custom) {
@@ -100,6 +101,21 @@ async function validate(dir, log, base, signal) {
     }
   } finally { await output.close(); }
   if (!await clean(dir)) throw new Error('Integration checks changed tracked or unignored files; review the tab before integrating.');
+}
+
+async function publish(repo, target, options) {
+  let pushed = false, created, reason = 'push disabled';
+  if (options.push) {
+    try {
+      const remotes = await git(repo.root, 'remote');
+      if (!remotes.split('\n').includes('origin') && options.autoCreatePrivate) {
+        const result = await createPrivateRepo(repo.root, target, options.appName);
+        pushed = result.ok; created = result.repo; reason = result.reason;
+      } else { await git(repo.root, 'push', '-u', 'origin', target); pushed = true; reason = null; }
+    }
+    catch (e) { reason = e.stderr || e.message; }
+  }
+  return { pushed, reason, created };
 }
 
 export async function integrateTab(session, options = {}) {
@@ -118,7 +134,10 @@ export async function integrateTab(session, options = {}) {
     }
     const tabHead = await git(ws.dir, 'rev-parse', 'HEAD');
     const ahead = await git(ws.dir, 'rev-list', '--count', `${head}..${tabHead}`);
-    if (ahead === '0') return { ok: true, skipped: 'no changes' };
+    if (ahead === '0') {
+      if (!options.retryPush) return { ok: true, skipped: 'no changes' };
+      return { ok: true, integrated: true, sha: head.slice(0, 8), files: [], ...(await publish(repo, ws.target, options)) };
+    }
     try { await git(ws.dir, 'merge', '--no-edit', head); }
     catch {
       await git(ws.dir, 'merge', '--abort').catch(() => {});
@@ -127,6 +146,7 @@ export async function integrateTab(session, options = {}) {
     const candidate = await git(ws.dir, 'rev-parse', 'HEAD');
     const log = path.join(repo.common, 'harness-tabs', `${path.basename(ws.dir)}-checks.log`);
     session.integrationLog = log;
+    await options.onCheck?.(log);
     await validate(ws.dir, log, head, options.signal);
     options.signal?.throwIfAborted();
     if (await git(ws.dir, 'rev-parse', 'HEAD') !== candidate || !await clean(ws.dir)) throw new Error('Tab changed during checks; retry integration.');
@@ -136,17 +156,7 @@ export async function integrateTab(session, options = {}) {
     await git(repo.root, 'merge', '--ff-only', candidate);
     // Publish the integrated target, never the private tab branch. A push failure
     // leaves the validated commit in the local project for a later retry.
-    let pushed = false, created, reason = 'push disabled';
-    if (options.push) {
-      try {
-        const remotes = await git(repo.root, 'remote');
-        if (!remotes.split('\n').includes('origin') && options.autoCreatePrivate) {
-          const result = await createPrivateRepo(repo.root, ws.target, options.appName);
-          pushed = result.ok; created = result.repo; reason = result.reason;
-        } else { await git(repo.root, 'push', '-u', 'origin', ws.target); pushed = true; reason = null; }
-      }
-      catch (e) { reason = e.stderr || e.message; }
-    }
-    return { ok: true, committed: true, integrated: true, sha: candidate.slice(0, 8), files, pushed, reason, created };
+    const publication = await publish(repo, ws.target, options);
+    return { ok: true, committed: true, integrated: true, sha: candidate.slice(0, 8), files, ...publication };
   });
 }

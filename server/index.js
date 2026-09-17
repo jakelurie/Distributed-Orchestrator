@@ -927,6 +927,9 @@ const server = http.createServer(async (req, res) => {
       running.set(id, { controller: new AbortController(), startedAt: Date.now(), last: 'integration' });
       try {
         const result = await integrateTab(session, {
+          retryPush: true,
+          signal: running.get(id).controller.signal,
+          onCheck: (log) => upsertMonitor(USER_DATA, { id: `integration-${id}`, label: 'Integration checks', kind: 'file', path: log, session: id }),
           push: (await github.status()).authenticated,
           model: session.model, servedModel: last?.servedModel,
         });
@@ -1422,12 +1425,14 @@ const server = http.createServer(async (req, res) => {
                   ? (await apps.load(USER_DATA)).find((a) => a.id === session.appId) : null;
                 const res = await integrateTab(session, {
                   signal: controller.signal,
+                  onCheck: (log) => upsertMonitor(USER_DATA, { id: `integration-${id}`, label: 'Integration checks', kind: 'file', path: log, session: id }),
                   push: (await github.status()).authenticated,
                   appName: app?.name,
                   model: session.model,
                   servedModel: last?.servedModel,
                   autoCreatePrivate: Boolean(session.appId),
                 });
+                if (res.integrated && cluster.shared()) await workspaces.capture(session);
                 if (app && !app.builtin && !app.repo && res.created) {
                   const linked = await git.status(session.projectDir);
                   if (linked.remote) await apps.update(USER_DATA, app.id, { repo: linked.remote });
