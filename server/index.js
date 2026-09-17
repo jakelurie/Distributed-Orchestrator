@@ -25,6 +25,7 @@ import zlib from 'node:zlib';
 import { replicatedAssets } from '../src/core/cluster/assets.js';
 import { portableWorkspaces } from '../src/core/cluster/workspaces.js';
 import { deviceInventory } from '../src/core/cluster/devices.js';
+import { hostPairing } from '../src/core/cluster/pairing.js';
 import { createCluster } from '../src/core/cluster/index.js';
 import { createNodes } from '../src/core/nodes.js';
 import { runTurn } from '../src/core/agent.js';
@@ -69,6 +70,7 @@ const nodes = createNodes(USER_DATA);
 const inventory = deviceInventory(USER_DATA);
 
 let cluster = null;
+let pairing = null;
 let workspaces = null;
 let clusterAssets = null;
 let TOKEN = '';              // resolved from disk at startup
@@ -390,6 +392,14 @@ async function serveStatic(res, name) {
   }
 }
 
+async function joinHost(body) {
+  if (running.size) throw new Error('Wait for this host’s running turns to finish before joining.');
+  const sessions = await Promise.all((await store.list()).map((s) => store.load(s.id, { repair: false })));
+  for (const session of sessions) { await workspaces.capture(session); await clusterAssets.session(session, true); }
+  const values = Object.fromEntries(Object.entries(cluster.replica.state.values).filter(([id]) => id.startsWith('workspace:') || id.startsWith('asset:')));
+  return cluster.join(body, sessions, values);
+}
+
 // ------------------------------------------------------------------ routing
 
 const server = http.createServer(async (req, res) => {
@@ -403,6 +413,16 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     return json(res, 200, { id: cluster?.replica.disk.clusterId, node: cluster?.self.id,
       ready: Boolean(cluster?.replica.writable()), leader: cluster?.replica.leader });
+  }
+  if (pathname === '/api/cluster/pairing') {
+    try {
+      if (req.method === 'GET') return json(res, 200, pairing.status());
+      if (req.method !== 'POST' || !req.headers['content-type']?.startsWith('application/json')) return json(res, 405, { error: 'JSON POST required' });
+      const body = await readBody(req, 2048);
+      if (body.action === 'request') return json(res, 200, await pairing.announce(body.url));
+      pairing.accept(body); // completes independently of browser lifetime
+      return json(res, 202, { ok: true });
+    } catch (e) { return json(res, 400, { error: e.message }); }
   }
   const invited = pathname === '/api/cluster/admit' && cluster?.validInvite(req.headers['x-harness-token']);
   if (!invited && !authorized(req, url)) {
@@ -421,6 +441,7 @@ const server = http.createServer(async (req, res) => {
       const route = pathname.slice('/api/cluster/'.length);
       const internal = ['rpc', 'command', 'activate'];
       if (internal.includes(route) && !cluster.trusted(req)) return json(res, 403, { error: 'Cluster authentication required' });
+      if (req.method === 'GET' && route === 'discover') return json(res, 200, await pairing.discover());
       if (req.method === 'GET' && route === 'status') return json(res, 200, cluster.status());
       if (req.method === 'GET' && route === 'devices') {
         const observed = await inventory();
@@ -436,6 +457,9 @@ const server = http.createServer(async (req, res) => {
       if (req.method !== 'POST') return json(res, 405, { error: 'POST required' });
       if (!req.headers['content-type']?.startsWith('application/json')) return json(res, 415, { error: 'JSON required' });
       const body = await readBody(req, 128_000_000);
+      if (route === 'request-join') return json(res, 200, await pairing.requestJoin(body.url));
+      if (route === 'approve-host') return json(res, 200, await pairing.approve(body.url));
+      if (route === 'cancel-join') return json(res, 200, pairing.cancel());
       if (route === 'invite') return json(res, 200, cluster.invite());
       if (route === 'rpc') return json(res, 200, await cluster.replica.receive(body));
       if (route === 'command') { await cluster.replica.propose(body); return json(res, 200, { ok: true }); }
@@ -445,6 +469,9 @@ const server = http.createServer(async (req, res) => {
         await cluster.command({ type: 'preferred', id: body.id }); return json(res, 200, { ok: true });
       }
       if (route === 'admit') {
+        if (invited && !cluster.validInvite(req.headers['x-harness-token'])) return json(res, 403, { error: 'Approval expired or was already used.' });
+        if (invited && !cluster.matchesInvite(body.member)) return json(res, 403, { error: 'Approval belongs to a different host.' });
+        if (invited) cluster.consumeInvite(); // reserve before any asynchronous snapshot work
         if (!TOKEN && !invited) return json(res, 403, { error: 'Create a join code on the existing main host first.' });
         if (!cluster.shared()) {
           for (const meta of await store.list()) {
@@ -458,16 +485,12 @@ const server = http.createServer(async (req, res) => {
         }
         await snapshotSettings();
         const snapshot = await cluster.admit(body.member);
-        if (invited) cluster.consumeInvite();
         return json(res, 200, snapshot);
       }
       if (route === 'activate') { await cluster.activate(body.member); return json(res, 200, { ok: true }); }
       if (route === 'join') {
         if (running.size) return json(res, 409, { error: 'Wait for this host’s running turns to finish before joining.' });
-        const sessions = await Promise.all((await store.list()).map((s) => store.load(s.id, { repair: false })));
-        for (const session of sessions) { await workspaces.capture(session); await clusterAssets.session(session, true); }
-        const values = Object.fromEntries(Object.entries(cluster.replica.state.values).filter(([id]) => id.startsWith('workspace:') || id.startsWith('asset:')));
-        return json(res, 200, await cluster.join(body, sessions, values));
+        return json(res, 200, await joinHost(body));
       }
       return json(res, 404, { error: 'Unknown cluster operation' });
     }
@@ -1538,6 +1561,7 @@ TOKEN = await resolveToken(USER_DATA);
 cluster = await createCluster(USER_DATA, { port: PORT, onChange: (replica) => {
   if (replica.role !== 'leader') for (const turn of running.values()) turn.controller.abort();
 } });
+pairing = hostPairing({ cluster, inventory, join: joinHost });
 store.useCluster(cluster);
 workspaces = portableWorkspaces(cluster);
 clusterAssets = replicatedAssets(cluster, USER_DATA);

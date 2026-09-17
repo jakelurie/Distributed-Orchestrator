@@ -29,6 +29,15 @@ async function start(name) {
 }
 try {
   const a = await start('a'), b = await start('b'), c = await start('c');
+  const publicInfo = await fetch(a.origin + '/api/cluster/pairing').then(r => r.json());
+  assert.equal(publicInfo.service, 'distributed-orchestrator');
+  assert.equal(publicInfo.pending, null);
+  assert.ok(!JSON.stringify(publicInfo).includes('cluster-test'));
+  const denied = await fetch(a.origin + '/api/cluster/pairing', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nonce: 'wrong', token: 'wrong' }) });
+  assert.equal(denied.status, 400, 'unsolicited pairing cannot initiate a join');
+  const discoveryDenied = await fetch(a.origin + '/api/cluster/discover');
+  assert.equal(discoveryDenied.status, 401, 'discovery requires local app access');
   const project = path.join(root, 'project'); await fs.mkdir(project); await fs.writeFile(path.join(project, 'reference.txt'), 'replicated');
   const session = await a.call('/api/sessions', 'POST', { name: 'shared', model: 'opus', projectDir: project });
   const invitation = await a.call('/api/cluster/invite', 'POST', {});

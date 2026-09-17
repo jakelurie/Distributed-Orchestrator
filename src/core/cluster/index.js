@@ -38,13 +38,15 @@ export async function createCluster(dir, { port, request = fetch, onChange = () 
   let invitation;
   const service = {
     replica, self,
-    invite() {
+    invite(member) {
       if (!replica.writable()) throw new Error('Create the join code on the current main host.');
       if (!self.url) throw new Error('Set up Phone access first so the new host can reach this machine.');
       invitation = { code: crypto.randomBytes(24).toString('base64url'), expires: Date.now() + 10 * 60000, url: self.url };
+      if (member) invitation.member = member;
       return { ...invitation };
     },
     validInvite(code) { return invitation?.expires > Date.now() && sameSecret(code, invitation.code); },
+    matchesInvite(member) { return !invitation?.member || (invitation.member.id === member?.id && invitation.member.url === member?.url); },
     consumeInvite() { invitation = null; },
     trusted(req) { return sameSecret(req.headers['x-cluster-key'], replica.disk.secret); },
     shared() { return replica.members().length > 1; },

@@ -11,11 +11,22 @@ a person is looking at the screen. Sleeping phones become disconnected after
 viewers; this app cannot enumerate devices hidden by Tailscale permissions or
 ones that disappeared before it first observed them.
 
-A new installation starts as a one-host system. On the existing main, select
-**create join code**. On the new host, use Phone access to publish its private
-HTTPS address, then enter the main address and code under **Join an existing
-system**. Codes are one-use and expire in ten minutes. Presence on the same
-Tailscale network does not silently authorize access to files, API keys or tools.
+A new installation starts as a one-host system. Enable **Phone access** on both
+computers. On the new computer open **Machines** and select **request to join**
+next to your existing main. On the existing main refresh **Machines** and select
+**Approve host**. No code needs copying. The request expires after ten minutes;
+restarting the new host cancels it. Phones remain browser viewers.
+
+Discovery checks online Tailscale peers at HTTPS ports 443, 8443, and the local
+host’s configured HTTPS port. For another port, enter the main’s Tailscale HTTPS
+address manually. Both hosts must reach each other through their installed
+Tailscale client. Only names in the local Tailscale inventory are accepted;
+HTTPS certificate validation stays enabled and redirects are refused. The new
+host explicitly selects its main, and that main approves it before transferring
+a one-use, host-bound credential. Network presence alone grants no access.
+Approval shares sessions, project files and API credentials with the host.
+Legacy code-based API pairing remains available for compatibility.
+
 After joining, membership, sessions, viewer history, and portable configuration
 synchronize without reverse pairing. There is no configured host/viewer count
 limit; CPU, disk and network capacity still apply.
@@ -93,9 +104,8 @@ For interactive configuration instead, run `npm run node:setup` followed by
 `npm run node:serve`. The wizard defaults to 8788.
 
 On the new host, open **Settings → Phone access · Tailscale** and set up HTTPS.
-On the existing host choose **Machines → create join code**. On the new host
-choose **Machines → Join an existing system**, then enter both HTTPS addresses
-and the code. Approve Windows Firewall access on your private network if prompted.
+In **Machines**, request to join the discovered main, then approve the request
+on the existing main. Approve Windows Firewall access on your private network if prompted.
 
 The existing Mac desktop launcher remains available. Native Windows process
 status uses PowerShell instead of lsof; Windows apps must listen on their assigned

@@ -1330,16 +1330,12 @@ async function machinesSheet() {
     <h3>Tailscale devices</h3><p class="dim">Network presence is separate from running this app. Devices are remembered after going offline; joining requires your approval.</p>
     <div id="tailnet-list">Checking Tailscale…</div>
     <h3>Add another host</h3>
-    <p class="dim">Create a one-use code on the main, then enter it under Join an existing system on the new computer. Codes expire after ten minutes.</p>
-    <div class="actions"><button class="ghost" id="cluster-invite">create join code</button></div>
-    <p id="cluster-invitation" class="cluster-invitation" role="status"></p>
+    <p class="dim">On the new computer, set up Phone access, then request to join your existing main below. On the main, refresh this list and approve the host. Approved hosts receive shared sessions, project files, and API credentials; subscription logins stay on each computer.</p>
+    <div id="discovered-hosts">Looking for Orchestrator hosts…</div>
+    <p id="pairing-status" class="dim" role="status"></p>
     <div id="cluster-join">
-      <h3>Join an existing system</h3>
-      <p class="dim">On the new host, set up Phone access first, then enter the existing main host’s address and join code. Its sessions will synchronize automatically. Subscription CLI logins stay on each computer.</p>
-      <label>This host’s HTTPS address</label><input id="cluster-own-url" type="url" placeholder="https://desktop.your-tailnet.ts.net" />
-      <label>Existing main’s address</label><input id="cluster-url" type="url" placeholder="https://laptop.your-tailnet.ts.net" />
-      <label>Join code (or existing main’s access token)</label><input id="cluster-token" type="password" autocomplete="off" />
-      <div class="actions"><button class="primary" id="cluster-connect">join system</button></div>
+      <label>Main host’s HTTPS address (if not listed)</label><input id="cluster-url" type="url" placeholder="https://laptop.your-tailnet.ts.net" />
+      <div class="actions"><button class="ghost" id="cluster-connect">request to join</button><button class="ghost" id="cluster-cancel">cancel request</button></div>
     </div>
     <p id="machine-error" class="dim" role="status"></p>
     <div class="actions"><button class="ghost" id="machines-refresh">refresh</button></div>${backToSettings}`);
@@ -1366,28 +1362,42 @@ async function machinesSheet() {
     }; });
     $('viewer-list').innerHTML = data.viewers.map((v) => `<div class="item machine-item"><div class="grow"><div class="t">${esc(v.name)}</div><div class="s">${v.active ? 'connected' : 'disconnected'} · last activity ${esc(seen(v.lastSeen))}</div><div class="s">First seen ${esc(seen(v.firstSeen))}</div></div></div>`).join('') || '<p class="dim">No browser heartbeat received yet. This view updates when you refresh.</p>';
     $('cluster-join').hidden = data.hosts.filter((n) => n.member).length > 1;
-    $('cluster-invite').disabled = data.self !== data.leader;
-    $('cluster-invite').onclick = async () => {
-      try {
-        const invite = await call('invite', {});
-        if ($('cluster-invitation')) $('cluster-invitation').textContent = `Main address: ${invite.url} · Join code: ${invite.code}`;
-      } catch (e) { if ($('machine-error')) $('machine-error').textContent = e.message; }
-    };
     for (const issue of data.recoveryIssues || []) {
       const message = document.createElement('p');
       message.textContent = `${issue.session}: files not synchronized — ${issue.error}`;
       $('cluster-summary').append(message);
     }
     if (data.conflicts) $('cluster-summary').append(document.createTextNode(` ${data.conflicts} divergent history branch(es) were preserved in the cluster recovery files.`));
-    $('cluster-own-url').value = data.hosts.find((n) => n.id === data.self)?.url || '';
-    $('cluster-connect').onclick = async () => {
-      const button = $('cluster-connect'); button.disabled = true;
+    const action = async (route, body, button) => {
+      button.disabled = true;
       try {
-        await call('join', { url: $('cluster-url').value.trim(), token: $('cluster-token').value.trim(), ownUrl: $('cluster-own-url').value.trim() });
-        location.href = '/';
-      } catch (e) { if ($('machine-error')) $('machine-error').textContent = e.message; }
+        await call(route, body);
+        if ($('machine-list') === list) await machinesSheet();
+      } catch (e) { if ($('machine-list') === list) $('machine-error').textContent = e.message; }
       finally { button.disabled = false; }
     };
+    $('cluster-connect').onclick = () => action('request-join', { url: $('cluster-url').value.trim() }, $('cluster-connect'));
+    $('cluster-cancel').onclick = () => action('cancel-join', {}, $('cluster-cancel'));
+    // Discovery can take a few seconds; the existing hosts stay usable meanwhile.
+    call('discover').then(found => {
+      if ($('machine-list') !== list) return;
+      $('pairing-status').textContent = found.local.message || found.error;
+      $('cluster-cancel').hidden = !found.local.pending;
+      $('cluster-connect').disabled = found.local.joining;
+      const peers = found.hosts.filter(n => !data.hosts.some(h => h.member && h.id === n.node));
+      $('discovered-hosts').innerHTML = peers.map(n => {
+        const approval = n.pending?.target === data.self && data.self === data.leader;
+        const canRequest = data.mode === 'standalone' && n.main && !found.local.joining;
+        return `<div class="item machine-item"><div class="grow"><div class="t">${esc(n.device || n.name)}</div><div class="s">${esc(n.url)}</div><div class="s">${n.joining ? 'joining' : approval ? 'requests access to this system' : 'Orchestrator detected'}</div></div>
+          ${approval ? `<button class="primary" data-pair-approve="${esc(n.url)}">Approve host</button>` : canRequest ? `<button class="ghost" data-pair-request="${esc(n.url)}">request to join</button>` : ''}</div>`;
+      }).join('') || '<p class="dim">No unjoined hosts found. Install and open Orchestrator on the other computer and set up Phone access. Refresh to check again.</p>';
+      $('discovered-hosts').querySelectorAll('[data-pair-approve]').forEach(button => {
+        button.onclick = () => action('approve-host', { url: button.dataset.pairApprove }, button);
+      });
+      $('discovered-hosts').querySelectorAll('[data-pair-request]').forEach(button => {
+        button.onclick = () => action('request-join', { url: button.dataset.pairRequest }, button);
+      });
+    }).catch(e => { if ($('machine-list') === list) $('pairing-status').textContent = e.message; });
     const inventory = await call('devices');
     if ($('machine-list') !== list) return;
     $('tailnet-list').innerHTML = inventory.devices.map((n) => `<div class="item machine-item"><div class="grow"><div class="t">${esc(n.name)}</div><div class="s">${n.active ? 'online on Tailscale' : 'offline on Tailscale'} · ${esc(n.platform || 'device')} · ${esc(seen(n.lastSeen))}</div></div></div>`).join('');
