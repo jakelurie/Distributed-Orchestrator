@@ -26,9 +26,9 @@ console.log('PASS separate final reply, collapsed progress, top message controls
 const css = await fs.readFile('server/public/styles.css', 'utf8');
 const userStyle = css.match(/\.turn\.user \.bubble \{([^}]+)\}/)[1];
 const assistantStyle = css.match(/\.turn\.assistant \.body \{([^}]+)\}/)[1];
-assert.doesNotMatch(userStyle, /background:|border:|padding:/);
-assert.match(assistantStyle, /background: var\(--bg-3\)/);
-assert.match(assistantStyle, /border: 1px solid var\(--line\)/);
-assert.match(assistantStyle, /padding: 10px 12px/);
+assert.doesNotMatch(assistantStyle, /background:|border:|padding:/);
+assert.match(userStyle, /background: var\(--bg-3\)/);
+assert.match(userStyle, /border: 1px solid var\(--line\)/);
+assert.match(userStyle, /padding: 10px 12px/);
 for (const style of [userStyle, assistantStyle]) assert.match(style, /overflow-wrap: anywhere/);
-console.log('PASS plain user messages and themed assistant bubbles with long-text wrapping');
+console.log('PASS restored user bubbles and plain assistant replies with long-text wrapping');

@@ -101,10 +101,6 @@ body {
 .who .tag { color: var(--accent); }
 
 .turn.user .bubble {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.turn.assistant .body {
   background: var(--bg-3);
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -112,6 +108,7 @@ body {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.turn.assistant .body { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .turn.assistant pre {
   background: var(--bg-2);
