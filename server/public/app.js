@@ -565,13 +565,13 @@ async function openSession(id) {
   // Answer the tap before doing the work. Fetching a session pulls its whole
   // transcript down - a long one is a few hundred kilobytes even compressed -
   // and leaving the list sitting there until it arrived made the tap look like
-  // it had been missed. The name and folder are already known from the list,
+  // it had been missed. The name and model are already known from the list,
   // so the header can be right immediately and only the body has to wait.
   closeSheet();
   const meta = state.sessions.find((x) => x.id === id);
   if (meta) {
     $('title-name').textContent = meta.name;
-    $('title-sub').textContent = `${meta.model} · ${shortDir(meta.projectDir)}`;
+    $('title-sub').textContent = `Model: ${state.models[meta.model]?.label || meta.model}`;
   }
   $('transcript').innerHTML = '<div class="empty"><p class="dim">loading…</p></div>';
 
@@ -678,7 +678,6 @@ function paintHeader() {
   const t = cur();
   $('title-app').textContent = s ? `App: ${state.apps?.find((a) => a.id === s.appId)?.name || 'No app'}` : '';
   $('title-name').textContent = s ? `Session: ${s.name}` : 'Distributed Orchestrator';
-  $('title-dir').textContent = s ? `Directory: ${s.projectDir}` : '';
   $('title-sub').textContent = s
     ? `Model: ${state.models[s.model]?.label || s.model}`
     : 'pick a session';
