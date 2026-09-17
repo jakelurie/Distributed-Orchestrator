@@ -717,3 +717,9 @@ button.primary.danger:active { background: #db5f78; }
 /* Session identity stays readable without widening a phone viewport. */
 #title-app, #title-dir { font-size: 11px; color: var(--fg-dim); }
 #title-app, #title-name, #title-sub, #title-dir { white-space: normal; overflow-wrap: anywhere; }
+
+/* Session navigation stays within the phone width; only the tabs scroll. */
+#session-tabs { display: flex; flex: 0 0 auto; min-width: 0; width: 100%; padding: 4px 8px; gap: 4px; background: var(--bg-2); border-bottom: 1px solid var(--line); }
+.session-tab-list { display: flex; flex: 1; min-width: 0; gap: 4px; overflow-x: auto; }
+.session-tab-list button { flex: 0 0 auto; min-height: 44px; max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session-tab-list button.on { color: var(--accent); background: var(--bg-3); border-color: var(--accent); }

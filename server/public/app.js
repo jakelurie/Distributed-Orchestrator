@@ -592,6 +592,7 @@ async function openSession(id) {
   state.session = session;
   tabs.chat.session = session;
   localStorage.setItem(sessionStorageKey, id);
+  if (session.appId) localStorage.setItem(`${sessionStorageKey}:app:${session.appId}`, id);
 
   clearLive('chat');
   showSession();
@@ -599,9 +600,74 @@ async function openSession(id) {
   refreshBackground();
 }
 
+function projectSession(app) {
+  const sessions = state.sessions.filter((s) => s.appId === app.id);
+  const remembered = localStorage.getItem(`${sessionStorageKey}:app:${app.id}`);
+  return sessions.find((s) => s.id === state.session?.id)
+    || sessions.find((s) => s.id === remembered) || sessions[0];
+}
+
+async function openProject(app) {
+  try {
+    let session = projectSession(app);
+    if (!session) {
+      session = await api('/api/sessions', { method: 'POST',
+        body: JSON.stringify({ appId: app.id, name: app.name, model: state.default }) });
+      state.sessions.unshift(session);
+    }
+    await openSession(session.id);
+  } catch (e) { showBanner(e.message, true); }
+}
+
+function paintSessionTabs() {
+  const bar = $('session-tabs');
+  if (!bar) return;
+  const current = state.session;
+  bar.hidden = !current;
+  if (!current) { bar.innerHTML = ''; return; }
+  const sessions = current.appId ? state.sessions.filter((s) => s.appId === current.appId) : [current];
+  if (!sessions.some((s) => s.id === current.id)) sessions.push(current);
+  bar.innerHTML = `<div class="session-tab-list" aria-label="Sessions">${sessions.map((s) =>
+    `<button class="ghost${s.id === current.id ? ' on' : ''}" data-session-id="${esc(s.id)}" aria-current="${s.id === current.id ? 'page' : 'false'}" title="${esc(s.name)}">${esc(s.name)}${(state.busy ?? []).includes(s.id) ? ' · working' : ''}</button>`).join('')}</div>
+    <button class="tap" id="session-add" aria-label="New session" title="New session">＋</button>
+    <button class="tap" id="session-options" aria-label="Session options" title="Session options">⋯</button>`;
+  bar.querySelectorAll('[data-session-id]').forEach((el) => {
+    el.onclick = () => { if (el.dataset.sessionId !== state.session?.id) openSession(el.dataset.sessionId); };
+  });
+  $('session-add').onclick = () => { draft = { appId: current.appId }; newSheet(); };
+  $('session-options').onclick = sessionOptionsSheet;
+}
+
+function sessionOptionsSheet() {
+  const session = state.session;
+  openSheet(`<h2>${esc(session.name)}</h2>
+    <button class="rowlink" id="session-edit">Edit session <span>›</span></button>
+    <button class="rowlink" id="session-fork">Fork onto another model <span>›</span></button>
+    <button class="rowlink" id="session-delete">Delete session <span>›</span></button>`);
+  $('session-edit').onclick = sessionSettingsSheet;
+  $('session-fork').onclick = forkSheet;
+  $('session-delete').onclick = async () => {
+    if (!confirm('Delete this session?')) return;
+    try {
+      await api(`/api/sessions/${session.id}`, { method: 'DELETE' });
+      state.sessions = state.sessions.filter((s) => s.id !== session.id);
+      const next = state.sessions.find((s) => s.appId === session.appId);
+      if (next) await openSession(next.id);
+      else {
+        tabs.chat.stream?.close();
+        tabs.chat.session = state.session = null;
+        clearLive('chat');
+        showSession();
+        appsSheet();
+      }
+    } catch (e) { showBanner(e.message, true); }
+  };
+}
+
 function showSession() {
   drawTranscript();
   paintHeader();
+  paintSessionTabs();
   const t = cur();
   setRunning(t.running, t.startedAt);
   scrollDown(true);
@@ -806,6 +872,7 @@ async function refreshState() {
 
     setRunning(busy, info?.startedAt ?? null, info?.last ?? null, name);
   }
+  paintSessionTabs();
   return s;
 }
 
@@ -934,6 +1001,7 @@ async function newSheet() {
       }),
     });
     draft = {};
+    state.sessions.unshift(session);
     openSession(session.id);
   };
 }
@@ -1943,7 +2011,6 @@ function renderAppsSheet(d) {
   const appCard = (a) => {
     const launchable = Boolean(a.start?.trim());
     const mine = sessionsFor(a.id);
-    const open = expandedApps.has(a.id);
     const label = !a.running ? 'stopped' : a.reachable ? 'running' : 'starting';
     const links = [];
     if (a.urls?.phone) links.push(`<a href="${esc(a.urls.phone)}" target="_blank" rel="noopener">phone: ${esc(a.urls.phone)}</a>`);
@@ -1969,9 +2036,9 @@ function renderAppsSheet(d) {
           <button class="x" data-app-edit="${esc(a.id)}" title="Edit project">✎</button>
         </div>`;
 
-    return `<div class="app-block${open ? ' open' : ''}${a.builtin ? ' builtin' : ''}">
+    return `<div class="app-block${a.builtin ? ' builtin' : ''}">
       <div class="item app-card" data-app-toggle="${esc(a.id)}">
-        <span class="app-caret">${open ? '▾' : '▸'}</span>
+        <span class="app-caret">›</span>
         <div class="grow">
           <div class="t">${esc(a.name)} ${pill}</div>
           ${meta}
@@ -1979,10 +2046,6 @@ function renderAppsSheet(d) {
         </div>
         ${actions}
       </div>
-      ${open ? `<div class="app-sessions">
-        ${mine.length ? mine.map(sessionRow).join('') : '<p class="dim sub-empty">no sessions yet</p>'}
-        <button class="ghost sub-new" data-new-in="${esc(a.id)}">+ new session in ${esc(a.name)}</button>
-      </div>` : ''}
     </div>`;
   };
 
@@ -2020,9 +2083,10 @@ function renderAppsSheet(d) {
   $('sheet').querySelectorAll('[data-app-toggle]').forEach((el) => {
     el.onclick = (e) => {
       if (e.target.closest('.app-actions') || e.target.closest('a')) return;  // buttons/links are their own
-      const id = el.dataset.appToggle;
-      if (expandedApps.has(id)) expandedApps.delete(id); else expandedApps.add(id);
-      renderAppsSheet(d);   // instant: no refetch, just redraw
+      if (el.dataset.opening) return;
+      el.dataset.opening = '1';
+      openProject(d.apps.find((a) => a.id === el.dataset.appToggle))
+        .finally(() => { delete el.dataset.opening; });
     };
   });
   $('sheet').querySelectorAll('[data-app-edit]').forEach((el) => {
