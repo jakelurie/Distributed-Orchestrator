@@ -13,6 +13,8 @@ vm.runInContext(source.slice(source.indexOf('async function settingsSheet()'), s
 await context.settingsSheet();
 assert.match(rendered, /Distributed Orchestrator settings/);
 assert.match(rendered, /AI sources/);
+assert.doesNotMatch(rendered, /id="h-files"|>Files</);
+assert.equal(nodes.has('h-files'), false);
 assert.doesNotMatch(rendered, /s-models|s-dir|s-name|id="h-git"/);
 assert.equal(typeof $('h-machines').onclick, 'function');
 assert.doesNotMatch(html, /id="tabs"|data-tab|id="panel"|mon-chat-toggle/);

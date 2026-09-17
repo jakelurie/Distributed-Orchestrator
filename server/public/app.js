@@ -1061,7 +1061,6 @@ async function settingsSheet() {
       <button class="rowlink" id="h-github"><span>GitHub connection</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-network"><span>Phone access · Tailscale</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-machines"><span>Machines</span><span class="chev">›</span></button>
-      <button class="rowlink" id="h-files"><span>Files</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-models"><span>AI sources</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-voice"><span>Voice setup</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-notify"><span>Notifications</span><span class="chev">›</span></button>
@@ -1071,7 +1070,6 @@ async function settingsSheet() {
   $('h-github').onclick = githubSheet;
   $('h-machines').onclick = machinesSheet;
   $('h-network').onclick = networkSheet;
-  $('h-files').onclick = () => filesSheet();
   $('h-models').onclick = modelsSheet;
   $('h-voice').onclick = () => window.voiceSetup();
   $('h-notify').onclick = notifySheet;
