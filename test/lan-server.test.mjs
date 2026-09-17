@@ -149,7 +149,7 @@ for (const [name, start] of [['Workspace test', ''], ['Launchable test', 'npm st
     method: 'POST', body: JSON.stringify({ name, start, dir: path.join(projectDir, name) }),
   })).json();
   const initial = await (await call(`/api/sessions/${created.sessionId}`)).json();
-  check(`${name} gets its own same-name session`, initial.name === name && initial.appId === created.id);
+  check(`${name} starts with Tab 1`, initial.name === 'Tab 1' && initial.appId === created.id);
   check(`${name} session uses its folder and default model`, initial.projectDir === created.dir && initial.model === 'mock');
   await call(`/api/apps/${created.id}`, { method: 'PATCH', body: JSON.stringify({ name: `${name} renamed` }) });
   const listed = await (await call('/api/state')).json();
