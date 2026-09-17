@@ -688,6 +688,7 @@ function showBanner(msg, warn = false) {
 }
 
 function setRunning(on, startedAt = null, last = null, tab = state.tab) {
+  const changed = tabs[tab].running !== on;
   tabs[tab].running = on;
   if (startedAt) tabs[tab].startedAt = startedAt;
   if (tab !== state.tab) return;   // background tab: remember, do not repaint
@@ -696,6 +697,7 @@ function setRunning(on, startedAt = null, last = null, tab = state.tab) {
   $('working').hidden = !on;
   $('input').placeholder = on ? 'working — tap stop to interrupt' : idlePlaceholder();
   if (on) startClock(startedAt); else stopClock();
+  if (changed) drawTranscript();
 }
 
 const idlePlaceholder = () => 'Describe what to build…';
@@ -723,6 +725,29 @@ function stopClock() {
   clockTimer = null;
 }
 
+// Recover events missed while the browser was asleep. Keep the retry flag until
+// a snapshot is applied, and never overwrite a different session or newer events.
+async function recoverTranscript(tab) {
+  const t = tabs[tab];
+  if (!t.needsTranscript || t.recovering || !t.session) return;
+  const session = t.session;
+  const count = session.events.length;
+  t.recovering = true;
+  try {
+    const fresh = await api(`/api/sessions/${session.id}`);
+    if (t.session !== session || session.events.length !== count) return;
+    t.session = fresh;
+    t.needsTranscript = false;
+    if (tab === 'chat') state.session = fresh;
+    clearLive(tab);
+    if (tab === state.tab) drawTranscript();
+  } catch {
+    // Reconciliation retries even after the composer has returned to idle.
+  } finally {
+    t.recovering = false;
+  }
+}
+
 function listen(tab, id) {
   const t = tabs[tab];
   t.stream?.close();
@@ -730,10 +755,16 @@ function listen(tab, id) {
   t.stream = es;
 
   es.onmessage = (msg) => {
+    if (t.stream !== es) return;
     const p = JSON.parse(msg.data);
     const active = tab === state.tab;
 
-    if (p.kind === 'hello') return setRunning(p.running, p.startedAt, p.last, tab);
+    if (p.kind === 'hello') {
+      t.needsTranscript = true;
+      setRunning(p.running, p.startedAt, p.last, tab);
+      recoverTranscript(tab);
+      return;
+    }
 
     if (p.kind === 'delta') {
       const d = p.delta;
@@ -839,15 +870,9 @@ async function refreshState() {
     // We thought a turn was running and the server says it is not: the end of
     // it was missed, so the transcript is short by however much arrived after
     // the connection dropped. Re-read it rather than showing a stale tail.
-    if (tab.running && !busy) {
-      api(`/api/sessions/${id}`).then((fresh) => {
-        tab.session = fresh;
-        if (name === 'chat') state.session = fresh;
-        if (name === state.tab) drawTranscript();
-      }).catch(() => {});
-    }
-
+    if (tab.running && !busy) tab.needsTranscript = true;
     setRunning(busy, info?.startedAt ?? null, info?.last ?? null, name);
+    recoverTranscript(name);
   }
   paintSessionTabs();
   return s;
