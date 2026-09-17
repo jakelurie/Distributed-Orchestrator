@@ -586,6 +586,16 @@ async function openSession(id) {
   listen('chat', id);
 }
 
+function nextTabName(appId) {
+  const sessions = state.sessions.filter((s) => (s.appId ?? null) === (appId || null));
+  let number = sessions.length + 1;
+  for (const session of sessions) {
+    const match = /^Tab (\d+)$/.exec(session.name);
+    if (match) number = Math.max(number, Number(match[1]) + 1);
+  }
+  return `Tab ${number}`;
+}
+
 function projectSession(app) {
   const sessions = state.sessions.filter((s) => s.appId === app.id);
   const remembered = localStorage.getItem(`${sessionStorageKey}:app:${app.id}`);
@@ -598,7 +608,7 @@ async function openProject(app) {
     let session = projectSession(app);
     if (!session) {
       session = await api('/api/sessions', { method: 'POST',
-        body: JSON.stringify({ appId: app.id, name: app.name, model: state.default }) });
+        body: JSON.stringify({ appId: app.id, name: nextTabName(app.id), model: state.default }) });
       state.sessions.unshift(session);
     }
     await openSession(session.id);
@@ -926,7 +936,7 @@ async function newSheet() {
       <option value="">— no app, just a folder —</option>
       ${appList.map((a) => `<option value="${esc(a.id)}"${draft.appId === a.id ? ' selected' : ''}>${esc(a.name)}</option>`).join('')}
     </select>
-    <label>Name</label><input id="n-name" placeholder="what you're building" />
+    <label>Name</label><input id="n-name" placeholder="${esc(nextTabName(draft.appId))}" />
     <label>Model</label><select id="n-model">${modelOptions(state.default)}</select>
     <label>Mode</label>
     <select id="n-mode">
@@ -948,6 +958,7 @@ async function newSheet() {
 
   const keep = () => {
     draft = {
+      appId: $('n-app').value || null,
       name: $('n-name').value, system: $('n-sys').value,
       dir: $('n-dir').value, model: $('n-model').value, mode: $('n-mode').value,
     };
@@ -968,6 +979,7 @@ async function newSheet() {
   // The app's directory wins, and the field goes read-only so the two cannot
   // disagree about where the session is working.
   const applyApp = () => {
+    $('n-name').placeholder = nextTabName($('n-app').value);
     const app = appList.find((a) => a.id === $('n-app').value);
     if (app) {
       $('n-dir').value = app.dir;
@@ -995,7 +1007,7 @@ async function newSheet() {
       method: 'POST',
       body: JSON.stringify({
         appId: $('n-app').value || null,
-        name: $('n-name').value.trim() || 'untitled',
+        name: $('n-name').value.trim() || nextTabName($('n-app').value),
         model: $('n-model').value,
         mode: $('n-mode').value,
         projectDir: chosen,

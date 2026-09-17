@@ -52,7 +52,7 @@ try {
 const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'email-'));
 check('nothing configured yet', !isConfigured(await loadEmailConfig(dir)));
 
-await saveEmailConfig(dir, { to: 'jake@example.com', apiKey: 're_secret' });
+await saveEmailConfig(dir, { enabled: true, to: 'jake@example.com', apiKey: 're_secret' });
 const loaded = await loadEmailConfig(dir);
 check('it is configured now', isConfigured(loaded));
 check('the address round-trips', loaded.to === 'jake@example.com');
@@ -69,6 +69,19 @@ check('which stays owner-only', mode === 0o600, mode.toString(8));
 await saveEmailConfig(dir, { to: 'other@example.com' });
 check('updating the address keeps the key', (await loadEmailConfig(dir)).apiKey === 're_secret');
 
+await saveEmailConfig(dir, { enabled: false });
+const disabled = await loadEmailConfig(dir);
+check('email can be disabled without losing credentials', !disabled.enabled && disabled.apiKey === 're_secret');
+check('disabled email is not available', !isConfigured(disabled));
+seen = null;
+await rejects('disabled email is refused', disabled, { subject: 's', text: 't' });
+check('disabled email never calls the provider', seen === null);
+await saveEmailConfig(dir, { gmailUser: 'sender@example.com', carrier: 'att' });
+check('text configuration does not enable email', !(await loadEmailConfig(dir)).enabled);
+await saveEmailConfig(dir, { enabled: true });
+check('email can be re-enabled with the saved setup', isConfigured(await loadEmailConfig(dir)));
+await fs.writeFile(path.join(dir, 'email.json'), JSON.stringify({ to: 'legacy@example.com' }));
+check('existing configured email remains enabled', (await loadEmailConfig(dir)).enabled);
 await fs.rm(dir, { recursive: true, force: true });
 console.log(fail.length ? `\nFAILED: ${fail.join(', ')}` : '\nall green');
 process.exit(fail.length ? 1 : 0);

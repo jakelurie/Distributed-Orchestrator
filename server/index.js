@@ -733,7 +733,7 @@ const server = http.createServer(async (req, res) => {
           if (!cfg.default) return json(res, 400, { error: 'Add an AI source before creating a project.' });
           const app = await apps.create(USER_DATA, body);
           const session = store.newSession({
-            name: app.name, model: cfg.default, projectDir: app.dir, appId: app.id,
+            name: 'Tab 1', model: cfg.default, projectDir: app.dir, appId: app.id,
           });
           await store.save(session);
           return json(res, 200, { ...app, sessionId: session.id });

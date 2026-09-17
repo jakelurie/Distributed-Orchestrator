@@ -14,14 +14,14 @@ const context = { state, $, esc: String, sessionStorageKey: 'host', localStorage
   showBanner: assert.fail, sessionOptionsSheet() {}, newSheet() {}, draft: {},
 };
 vm.createContext(context);
-vm.runInContext(source.slice(source.indexOf('function projectSession('), source.indexOf('function sessionOptionsSheet(')), context);
+vm.runInContext(source.slice(source.indexOf('function nextTabName('), source.indexOf('function sessionOptionsSheet(')), context);
 await context.openProject({ id: 'a' });
 assert.equal(opened.at(-1), 'two');
 state.session = state.sessions[0];
 await context.openProject({ id: 'a' });
 assert.equal(opened.at(-1), 'one');
 await context.openProject({ id: 'empty', name: 'Empty' });
-assert.deepEqual(calls[0], { appId: 'empty', name: 'Empty', model: 'model' });
+assert.deepEqual(calls[0], { appId: 'empty', name: 'Tab 1', model: 'model' });
 await context.openProject({ id: 'empty', name: 'Empty' });
 assert.equal(calls.length, 1);
 context.paintSessionTabs();
@@ -67,3 +67,18 @@ assert.doesNotMatch(source, /session-fork|data-fork|forkSheet|Fork onto another 
 assert.match(source, /id="session-edit"/);
 assert.match(source, /id="session-delete"/);
 console.log('PASS app chat selection, empty app creation, scoped tabs and new-session app selection');
+
+state.sessions = [
+  { appId: 'a', name: 'Tab 1' },
+  { appId: 'a', name: 'Tab 3' },
+  { appId: 'b', name: 'Tab 20' },
+];
+assert.equal(context.nextTabName('a'), 'Tab 4', 'deleted tabs do not cause duplicate names');
+assert.equal(context.nextTabName('empty'), 'Tab 1', 'each app starts its own numbering');
+state.sessions = [{ appId: 'a', name: 'Custom' }, { appId: 'a', name: 'Another' }];
+assert.equal(context.nextTabName('a'), 'Tab 3', 'custom names still count as tabs');
+state.sessions.push({ name: 'Tab 1' });
+assert.equal(context.nextTabName(null), 'Tab 2');
+assert.match(source, /name: \$\('n-name'\)\.value\.trim\(\) \|\| nextTabName\(\$\('n-app'\)\.value\)/);
+const server = await fs.readFile('server/index.js', 'utf8');
+assert.match(server, /name: 'Tab 1', model: cfg.default, projectDir: app.dir, appId: app.id/);
