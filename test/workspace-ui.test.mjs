@@ -68,7 +68,7 @@ assert.ok(html.indexOf('<session>working') < html.indexOf('<app>self'));
 assert.ok(html.indexOf('data-project-group="recent"') < html.indexOf('<app>self'));
 assert.equal((html.match(/<session>working/g) ?? []).length, 1);
 assert.equal((html.match(/<details/g) ?? []).length, 3);
-assert.match(html, /Recent sessions — last 24 hours · 1 active/);
+assert.match(html, /Recent sessions · 1 active/);
 assert.doesNotMatch(html, /<h3>Active sessions/);
 assert.ok(!/<details[^>]*\sopen[ >]/.test(html));
 assert.match(html, /Chats \(2\)/);
@@ -85,7 +85,7 @@ assert.ok(!context.openProjectGroups.has('recent'), 'reopening starts collapsed'
 const manySessions = Array.from({ length: 15 }, (_, i) => ({ id: `idle-${i}`, updatedAt: now - 15 + i }));
 const recentHtml = vm.runInNewContext(renderGroups, { ...context,
   state: { sessions: [{ id: 'working', updatedAt: now }, ...manySessions], busy: ['working'] }, loose: [] });
-assert.match(recentHtml, /Recent sessions — last 24 hours · 1 active \(11\)/);
+assert.match(recentHtml, /Recent sessions · 1 active \(11\)/);
 assert.ok(recentHtml.indexOf('<session>working') < recentHtml.indexOf('<session>idle-14'));
 assert.ok(recentHtml.indexOf('<session>idle-14') < recentHtml.indexOf('<session>idle-13'));
 assert.doesNotMatch(recentHtml, /<session>idle-4</);

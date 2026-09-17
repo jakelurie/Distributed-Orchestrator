@@ -2115,7 +2115,7 @@ function renderAppsSheet(d) {
     const inactiveLoose = loose.filter((session) => !(state.busy ?? []).includes(session.id));
     const disclosure = (id, label, count, content) => count
       ? `<details class="project-group" data-project-group="${id}"${openProjectGroups.has(id) ? ' open' : ''}><summary>${label} (${count})</summary>${content}</details>` : '';
-    return disclosure('recent', `Recent sessions — last 24 hours${active.length ? ` · ${active.length} active` : ''}`,
+    return disclosure('recent', `Recent sessions${active.length ? ` · ${active.length} active` : ''}`,
       recentSessions.length, recentSessions.map(sessionRow).join(''))
       + groups.visible.map(appCard).join('')
       + disclosure('stopped', 'Not running apps', groups.stopped.length, groups.stopped.map(appCard).join(''))
