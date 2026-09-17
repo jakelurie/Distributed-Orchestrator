@@ -22,3 +22,13 @@ const page = await fs.readFile('server/public/index.html', 'utf8');
 assert.doesNotMatch(page, /id="background"|id="working-what"/);
 assert.doesNotMatch(source, /refreshBackground|setActivity/);
 console.log('PASS separate final reply, collapsed progress, top message controls and simplified activity');
+
+const css = await fs.readFile('server/public/styles.css', 'utf8');
+const userStyle = css.match(/\.turn\.user \.bubble \{([^}]+)\}/)[1];
+const assistantStyle = css.match(/\.turn\.assistant \.body \{([^}]+)\}/)[1];
+assert.doesNotMatch(userStyle, /background:|border:|padding:/);
+assert.match(assistantStyle, /background: var\(--bg-3\)/);
+assert.match(assistantStyle, /border: 1px solid var\(--line\)/);
+assert.match(assistantStyle, /padding: 10px 12px/);
+for (const style of [userStyle, assistantStyle]) assert.match(style, /overflow-wrap: anywhere/);
+console.log('PASS plain user messages and themed assistant bubbles with long-text wrapping');
