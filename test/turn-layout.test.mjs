@@ -24,6 +24,10 @@ assert.doesNotMatch(source, /refreshBackground|setActivity/);
 console.log('PASS separate final reply, collapsed progress, top message controls and simplified activity');
 
 const css = await fs.readFile('server/public/styles.css', 'utf8');
+const queryStyle = css.match(/\.turn\.user \{([^}]+)\}/)[1];
+assert.match(queryStyle, /border-top: 1px solid var\(--line\)/);
+assert.match(queryStyle, /padding-top: 14px/);
+assert.doesNotMatch(queryStyle, /background:|border:|border-radius:/);
 const userStyle = css.match(/\.turn\.user \.user-message \{([^}]+)\}/)[1];
 const assistantStyle = css.match(/\.turn\.assistant \.body \{([^}]+)\}/)[1];
 assert.doesNotMatch(assistantStyle, /background:|border:|padding:/);

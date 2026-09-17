@@ -94,6 +94,7 @@ body {
 .mono { font-family: var(--mono); }
 
 .turn { margin-bottom: 14px; }
+.turn.user { border-top: 1px solid var(--line); padding-top: 14px; }
 .who {
   font-family: var(--mono); font-size: 11px;
   color: var(--fg-faint); margin-bottom: 4px;
