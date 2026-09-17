@@ -573,13 +573,13 @@ body {
 /* ------------------------------------------- files a turn handed back */
 
 .files { display: flex; flex-direction: column; gap: 6px; margin: 2px 0 12px; }
-.turn-files, .project-group { min-width: 0; margin-bottom: 8px; }
-.turn-files > summary, .project-group > summary {
+.project-group { min-width: 0; margin-bottom: 8px; }
+.project-group > summary {
   min-height: 44px; padding: 10px 12px; cursor: pointer;
   background: var(--bg-2); color: var(--fg-dim);
   border: 1px solid var(--line); border-radius: 10px;
 }
-.turn-files[open] > summary, .project-group[open] > summary { margin-bottom: 6px; }
+.project-group[open] > summary { margin-bottom: 6px; }
 
 .file-card {
   display: flex; align-items: center; gap: 10px;
@@ -701,14 +701,16 @@ button.primary.danger:active { background: #db5f78; }
 /* Session navigation stays within the phone width; only the tabs scroll. */
 #session-tabs { display: flex; flex: 0 0 auto; min-width: 0; width: 100%; padding: 4px 8px; gap: 4px; background: var(--bg-2); border-bottom: 1px solid var(--line); }
 .session-tab-list { display: flex; flex: 1; min-width: 0; gap: 4px; overflow-x: auto; }
-.session-tab-list button { flex: 0 0 auto; min-height: 44px; max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session-tab-list button { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; min-height: 44px; max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .session-tab-list button.on { color: var(--accent); background: var(--bg-3); border-color: var(--accent); }
 
 /* Message controls stay at the top right, above the collapsible content. */
 .turn.user .who { display: flex; align-items: center; }
 .message-toggle { flex: 0 0 44px; min-height: 44px; margin-left: auto; border: none; border-radius: 8px; background: var(--bg-2); color: var(--fg-dim); }
 .turn.assistant .message-toggle { margin-left: 8px; }
-.turn-files > summary { display: flex; align-items: center; list-style: none; }
-.turn-files > summary::-webkit-details-marker { display: none; }
-.turn-files > summary::after { content: '▾'; margin-left: auto; }
-.turn-files[open] > summary::after { content: '▴'; }
+
+.session-tab-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.session-busy-dot { flex: 0 0 7px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 6px 1px var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .session-busy-dot { animation: none; }
+}

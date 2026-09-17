@@ -31,6 +31,17 @@ assert.doesNotMatch($('session-tabs').innerHTML, /Other/);
 assert.match($('session-tabs').innerHTML, /aria-current="page"/);
 $('session-add').onclick();
 assert.equal(context.draft.appId, 'a');
+state.busy = ['two', 'other'];
+context.paintSessionTabs();
+assert.equal(($('session-tabs').innerHTML.match(/class="session-busy-dot"/g) ?? []).length, 1);
+assert.match($('session-tabs').innerHTML, /Two<\/span><span class="session-busy-dot" role="img" aria-label="Working"/);
+assert.doesNotMatch($('session-tabs').innerHTML, / · working/);
+state.busy = [];
+context.paintSessionTabs();
+assert.doesNotMatch($('session-tabs').innerHTML, /session-busy-dot/);
+const page = await fs.readFile('server/public/index.html', 'utf8');
+assert.match(page, /id="working"/);
+assert.match(page, /id="working-time"/);
 state.sessions = [
   { id: 'newest', appId: 'a', name: 'Newest', createdAt: 300 },
   { id: 'oldest', appId: 'a', name: 'Oldest', createdAt: 100 },

@@ -487,28 +487,6 @@ function turnHtml(turn, i, running, number, isLast) {
     </button>
     <div class="fold-body" id="fold-${esc(key)}"${open ? '' : ' hidden'}>${body}</div>`);
 
-  // Files the turn produced, shown as part of the reply rather than filed away
-  // somewhere else to be hunted for.
-  if (turn.files.length) {
-    const seen = new Set();
-    const unique = turn.files.filter((f) => !seen.has(f.path) && seen.add(f.path));
-    const shown = unique.slice(0, 12);
-    bits.push(`<details class="turn-files"><summary>Files (${unique.length})</summary><div class="files">
-      ${shown.map((f) => `
-        <button class="file-card" data-open-file="${esc(f.path)}" data-file-kind="${f.kind}">
-          <span class="file-icon">${FILE_ICON[f.kind] ?? '📄'}</span>
-          <span class="file-meta">
-            <span class="file-name">${esc(f.rel || f.name)}</span>
-            <span class="file-sub">${humanSize(f.size)}</span>
-          </span>
-          <a class="file-dl" href="${nodeApi('/api/file')}?path=${encodeURIComponent(f.path)}&download=1"
-             download="${esc(f.name)}" aria-label="Download">⤓</a>
-        </button>`).join('')}
-      ${unique.length > shown.length
-    ? `<div class="dim" style="padding:4px 2px">…and ${unique.length - shown.length} more</div>` : ''}
-    </div></details>`);
-  }
-
   bits.push(finalReply);
 
   return bits.join('');
@@ -638,7 +616,7 @@ function paintSessionTabs() {
   // Tabs follow creation order, not the recently-active ordering of the browser.
   sessions.sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0) || a.id.localeCompare(b.id));
   bar.innerHTML = `<div class="session-tab-list" aria-label="Sessions">${sessions.map((s) =>
-    `<button class="ghost${s.id === current.id ? ' on' : ''}" data-session-id="${esc(s.id)}" aria-current="${s.id === current.id ? 'page' : 'false'}" title="${esc(s.name)}">${esc(s.name)}${(state.busy ?? []).includes(s.id) ? ' · working' : ''}</button>`).join('')}</div>
+    `<button class="ghost${s.id === current.id ? ' on' : ''}" data-session-id="${esc(s.id)}" aria-current="${s.id === current.id ? 'page' : 'false'}" title="${esc(s.name)}"><span class="session-tab-name">${esc(s.name)}</span>${(state.busy ?? []).includes(s.id) ? '<span class="session-busy-dot" role="img" aria-label="Working"></span>' : ''}</button>`).join('')}</div>
     <button class="tap" id="session-add" aria-label="New session" title="New session">＋</button>
     <button class="tap" id="session-options" aria-label="Session options" title="Session options">⋯</button>`;
   bar.querySelectorAll('[data-session-id]').forEach((el) => {
