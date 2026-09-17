@@ -63,4 +63,7 @@ context.paintSessionTabs();
 assert.equal($('session-tabs').hidden, true);
 const card = source.slice(source.indexOf('  const appCard ='), source.indexOf('  const appsHtml'));
 assert.doesNotMatch(card, /app-sessions|data-new-in/);
+assert.doesNotMatch(source, /session-fork|data-fork|forkSheet|Fork onto another model/);
+assert.match(source, /id="session-edit"/);
+assert.match(source, /id="session-delete"/);
 console.log('PASS app chat selection, empty app creation, scoped tabs and new-session app selection');

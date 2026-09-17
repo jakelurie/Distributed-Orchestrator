@@ -630,10 +630,8 @@ function sessionOptionsSheet() {
   const session = state.session;
   openSheet(`<h2>${esc(session.name)}</h2>
     <button class="rowlink" id="session-edit">Edit session <span>›</span></button>
-    <button class="rowlink" id="session-fork">Fork onto another model <span>›</span></button>
     <button class="rowlink" id="session-delete">Delete session <span>›</span></button>`);
   $('session-edit').onclick = sessionSettingsSheet;
-  $('session-fork').onclick = forkSheet;
   $('session-delete').onclick = async () => {
     if (!confirm('Delete this session?')) return;
     try {
@@ -982,22 +980,6 @@ async function newSheet() {
     draft = {};
     state.sessions.unshift(session);
     openSession(session.id);
-  };
-}
-
-async function forkSheet() {
-  openSheet(`<h2>Fork onto another model</h2>
-    <p class="dim">Copies the whole history so the second model starts from identical context.</p>
-    <label>Model</label><select id="f-model">${modelOptions(state.session.model)}</select>
-    <div class="actions"><button class="ghost" id="f-cancel">cancel</button>
-    <button class="primary" id="f-go">fork</button></div>`);
-  $('f-cancel').onclick = sessionsSheet;
-  $('f-go').onclick = async () => {
-    const twin = await api(`/api/sessions/${state.session.id}/fork`, {
-      method: 'POST',
-      body: JSON.stringify({ model: $('f-model').value }),
-    });
-    openSession(twin.id);
   };
 }
 
@@ -1982,7 +1964,6 @@ function renderAppsSheet(d) {
     <div class="item sub-session${sn.id === state.session?.id ? ' on' : ''}" data-open="${esc(sn.id)}">
       <div class="grow"><div class="t">${esc(sn.name)} ${sessionStatus(sn)}</div>
         <div class="s">${esc(sn.model)} · ${sn.turns} turns</div></div>
-      <button class="x" data-fork="${esc(sn.id)}" title="Fork onto another model">⑂</button>
       <button class="x" data-rename="${esc(sn.id)}" title="Edit session">✎</button>
       <button class="x" data-del="${esc(sn.id)}" title="Delete">×</button>
     </div>`;
@@ -2104,12 +2085,9 @@ function renderAppsSheet(d) {
   // --- session-level actions ---
   $('sheet').querySelectorAll('[data-open]').forEach((el) => {
     el.onclick = (e) => {
-      if (e.target.dataset.del || e.target.dataset.rename || e.target.dataset.fork) return;
+      if (e.target.dataset.del || e.target.dataset.rename) return;
       openSession(el.dataset.open);
     };
-  });
-  $('sheet').querySelectorAll('[data-fork]').forEach((el) => {
-    el.onclick = async (e) => { e.stopPropagation(); await openSession(el.dataset.fork); forkSheet(); };
   });
   $('sheet').querySelectorAll('[data-rename]').forEach((el) => {
     el.onclick = async (e) => {
