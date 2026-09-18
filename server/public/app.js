@@ -442,6 +442,12 @@ function messageToggle(key, label) {
   return `<button class="message-toggle" data-fold="${esc(key)}" aria-label="Toggle ${label}" aria-expanded="${open}"><span class="act-caret">${open ? '▴' : '▾'}</span></button>`;
 }
 
+function turnCommitLink(turn) {
+  const note = [...(turn.notes || [])].reverse().find(n =>
+    /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/commit\/[a-f0-9]{7,40}$/i.test(n.commitUrl || ''));
+  return note ? `<a class="turn-commit" href="${esc(note.commitUrl)}" target="_blank" rel="noopener noreferrer" aria-label="View this turn’s commit on GitHub">commit ↗</a>` : '';
+}
+
 function turnHtml(turn, i, running, number, isLast) {
   const key = foldKey(turn, i);
   const open = foldIsOpen(turn, i, isLast, running);
@@ -457,7 +463,7 @@ function turnHtml(turn, i, running, number, isLast) {
 
     bits.push(`<div class="turn user">
       <div class="who"><span class="qn">${turn.user.turnNumber ?? number}</span> you
-        <span class="at">${clock(turn.user.ts)}</span>${
+        <span class="at">${clock(turn.user.ts)}</span>${turnCommitLink(turn)}${
   messageActions(turn.user.id, { rewind: true })}${messageToggle(key + '-input', 'your message')}</div>
       <div id="fold-${esc(key)}-input"${closedFolds.has(key + '-input') ? ' hidden' : ''}><div class="user-message">${esc(turn.user.text)}${
   (turn.user.attachments ?? []).length

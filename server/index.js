@@ -619,7 +619,7 @@ async function dispatchMessage(id, body, reply, entry) {
             const where = res.pushed ? 'integrated and pushed' : `integrated locally (not pushed — ${res.reason})`;
             session.events.push(noteEvent(
               `git: ${where} ${res.files.length} file${res.files.length === 1 ? '' : 's'} · ${res.sha}`,
-              { sha: res.sha },
+              { sha: res.sha, commitUrl: res.commitUrl },
             ));
           }
           if (session.events.at(-1)?.type === 'note') {
@@ -1428,6 +1428,11 @@ const server = http.createServer(async (req, res) => {
         if (!result.ok || ((await sessionPlacement(session)).distributed && !result.pushed && result.skipped !== 'no changes'))
           throw new Error(result.error || result.reason || 'Publication did not finish.');
         await updateTurn(entry, 'done', result.sha || result.skipped || 'integrated');
+        if (result.commitUrl) {
+          const note = noteEvent(`git: integrated and pushed · ${result.sha}`, { sha: result.sha, commitUrl: result.commitUrl });
+          session.events.push(note);
+          broadcast(id, { kind: 'event', event: note });
+        }
         await store.save(session);
         return json(res, 200, result);
       } catch (e) {

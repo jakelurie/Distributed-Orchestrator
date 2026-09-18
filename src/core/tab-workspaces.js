@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { commitAndPush, createPrivateRepo } from './git.js';
+import { commitAndPush, createPrivateRepo, githubCommitUrl } from './git.js';
 
 const exec = promisify(execFile);
 const identity = ['-c', 'user.name=Harness', '-c', 'user.email=harness@localhost'];
@@ -123,6 +123,12 @@ async function validate(dir, log, base, signal) {
   if (!await clean(dir)) throw new Error('Integration checks changed tracked or unignored files; review the tab before integrating.');
 }
 
+async function commitLink(repo, sha, pushed) {
+  if (!pushed) return null;
+  const remote = await git(repo.root, 'remote', 'get-url', 'origin').catch(() => '');
+  return githubCommitUrl(remote, sha);
+}
+
 async function publish(repo, target, options) {
   let pushed = false, created, reason = 'push disabled';
   if (options.push) {
@@ -181,7 +187,7 @@ async function integrateDistributed(repo, session, options) {
     }
     await git(repo.root, 'merge', '--ff-only', candidate);
     const files = (await git(ws.dir, 'diff', '--name-only', local, candidate)).split('\n').filter(Boolean);
-    return { ok: true, integrated: true, pushed: true, committed: true, sha: candidate.slice(0, 8), files };
+    return { ok: true, integrated: true, pushed: true, committed: true, sha: candidate.slice(0, 8), commitUrl: await commitLink(repo, candidate, true), files };
   }
   throw new Error('Other computers are still publishing changes. Tab work is saved; retry integration when they finish.');
 }
@@ -205,7 +211,8 @@ export async function integrateTab(session, options = {}) {
     const ahead = await git(ws.dir, 'rev-list', '--count', `${head}..${tabHead}`);
     if (ahead === '0') {
       if (!options.retryPush) return { ok: true, skipped: 'no changes' };
-      return { ok: true, integrated: true, sha: head.slice(0, 8), files: [], ...(await publish(repo, ws.target, options)) };
+      const publication = await publish(repo, ws.target, options);
+      return { ok: true, integrated: true, sha: head.slice(0, 8), files: [], ...publication, commitUrl: await commitLink(repo, head, publication.pushed) };
     }
     try { await git(ws.dir, 'merge', '--no-edit', head); }
     catch {
@@ -226,6 +233,6 @@ export async function integrateTab(session, options = {}) {
     // Publish the integrated target, never the private tab branch. A push failure
     // leaves the validated commit in the local project for a later retry.
     const publication = await publish(repo, ws.target, options);
-    return { ok: true, committed: true, integrated: true, sha: candidate.slice(0, 8), files, ...publication };
+    return { ok: true, committed: true, integrated: true, sha: candidate.slice(0, 8), files, ...publication, commitUrl: await commitLink(repo, candidate, publication.pushed) };
   });
 }

@@ -128,5 +128,5 @@ console.log('PASS the controls use the existing pill style and theme variables')
 const server = await fs.readFile('server/index.js', 'utf8');
 assert.match(server, /\['erase', 'rewind'\]\.includes\(verb\)/);
 assert.match(server, /Stop the turn and wait for it to finish before editing this conversation/);
-assert.match(server, /\{ sha: res\.sha \}/);
+assert.match(server, /\{ sha: res\.sha, commitUrl: res\.commitUrl \}/);
 console.log('PASS the routes exist, refuse mid-turn, and record the commit for later rewinds');

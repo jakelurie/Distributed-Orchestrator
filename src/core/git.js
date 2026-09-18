@@ -221,6 +221,11 @@ export function githubRepoIdentity(url) {
   return match ? match[1] + '/' + match[2] : null;
 }
 
+export function githubCommitUrl(remote, sha) {
+  const repo = githubRepoIdentity(remote);
+  return repo && /^[a-f0-9]{7,40}$/i.test(sha || '') ? `https://github.com/${repo}/commit/${sha}` : null;
+}
+
 /** Only delete the explicitly linked repository after an exact-name confirmation. */
 export async function deleteAppRepo(app, confirmation, execute = promisify(execFile)) {
   if (app.builtin) throw new Error('The built-in project cannot be deleted.');

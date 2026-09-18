@@ -765,3 +765,6 @@ button.primary.danger:active { background: #db5f78; }
 .tab-computer text { fill: currentColor; stroke: none; text-anchor: middle; font-size: 11px; font-weight: 600; }
 #s-computers .rowlink { min-height: 44px; gap: 12px; }
 #s-computers .rowlink span { min-width: 0; overflow-wrap: anywhere; }
+
+.turn.user .who { flex-wrap: wrap; }
+.turn-commit { display: inline-flex; align-items: center; min-height: 44px; padding: 0 6px; color: var(--accent); white-space: nowrap; }
