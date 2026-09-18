@@ -458,8 +458,8 @@ body {
 .turn.user .msg-acts { margin-left: auto; }
 .turn.assistant .msg-acts { margin-left: 6px; }
 .msg-act {
-  min-height: 28px; padding: 4px 10px;
-  font-family: var(--mono); font-size: 11px;
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 32px; min-height: 28px; padding: 4px 8px;
   color: var(--fg-dim);
   background: var(--bg-3);
   border: 1px solid var(--line);

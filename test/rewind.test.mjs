@@ -111,7 +111,10 @@ assert.match(html, /data-erase="a1"/);
 // Rewinding a reply is meaningless: you go back to what you asked, not to what
 // it said.
 assert.doesNotMatch(html, /data-rewind="a1"/);
-console.log('PASS every message offers delete, and your own messages also offer rewind');
+assert.match(html, /data-erase="u1"[^>]*><svg/);
+assert.match(html, /data-rewind="u1"[^>]*><svg/);
+assert.doesNotMatch(html, />(delete|rewind)<\/button>/);
+console.log('PASS every message offers delete, and your own messages also offer rewind, as icons');
 
 assert.match(source, /sessions\/\$\{id\}\/\$\{verb\}/);
 assert.match(source, /data-erase/);
