@@ -41,6 +41,16 @@ export async function createCluster(dir, { port, request = fetch, onChange = () 
   }
   let joinPending = false;
   let invitation;
+  // Project copies a machine could not make, update or remove, by name.
+  function placementIssues() {
+    let names = {};
+    try { names = Object.fromEntries(JSON.parse(replica.state.values['settings:apps.json']).apps.map((a) => [a.id, a.name])); } catch { /* no apps yet */ }
+    return Object.entries(replica.state.values).filter(([id]) => id.startsWith('placement:')).flatMap(([id, report]) => {
+      const host = replica.state.history[id.slice(10)]?.name || 'a machine';
+      return Object.entries(report || {}).filter(([app, r]) => names[app] && r.error)
+        .map(([app, r]) => ({ project: names[app], host, state: r.state, error: r.error }));
+    });
+  }
   const service = {
     replica, self,
     invite(member) {
@@ -84,7 +94,7 @@ export async function createCluster(dir, { port, request = fetch, onChange = () 
         conflicts: replica.disk.conflicts || 0, committed: replica.disk.commit, replicated: replica.length(),
         mode: members.length === 1 ? 'standalone' : members.length === 2 ? 'two-host availability' : 'majority consensus',
         quorum: quorum(members.length),
-        recoveryIssues: Object.values(replica.state.sessions).filter((s) => s.workspaceError).map((s) => ({ session: s.name, error: s.workspaceError })),
+        placementIssues: placementIssues(),
         hosts: Object.values({ ...replica.state.history, ...Object.fromEntries(members.map((n) => [n.id, n])) }).map((n) => ({
           ...n, active: n.id === self.id || now - seen(n.id) < 15000,
           lastSeen: n.id === self.id ? now : seen(n.id) || null,

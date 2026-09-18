@@ -14,7 +14,7 @@ import { promisify } from 'node:util';
 
 import { githubEnv } from './github-auth.js';
 
-const run = async (args, cwd, opts = {}) => {
+export const run = async (args, cwd, opts = {}) => {
   const env = await githubEnv();
   return new Promise((resolve) => {
     execFile('git', args, { cwd, env, timeout: 120_000, maxBuffer: 8e6, ...opts }, (err, stdout, stderr) =>

@@ -1443,9 +1443,9 @@ async function machinesSheet() {
     }; });
     $('viewer-list').innerHTML = data.viewers.map((v) => `<div class="item machine-item"><div class="grow"><div class="t">${esc(v.name)}</div><div class="s">${v.active ? 'connected' : 'disconnected'} · last activity ${esc(seen(v.lastSeen))}</div><div class="s">First seen ${esc(seen(v.firstSeen))}</div></div></div>`).join('') || '<p class="dim">No browser heartbeat received yet. This view updates when you refresh.</p>';
     $('cluster-join').hidden = data.hosts.filter((n) => n.member).length > 1;
-    for (const issue of data.recoveryIssues || []) {
+    for (const issue of data.placementIssues || []) {
       const message = document.createElement('p');
-      message.textContent = `${issue.session}: files not synchronized — ${issue.error}`;
+      message.textContent = `${issue.project} on ${issue.host}: ${issue.error}`;
       $('cluster-summary').append(message);
     }
     if (data.conflicts) $('cluster-summary').append(document.createTextNode(` ${data.conflicts} divergent history branch(es) were preserved in the cluster recovery files.`));
@@ -2415,6 +2415,7 @@ function appEditSheet(app = null, draft = null) {
     <p class="dim">Runs in the app's folder with <span class="mono">PORT</span> set${existing ? ` to ${app.port}` : ' to the port this app is given'}.</p>
     <label>Repository (optional)</label>
     <input id="ap-repo" value="${esc(a.repo ?? '')}" spellcheck="false" placeholder="git@github.com:you/app.git" />
+    <div id="ap-machines"></div>
     ${existing && a.repo ? `<label>GitHub visibility</label>
       <div id="ap-vis"><p class="dim">checking…</p></div>` : ''}
     <div class="actions">
@@ -2426,6 +2427,8 @@ function appEditSheet(app = null, draft = null) {
   const values = () => ({
     name: $('ap-name').value, dir: $('ap-dir').value,
     start: $('ap-start').value, repo: $('ap-repo').value,
+    hosts: $('ap-machines')?.querySelector('[data-host]')
+      ? [...$('ap-machines').querySelectorAll('[data-host]:checked')].map((el) => el.dataset.host) : undefined,
   });
 
   // Every app gets its own folder under ~/Projects without the user typing a
@@ -2448,6 +2451,7 @@ function appEditSheet(app = null, draft = null) {
 
   $('ap-back').onclick = appsSheet;
   if ($('ap-vis')) paintAppVisibility(app);
+  const machines = paintAppMachines(app, a.hosts);
 
   if ($('ap-log')) $('ap-log').onclick = async () => {
     const text = await (await fetch(`/api/apps/${app.id}/log`)).text();
@@ -2459,6 +2463,8 @@ function appEditSheet(app = null, draft = null) {
   $('ap-save').onclick = async () => {
     const v = values();
     const body = { name: v.name.trim(), start: v.start.trim(), repo: v.repo.trim() || null };
+    const hosts = await machines;
+    if (hosts) body.hosts = hosts();
     if (!body.name && !existing) return showBanner('give the app a name');
     try {
       if (existing) await api(`/api/apps/${app.id}`, { method: 'PATCH', body: JSON.stringify(body) });
@@ -2472,6 +2478,35 @@ function appEditSheet(app = null, draft = null) {
   };
 }
 
+/**
+ * Which machines keep a copy of this project, inside its edit sheet.
+ *
+ * Shown only once another machine has joined. Returns a reader for the ticked
+ * machines, or null when there is no choice to make. New projects start on
+ * the current main, because that is where tabs run.
+ */
+async function paintAppMachines(app, draft) {
+  const box = $('ap-machines');
+  let data;
+  try { data = await api('/api/cluster/status'); } catch { return null; }
+  const hosts = data.hosts.filter((h) => h.member);
+  if (!box?.isConnected || hosts.length < 2) return null;
+  const states = Object.fromEntries((app?.machines || []).map((m) => [m.id, m]));
+  const placed = new Set(draft || (app?.machines ? app.machines.filter((m) => m.placed).map((m) => m.id) : [data.leader]));
+  const main = hosts.find((h) => h.id === data.leader);
+  const note = (m) => {
+    if (!m?.state) return '';
+    if (m.state === 'ready') return m.error ? `copy ready · ${m.error}` : 'copy ready';
+    if (m.state === 'pending') return 'copy being made';
+    return m.error || m.state;
+  };
+  box.innerHTML = `<label>Machines</label>
+    <p class="dim">Each ticked machine keeps its own copy, cloned from the project's Git repository and kept up to date. Tabs run on the main${main ? ` (${esc(main.name)})` : ''}, so keep the project there to work on it. Unticking a machine deletes its copy once everything in it is pushed; a copy with unsaved work is kept and flagged.</p>
+    ${hosts.map((h) => `<div class="item"><label class="grow"><input type="checkbox" data-host="${esc(h.id)}" ${placed.has(h.id) ? 'checked' : ''} />
+      ${esc(h.name)}${h.id === data.leader ? ' · main' : ''}${h.active ? '' : ' · offline'}
+      ${note(states[h.id]) ? `<div class="s">${esc(note(states[h.id]))}</div>` : ''}</label></div>`).join('')}`;
+  return () => [...box.querySelectorAll('[data-host]')].filter((el) => el.checked).map((el) => el.dataset.host);
+}
 
 /**
  * Deleting an app, with the consequences spelled out.

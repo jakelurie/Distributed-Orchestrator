@@ -71,14 +71,23 @@ Host-specific subscription CLI logins, network configuration, notification servi
 usage ledgers and live processes remain local. Shared model/app setting mutations wait for their checkpoint to commit before
 reporting success.
 
-Project working files checkpoint at onboarding and agent saves. Recovery restores
-them into a new generation under `~/Projects/OrchestratorWorkspaces`, preserving
-other hosts' original folders. Checkpoints exclude dependencies, build output,
-logs, symlinks, `.env` files and Git internals. They currently support 48 MB total
-and 16 MB per file. Larger datasets require separate storage. Reinstall dependencies
-and provide local secrets when needed. Files modified externally between checkpoints,
-open processes and uncommitted in-flight tool effects are not covered by workspace
-recovery. Uploaded attachment bytes are replicated with checksums and restored
+Each project chooses its machines under **Edit project → Machines** (shown once
+a second host has joined), when it is created or later. New projects start on the
+current main. Every ticked machine keeps its own Git copy: it clones the project's
+repository into `~/Projects/<name>` (or adopts a clone of the same repository
+already there, and never writes over an unrelated folder), then fast-forwards
+clean copies about every two minutes so work pushed from another machine arrives.
+Unticking a machine deletes its copy only once it has no uncommitted, stashed or
+unpushed work; otherwise the copy is kept and flagged in Machines and in the
+project sheet. Deleting the project record never deletes other machines' copies.
+A project needs a Git remote (created on its first saved turn when GitHub is
+connected) before another machine can clone it. Projects made before this keep
+living only on the machine that made them. Project files are no longer copied
+through the cluster log, so there is no size limit; old checkpoints are dropped.
+Turns run on the main, so the main must be one of a project's machines to work on
+it. A tab's isolated Git worktree stays on the host that made it. Loose sessions
+outside a project run only on the host that made them.
+Uploaded attachment bytes are replicated with checksums and restored
 into the receiving host’s attachment store. The built-in orchestrator project uses each host's
 own checkout rather than copying a running installation over another.
 

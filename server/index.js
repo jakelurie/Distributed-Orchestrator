@@ -25,6 +25,7 @@ import zlib from 'node:zlib';
 
 import { replicatedAssets } from '../src/core/cluster/assets.js';
 import { portableWorkspaces } from '../src/core/cluster/workspaces.js';
+import { appPlacement, validHosts, hostsFor } from '../src/core/cluster/placement.js';
 import { deviceInventory } from '../src/core/cluster/devices.js';
 import { hostPairing } from '../src/core/cluster/pairing.js';
 import { createCluster } from '../src/core/cluster/index.js';
@@ -76,6 +77,7 @@ const inventory = deviceInventory(USER_DATA);
 let cluster = null;
 let pairing = null;
 let workspaces = null;
+let placement = null;
 let clusterAssets = null;
 let TOKEN = '';              // resolved from disk at startup
 let usage = null;            // the usage ledger, loaded at startup
@@ -412,13 +414,25 @@ async function dispatchMessage(id, body, reply) {
     if (session.tabWorkspace && session.tabWorkspace.ownerNode !== cluster.self.id) return reply(409, { error: 'This tab has a Git worktree on another host. Reconnect that host to continue; tab branches are not yet migrated between hosts.' });
     await clusterAssets.session(session);
     for (const attachment of atts || []) await clusterAssets.restore(attachment);
-    const previousOwner = session.ownerNode;
-    await workspaces.prepare(session);
-    if (previousOwner && previousOwner !== cluster.self.id && session.appId && !session.editsHarness && session.appId !== '__harness') {
-      await apps.update(USER_DATA, session.appId, { dir: session.projectDir, ownerNode: cluster.self.id, pid: null });
-      await snapshotSettings();
-    }
-    await workspaces.capture(session);
+    // A project runs from this host's own copy of it: the folder it was made
+    // in, or the Git clone its machine placement keeps here.
+    const app = session.appId && !session.editsHarness && session.appId !== '__harness'
+      ? (await apps.load(USER_DATA)).find((a) => a.id === session.appId) : null;
+    if (app) {
+      const dir = await placement.localDir(app);
+      if (!dir) {
+        const here = cluster.self.name;
+        const machine = placement.describe(app).find((m) => m.id === cluster.self.id);
+        return reply(409, { error: machine?.placed
+          ? `${app.name} is not on ${here} yet${machine.error ? ` — ${machine.error}` : ' — its copy is still being made'}.`
+          : `${app.name} is not on ${here}, which is running tabs right now. Add ${here} under Edit project → Machines, or make one of its machines main.` });
+      }
+      if (session.projectDir !== dir && !session.projectDir?.startsWith(dir + path.sep)) {
+        session.projectDir = dir;
+        delete session.tabWorkspace; // its worktree lived in the other copy
+      }
+      session.ownerNode = cluster.self.id;
+    } else await workspaces.prepare(session);
     await store.save(session);
   }
   live.set(id, session);
@@ -455,10 +469,7 @@ async function dispatchMessage(id, body, reply) {
       attachments: Array.isArray(atts) ? atts : [],
       signal: controller.signal,
       save: async (s) => {
-        if (cluster.shared()) {
-          if (!cluster.replica.writable()) throw new Error('Coordinator lost quorum; turn stopped.');
-          await workspaces.capture(s);
-        }
+        if (cluster.shared() && !cluster.replica.writable()) throw new Error('Coordinator lost quorum; turn stopped.');
         return store.save(s);
       },
       monitorsFile: monitorsPath(USER_DATA),
@@ -519,7 +530,6 @@ async function dispatchMessage(id, body, reply) {
             servedModel: last?.servedModel,
             autoCreatePrivate: Boolean(session.appId),
           });
-          if (res.integrated && cluster.shared()) await workspaces.capture(session);
           if (app && !app.builtin && !app.repo && res.created) {
             const linked = await git.status(session.projectDir);
             if (linked.remote) await apps.update(USER_DATA, app.id, { repo: linked.remote });
@@ -610,8 +620,8 @@ async function dispatchMessage(id, body, reply) {
 async function joinHost(body) {
   if (running.size) throw new Error('Wait for this host’s running turns to finish before joining.');
   const sessions = await Promise.all((await store.list()).map((s) => store.load(s.id, { repair: false })));
-  for (const session of sessions) { await workspaces.capture(session); await clusterAssets.session(session, true); }
-  const values = Object.fromEntries(Object.entries(cluster.replica.state.values).filter(([id]) => id.startsWith('workspace:') || id.startsWith('asset:')));
+  for (const session of sessions) await clusterAssets.session(session, true);
+  const values = Object.fromEntries(Object.entries(cluster.replica.state.values).filter(([id]) => id.startsWith('asset:')));
   return cluster.join(body, sessions, values);
 }
 
@@ -692,7 +702,6 @@ const server = http.createServer(async (req, res) => {
           for (const meta of await store.list()) {
             const session = await store.load(meta.id, { repair: false });
             session.ownerNode = cluster.self.id;
-            try { await workspaces.capture(session); } catch (e) { session.workspaceError = e.message; }
             await clusterAssets.session(session, true);
             await store.save(session);
             await cluster.command({ type: 'session', id: session.id, value: { ...session, ownerNode: cluster.self.id } });
@@ -956,8 +965,8 @@ const server = http.createServer(async (req, res) => {
       const [, appId, verb] = appMatch;
       if (cluster.shared() && appId && req.method !== 'GET') {
         const app = (await apps.load(USER_DATA)).find((item) => item.id === appId);
-        if (app?.ownerNode && app.ownerNode !== cluster.self.id) return json(res, 409, {
-          error: 'This app’s processes belong to another host. Open its session and send a message to recover the project on this main before using app controls.',
+        if (verb && app?.ownerNode && app.ownerNode !== cluster.self.id) return json(res, 409, {
+          error: `This app’s processes run on ${cluster.replica.state.history[app.ownerNode]?.name || 'another host'}. Make that machine main to start or stop it.`,
         });
       }
 
@@ -965,14 +974,18 @@ const server = http.createServer(async (req, res) => {
         // Visibility is not shown in the list (it lives in each app's edit
         // sheet, fetched on demand), so the list does not pay for a gh call
         // per app — that was making the sheet slow to open.
-        return json(res, 200, { apps: await apps.listWithStatus(USER_DATA) });
+        const list = await apps.listWithStatus(USER_DATA);
+        if (cluster.shared()) for (const app of list) if (!app.builtin) app.machines = placement.describe(app);
+        return json(res, 200, { apps: list });
       }
       if (req.method === 'POST' && !appId) {
         const body = await readBody(req);
         try {
           const cfg = await loadConfig(USER_DATA);
           if (!cfg.default) return json(res, 400, { error: 'Add an AI source before creating a project.' });
-          const app = await apps.create(USER_DATA, body);
+          const placed = cluster.shared() && body.hosts !== undefined ? validHosts(body.hosts, cluster.replica.members()) : null;
+          const app = await apps.create(USER_DATA, { ...body, hosts: placed,
+            ownerNode: placed && !placed.includes(cluster.self.id) ? placed[0] : undefined });
           const session = store.newSession({
             name: 'Tab 1', model: cfg.default, projectDir: app.dir, appId: app.id,
           });
@@ -982,7 +995,24 @@ const server = http.createServer(async (req, res) => {
         catch (e) { return json(res, 400, { error: e.message }); }
       }
       if (req.method === 'PATCH' && appId) {
-        try { return json(res, 200, await apps.update(USER_DATA, appId, await readBody(req))); }
+        try {
+          const patch = await readBody(req);
+          if (patch.hosts !== undefined) {
+            if (!cluster.shared()) throw new Error('Join another machine before choosing where this project lives.');
+            patch.hosts = validHosts(patch.hosts, cluster.replica.members());
+            const app = (await apps.load(USER_DATA)).find((a) => a.id === appId);
+            // The app's own folder and processes follow it to a machine it still lives on.
+            const owner = app && hostsFor(app, cluster.self.id)[0];
+            if (app && !patch.hosts.includes(app.ownerNode || owner)) {
+              patch.ownerNode = patch.hosts.includes(cluster.self.id) ? cluster.self.id : patch.hosts[0];
+              const copy = cluster.replica.state.values['placement:' + patch.ownerNode]?.[appId]?.dir;
+              if (copy) patch.dir = copy;
+              patch.pid = null;
+            }
+          }
+          // Every host notices the replicated change and reconciles its copy.
+          return json(res, 200, await apps.update(USER_DATA, appId, patch));
+        }
         catch (e) { return json(res, 400, { error: e.message }); }
       }
       if (req.method === 'DELETE' && appId) {
@@ -1685,6 +1715,15 @@ pairing = hostPairing({ cluster, inventory, join: joinHost, publish: async () =>
 } });
 store.useCluster(cluster);
 workspaces = portableWorkspaces(cluster);
+placement = appPlacement(cluster, USER_DATA, {
+  // A replica's apps.json is only rewritten while it is main, so read the
+  // replicated record directly.
+  loadApps: async () => {
+    const shared = cluster.replica.state.values['settings:apps.json'];
+    return shared ? JSON.parse(shared).apps || [] : apps.load(USER_DATA);
+  },
+  running: (appId) => [...running.keys()].some((id) => live.get(id)?.appId === appId),
+});
 clusterAssets = replicatedAssets(cluster, USER_DATA);
 cluster.replica.start();
 // Discover our published address without changing the user's Serve routes.
@@ -1729,6 +1768,27 @@ setInterval(async () => {
     }
   } catch { /* A new main will continue collecting sightings. */ }
 }, 30000).unref();
+
+// Each host keeps its own copies of the projects placed on it (see placement.js).
+let placementFingerprint = '';
+let placementAt = 0;
+setInterval(() => {
+  if (!cluster.shared()) return;
+  const fingerprint = String(cluster.replica.state.values['settings:apps.json']);
+  if (fingerprint === placementFingerprint && Date.now() - placementAt < 120_000) return;
+  placementFingerprint = fingerprint; placementAt = Date.now();
+  placement.reconcile().catch(() => { placementAt = 0; });
+}, 10_000).unref();
+// Project files used to be copied into the cluster log as checkpoints. Git
+// placement replaced them; drop the old copies so the log stays small.
+setInterval(async () => {
+  if (!cluster.replica.writable()) return;
+  try {
+    for (const id of Object.keys(cluster.replica.state.values)) {
+      if (id.startsWith('workspace:')) await cluster.replica.propose({ type: 'value', id, value: null });
+    }
+  } catch { /* the next main finishes the cleanup */ }
+}, 60_000).unref();
 
 usage = await usageStore.load(USER_DATA);
 await collectUsage({ force: true });      // catch up on anything missed while down

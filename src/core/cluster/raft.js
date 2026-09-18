@@ -50,7 +50,7 @@ function applyCommand(state, c) {
   } else if (c.type === 'viewer') state.viewers[c.value.id] = c.value;
   else if (c.type === 'preferred') state.preferred = c.id;
   else if (c.type === 'configuration') for (const node of c.members) state.history[node.id] = node;
-  else if (c.type === 'value') state.values[c.id] = c.value;
+  else if (c.type === 'value') { if (c.value === null) delete state.values[c.id]; else state.values[c.id] = c.value; }
 }
 
 export class Replica {

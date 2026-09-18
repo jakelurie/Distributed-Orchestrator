@@ -4,7 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { createCluster } from '../src/core/cluster/index.js';
-import { portableWorkspaces } from '../src/core/cluster/workspaces.js';
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cluster-http-'));
 const servers = [], nodes = [];
 async function host(name) {
@@ -44,14 +43,7 @@ try {
   await b.viewer({ id: 'viewer-test-123456789' }, 'iPhone'); await a.replica.replicate();
   assert.equal(c.status().viewers.length, 1);
   assert.equal(c.status().viewers[0].kind, 'phone');
-  const project = path.join(root, 'project'); await fs.mkdir(project); await fs.writeFile(path.join(project, 'hello.txt'), 'portable');
-  const session = { id: 'portable', projectDir: project, ownerNode: a.self.id };
-  const source = portableWorkspaces(a), target = portableWorkspaces(c, { base: path.join(root, 'restored') });
-  await source.capture(session); await a.replica.replicate();
-  await target.prepare(session);
-  assert.equal(await fs.readFile(path.join(session.projectDir, 'hello.txt'), 'utf8'), 'portable');
-  assert.equal(session.ownerNode, c.self.id);
-  console.log('PASS real HTTP onboarding one → two → three, cross-host viewers, tickets, and portable files');
+  console.log('PASS real HTTP onboarding one → two → three, cross-host viewers, and tickets');
 } finally {
   for (const node of nodes) node.replica.stop();
   for (const server of servers) { server.closeAllConnections(); await new Promise((r) => server.close(r)); }

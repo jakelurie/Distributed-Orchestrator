@@ -247,7 +247,7 @@ async function pidsOnPort(port) {
   }
 }
 
-export async function create(userDataDir, { name, dir, start = '', repo = null }) {
+export async function create(userDataDir, { name, dir, start = '', repo = null, hosts = null, ownerNode }) {
   const refusal = refuseAsProjectDir(dir);
   if (refusal) throw new Error(refusal);
   if (!dir) throw new Error('an app needs a directory');
@@ -270,7 +270,11 @@ export async function create(userDataDir, { name, dir, start = '', repo = null }
     lastStartedAt: null,
     pid: null,
   };
-  await fs.mkdir(app.dir, { recursive: true });
+  // Machine placement: the folder is made only where the project lives; the
+  // machines themselves create or clone their copies.
+  if (hosts) app.hosts = hosts;
+  if (ownerNode) app.ownerNode = ownerNode;
+  else await fs.mkdir(app.dir, { recursive: true });
   if (app.start?.trim()) await rememberApp(userDataDir, app);
   apps.push(app);
   await persist(userDataDir, apps);
