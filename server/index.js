@@ -28,7 +28,7 @@ import { portableWorkspaces } from '../src/core/cluster/workspaces.js';
 import { appPlacement, replicationHosts } from '../src/core/cluster/placement.js';
 import { deviceInventory } from '../src/core/cluster/devices.js';
 import { hostPairing } from '../src/core/cluster/pairing.js';
-import { executionHosts, executionOwner, assignmentError, sessionWriteError } from '../src/core/cluster/execution.js';
+import { executionHosts, executionOwner, assignmentError, sessionWriteError, recoverStoppedTurn } from '../src/core/cluster/execution.js';
 import { createCluster } from '../src/core/cluster/index.js';
 import { createNodes } from '../src/core/nodes.js';
 import { runTurn } from '../src/core/agent.js';
@@ -688,7 +688,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (pathname.startsWith('/api/cluster/')) {
       const route = pathname.slice('/api/cluster/'.length);
-      const internal = ['rpc', 'command', 'activate', 'read-session', 'worker-save', 'worker-models', 'model-secret'];
+      const internal = ['rpc', 'command', 'activate', 'read-session', 'worker-save', 'worker-models', 'model-secret', 'worker-stopped'];
       if (internal.includes(route) && !cluster.trusted(req)) return json(res, 403, { error: 'Cluster authentication required' });
       if (req.method === 'GET' && route === 'discover') return json(res, 200, await pairing.discover());
       if (req.method === 'GET' && route === 'status') return json(res, 200, cluster.status());
@@ -710,6 +710,15 @@ const server = http.createServer(async (req, res) => {
         if (!cluster.replica.writable()) return json(res, 503, { error: 'Coordinator unavailable.' });
         const session = cluster.replica.state.sessions[body.id];
         return json(res, 200, { session: session && body.metadata ? { ownerNode: session.ownerNode, executionEpoch: session.executionEpoch } : session || null });
+      }
+      if (route === 'worker-stopped') {
+        const changed = await cluster.changeSession(body.id, current => {
+          if (current?.ownerNode !== body.host) return undefined;
+          return recoverStoppedTurn(current, { turnHost: body.host,
+            turnStartedAt: body.turnStartedAt, executionEpoch: body.executionEpoch },
+          noteEvent('This computer restarted or stopped the turn. Unfinished edits remain in this tab’s worktree; nothing was automatically published or replayed. Send a message here to resume.'));
+        });
+        return json(res, 200, { recovered: Boolean(changed) });
       }
       if (route === 'worker-save') {
         try {
@@ -1878,28 +1887,25 @@ networkStatus(PORT).then((n) => cluster.setUrl(n.phoneUrl)).catch(() => {});
  */
 let reconciling = false;
 async function failOrphanedTurns() {
-  if (reconciling || !cluster.shared() || !cluster.replica.writable()) return;
+  if (reconciling || !cluster.shared()) return;
   reconciling = true;
   try {
     for (const [id, value] of Object.entries(cluster.replica.state.sessions)) {
       if (!value?.turnHost || running.has(id)) continue;
+      if (value.turnHost === cluster.self.id && cluster.replica.role !== 'leader') {
+        await cluster.reportStoppedTurn(value);
+        continue;
+      }
+      if (!cluster.replica.writable()) continue;
       if (value.turnHost !== cluster.self.id && cluster.status().hosts.some(n => n.id === value.turnHost && n.active)) continue;
       const host = value.turnHost === cluster.self.id ? 'this host'
         : cluster.replica.state.history[value.turnHost]?.name || 'another host';
-      const session = await store.load(id);
-      delete session.turnHost;
-      delete session.turnStartedAt;
-      session.executionEpoch = (session.executionEpoch || 0) + 1;
       const note = noteEvent(
         `turn interrupted — it was running on ${host}, which stopped or disconnected before it finished. `
         + 'Nothing was replayed. Work it had started may have partly happened, so check the project '
         + 'before assuming nothing did. Reconnect its computer before sending another message.',
       );
-      session.events.push(note);
-      const changed = await cluster.changeSession(id, current => {
-        if (current?.turnHost !== value.turnHost || current?.turnStartedAt !== value.turnStartedAt) return undefined;
-        return session;
-      });
+      const changed = await cluster.changeSession(id, current => recoverStoppedTurn(current, value, note));
       if (!changed) continue;
       broadcast(id, { kind: 'event', event: note });
       broadcast(id, { kind: 'done' });

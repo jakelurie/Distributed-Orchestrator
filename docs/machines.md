@@ -290,3 +290,21 @@ push changed turns and can create private app repositories. Connecting does not
 bulk-publish existing projects. Repository visibility and automatic Git controls
 remain under **Edit session → Git & GitHub**. GitHub is for project files and
 commits, not a backup of the orchestrator's session database or credentials.
+
+## Interrupted work and the published project
+
+Unfinished tab files stay on their owning computer and are never copied into
+another computer's project by transcript replication. Only successful publication
+of the tested Git target advances the shared code. A crash after a successful push
+can leave the reply missing; the next sync still finds that published commit.
+
+A returning owner also reconciles its own stopped turns, even if it restarted too
+quickly to be considered offline. Recovery marks the affected tab interrupted,
+preserves its worktree and conversation, and does not replay tools or publish
+unfinished edits. Resume that tab on its original computer to continue.
+Other tabs and the current frontend view stay in place during background refresh.
+
+This is not a guarantee of invisible outages: losing the server serving the
+browser requires reconnecting, and a coordinator election can temporarily block
+durable session writes. Overlapping completed edits can still conflict; integration
+keeps those tab changes separate until the conflict is resolved.

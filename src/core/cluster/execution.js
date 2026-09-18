@@ -26,3 +26,16 @@ export function sessionWriteError(current, next) {
   if ((current.executionEpoch || 0) !== (next.executionEpoch || 0)) return 'This turn was interrupted; stale writes were refused.';
   return null;
 }
+
+/** Recover only the observed turn; a newer turn must never be interrupted. */
+export function recoverStoppedTurn(current, observed, note) {
+  if (!current?.turnHost || current.turnHost !== observed.turnHost
+    || current.turnStartedAt !== observed.turnStartedAt
+    || (current.executionEpoch || 0) !== (observed.executionEpoch || 0)) return undefined;
+  const next = structuredClone(current);
+  delete next.turnHost;
+  delete next.turnStartedAt;
+  next.executionEpoch = (next.executionEpoch || 0) + 1;
+  next.events.push(note);
+  return next;
+}

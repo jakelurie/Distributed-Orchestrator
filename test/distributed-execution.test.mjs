@@ -79,6 +79,26 @@ try {
   assert.equal(late.status, 409, 'a delayed previous-owner write cannot undo assignment');
   assert.equal((await a.call(`/api/sessions/${s.id}`)).ownerNode, a.status.self);
   assert.equal((await a.request('/api/cluster/worker-save', 'POST', { host: a.status.self, session: moved })).status, 403);
+  // A restarted worker may never have been offline long enough for the
+  // coordinator's liveness timeout. Simulate its persisted abandoned turn.
+  const abandoned = { ...stale, id: 'abandoned-worker-turn', turnHost: b.status.self,
+    turnStartedAt: 123, executionEpoch: 0 };
+  const seeded = await fetch(a.status.hosts[0].url + '/api/cluster/command', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'x-cluster-key': identity.secret },
+    body: JSON.stringify({ type: 'session', id: abandoned.id, value: abandoned }),
+  });
+  assert.equal(seeded.status, 200);
+  let recovered;
+  for (let i = 0; i < 80; i++) {
+    recovered = await a.call('/api/sessions/' + abandoned.id);
+    if (!recovered.turnHost) break;
+    await pause();
+  }
+  assert.ok(!recovered.turnHost, 'an online worker recovers its own abandoned turn');
+  assert.equal(recovered.executionEpoch, 1);
+  assert.equal(recovered.ownerNode, b.status.self);
+  assert.ok(recovered.events.some(e => /nothing was automatically published or replayed/.test(e.text || '')));
+  assert.equal((await a.call('/api/sessions/' + s.id)).ownerNode, a.status.self);
   const project = await a.call('/api/apps', 'POST', { name: 'local only', dir: path.join(root, 'local-project'), hosts: [a.status.self] });
   const disallowed = await b.request('/api/sessions', 'POST', { appId: project.id, model: 'model-b', ownerNode: b.status.self });
   assert.equal(disallowed.status, 400);

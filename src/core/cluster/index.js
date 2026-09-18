@@ -88,6 +88,12 @@ export async function createCluster(dir, { port, request = fetch, onChange = () 
       if (!leader) throw new Error('Waiting for the coordinator.');
       await rpc(leader.url, 'worker-save', { host: self.id, session });
     },
+    async reportStoppedTurn(session) {
+      const leader = service.leader();
+      if (!leader) throw new Error('Waiting for the coordinator.');
+      return rpc(leader.url, 'worker-stopped', { id: session.id, host: self.id,
+        turnStartedAt: session.turnStartedAt, executionEpoch: session.executionEpoch || 0 });
+    },
     async shareSecret(alias, apiKey) {
       const leader = service.leader();
       if (!leader) throw new Error('Waiting for the coordinator.');
