@@ -1495,6 +1495,15 @@ function showLinked(box, text) {
   }
 }
 
+function machineAddressLink(value) {
+  try {
+    const url = new URL(value);
+    if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) return '<div class="s">Address unavailable</div>';
+    const address = esc(url.origin).replace(/"/g, '&quot;');
+    return `<a class="machine-address" href="${address}" target="_blank" rel="noopener noreferrer">${address}</a>`;
+  } catch { return '<div class="s">Address not configured</div>'; }
+}
+
 async function machinesSheet() {
   openSheet(`<h2>Machines</h2>
     <div id="cluster-summary" role="status">Checking machines…</div>
@@ -1532,6 +1541,7 @@ async function machinesSheet() {
     list.innerHTML = data.hosts.map((n) => `<div class="item machine-item"><div class="grow"><div class="t"><span class="computer-badge">🖥 ${n.number}</span> ${esc(n.name)}</div>
       <div class="s">${n.active ? 'active' : 'offline'} · ${n.id === data.leader ? 'main' : 'replica'}${n.id === data.preferred ? ' · preferred main' : ''}</div>
       <div class="s">${esc(n.platform === 'darwin' ? 'Mac' : n.platform === 'win32' ? 'Windows PC' : n.platform || 'Computer')}</div>
+      ${machineAddressLink(n.url)}
       <div class="s">Last contact: ${esc(seen(n.lastSeen))}</div></div>
       ${n.member ? `<button class="ghost" data-machine-name="${esc(n.id)}">rename</button>` : ''}
       ${n.member && n.id !== data.preferred ? `<button class="ghost" data-prefer="${esc(n.id)}">prefer main</button>` : ''}</div>`).join('');

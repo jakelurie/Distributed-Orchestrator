@@ -768,3 +768,5 @@ button.primary.danger:active { background: #db5f78; }
 
 .turn.user .who { flex-wrap: wrap; }
 .turn-commit { display: inline-flex; align-items: center; min-height: 44px; padding: 0 6px; color: var(--accent); white-space: nowrap; }
+
+.machine-address { display: flex; align-items: center; min-height: 44px; color: var(--accent); overflow-wrap: anywhere; word-break: break-word; }
