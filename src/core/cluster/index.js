@@ -39,6 +39,10 @@ export async function createCluster(dir, { port, request = fetch, onChange = () 
       body: payload, signal: AbortSignal.timeout(timeout),
     });
     const value = await response.json();
+    if (response.status === 404 && value.error === 'Unknown cluster operation') {
+      const host = replica.members().find(node => node.url === origin);
+      throw new Error(`${host?.name || origin} is running older Harness code and does not support ${route}. Restart Harness on every paired computer to load the updated code.`);
+    }
     if (!response.ok) throw new Error(value.error || `Machine returned ${response.status}`);
     return value;
   }

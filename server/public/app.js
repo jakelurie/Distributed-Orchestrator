@@ -2277,7 +2277,7 @@ async function showPeerSessions() {
 async function restartOrchestrator(button) {
   button.disabled = true;
   closeSheet(); // Feedback must be visible, including a refused restart.
-  showBanner('Requesting restart…');
+  showBanner('Restarting paired computers one at a time, then this computer…');
   try {
     const expected = await api('/api/harness/restart', { method: 'POST' });
     if (!expected.restartId) throw new Error('The old server accepted the restart but cannot verify it. Wait a few seconds, then refresh to load the updated restart control.');
@@ -2340,7 +2340,7 @@ function renderAppsSheet(d) {
       : `<span class="pill ${a.reachable ? 'ready' : a.running ? 'warm' : ''}">${label}</span>`;
     const actions = a.builtin
       ? `<div class="app-actions">
-          <button class="x" data-harness-restart="1" title="Restart the orchestrator to apply edits made to its own code">⟳</button>
+          <button class="x" data-harness-restart="1" title="Restart Harness on all paired computers to apply code changes">⟳</button>
         </div>`
       : `<div class="app-actions">
           ${launchable || a.running ? `<button class="x" data-app-run="${esc(a.id)}" title="${a.running ? 'Stop' : 'Start'}">${a.running ? '■' : '▶'}</button>` : ''}

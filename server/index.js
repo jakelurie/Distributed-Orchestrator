@@ -32,6 +32,7 @@ import { deviceInventory } from '../src/core/cluster/devices.js';
 import { hostPairing } from '../src/core/cluster/pairing.js';
 import { executionHosts, executionOwner, assignmentError, sessionWriteError, recoverStoppedTurn } from '../src/core/cluster/execution.js';
 import { createCluster } from '../src/core/cluster/index.js';
+import { restartPeers } from '../src/core/cluster/restart.js';
 import { createNodes } from '../src/core/nodes.js';
 import { runTurn } from '../src/core/agent.js';
 import { loadConfig, patchModel, addModel } from '../src/core/config.js';
@@ -1279,7 +1280,7 @@ const server = http.createServer(async (req, res) => {
     // broken: new endpoints 404, new UI never appears.
     if (req.method === 'GET' && pathname === '/api/harness/status') {
       return json(res, 200, { instanceId, restartId: process.env.ORCHESTRATOR_RESTART_ID || null,
-        node: cluster.self.id, pid: process.pid });
+        node: cluster.self.id, pid: process.pid, busy: Boolean(running.size || messageQueue.size), restarting });
     }
     if (req.method === 'POST' && pathname === '/api/harness/restart') {
       if (restarting) return json(res, 409, { error: 'A restart is already in progress.' });
@@ -1289,6 +1290,10 @@ const server = http.createServer(async (req, res) => {
       restarting = true;
       let out, helper;
       try {
+        // Cluster-authenticated requests restart only the addressed peer. The
+        // browser request rolls through peers first and this host last.
+        if (!cluster.trusted(req)) await restartPeers(cluster);
+        if (running.size || messageQueue.size) throw new Error('Work started during the restart. Wait for it to finish, then retry.');
         const restartId = crypto.randomUUID();
         out = openSync(path.join(USER_DATA, 'server.log'), 'a');
         helper = spawn(process.execPath, [path.join(__dirname, '../scripts/restart-server.mjs'), String(PORT), path.join(__dirname, 'index.js')], {

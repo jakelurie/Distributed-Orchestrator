@@ -65,24 +65,41 @@ const child = spawn(process.execPath, ['server/index.js'], { env: { ...process.e
   ORCHESTRATOR_PUBLIC_URL: origin,
 }, stdio: 'ignore' });
 const exited = once(child, 'exit');
-const call = async (route, method = 'GET') => {
-  const response = await fetch(origin + route, { method,
-    headers: { 'x-harness-token': 'restart-test' }, signal: AbortSignal.timeout(2000) });
+const call = async (route, method = 'GET', target = origin, body) => {
+  const response = await fetch(target + route, { method,
+    headers: { 'x-harness-token': 'restart-test', 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(20000) });
   assert.equal(response.status, 200);
   return response.json();
 };
-const waitFor = async predicate => {
+const waitFor = async (predicate, target = origin) => {
   for (let i = 0; i < 120; i++) {
-    try { const status = await call('/api/harness/status'); if (predicate(status)) return status; } catch {}
+    try { const status = await call('/api/harness/status', 'GET', target); if (predicate(status)) return status; } catch {}
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   throw Error('Test server did not become ready');
 };
-let replacement;
+let replacement, peer, peerClosed, peerReplacement;
 try {
   const original = await waitFor(() => true);
   assert.equal(original.pid, child.pid);
+  const peerProbe = net.createServer();
+  await new Promise(resolve => peerProbe.listen(0, '127.0.0.1', resolve));
+  const peerPort = peerProbe.address().port;
+  await new Promise(resolve => peerProbe.close(resolve));
+  const peerOrigin = `http://127.0.0.1:${peerPort}`;
+  peer = spawn(process.execPath, ['server/index.js'], { env: { ...process.env,
+    HARNESS_PORT: String(peerPort), HARNESS_TOKEN: 'restart-test', HARNESS_DATA_DIR: path.join(dir, 'peer'),
+    ORCHESTRATOR_PUBLIC_URL: peerOrigin,
+  }, stdio: 'ignore' });
+  peerClosed = once(peer, 'exit');
+  const peerOriginal = await waitFor(() => true, peerOrigin);
+  await call('/api/cluster/join', 'POST', peerOrigin, { url: origin, ownUrl: peerOrigin, token: 'restart-test' });
   const requested = await call('/api/harness/restart', 'POST');
+  peerReplacement = await waitFor(status => status.instanceId !== peerOriginal.instanceId, peerOrigin);
+  assert.equal(peerReplacement.node, peerOriginal.node);
+  assert.notEqual(peerReplacement.pid, peerOriginal.pid);
+  await peerClosed;
   assert.equal(requested.instanceId, original.instanceId);
   replacement = await waitFor(status => status.restartId === requested.restartId);
   assert.notEqual(replacement.pid, original.pid);
@@ -90,10 +107,18 @@ try {
   assert.equal(replacement.node, original.node);
   await exited;
   // The replacement still serves the same app and data after the old parent exits.
-  const state = await call('/api/state');
+  let state;
+  for (let i = 0; i < 120; i++) {
+    try { state = await call('/api/state'); break; } catch {}
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.ok(state, 'the restarted cluster elects a coordinator and resumes serving state');
   assert.ok(Array.isArray(state.sessions));
-  console.log('PASS real restart replaces the PID, preserves the node and serves requests after the old process exits');
+  console.log('PASS real cluster restart replaces both PIDs, preserves identities and serves requests after the old processes exit');
 } finally {
+  if (peerReplacement) { try { process.kill(peerReplacement.pid, 'SIGTERM'); } catch {} }
+  if (peer && peer.exitCode === null && peer.signalCode === null) peer.kill('SIGTERM');
+  if (peerClosed) await peerClosed;
   if (replacement) { try { process.kill(replacement.pid, 'SIGTERM'); } catch {} }
   if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
   await exited;
