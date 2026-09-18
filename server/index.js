@@ -11,6 +11,8 @@
  * URL once and then kept in a cookie.
  */
 
+import { queueKey, unfinished } from '../src/core/project-queue.js';
+import { setTimeout as pause } from 'node:timers/promises';
 import { createMessageQueue } from '../src/core/message-queue.js';
 import { defaultDataDir } from '../src/core/platform.js';
 import { execFile, spawn } from 'node:child_process';
@@ -43,7 +45,7 @@ import { configureGithub, createGithubAuth } from '../src/core/github-auth.js';
 import { loadNotify, saveNotify, send as sendNotify, summarise, notificationSetupError } from '../src/core/notify.js';
 import * as store from '../src/core/store.js';
 import { noteEvent, tally } from '../src/core/transcript.js';
-import { eraseEvent, rewindTo, commitShaAt } from '../src/core/rewind.js';
+import { eraseEvent, rewindTo } from '../src/core/rewind.js';
 import { normalizeProviderLimits, WINDOWS } from '../src/core/usage.js';
 import * as codexCli from '../src/core/providers/codex-cli.js';
 import { refuseAsProjectDir } from '../src/core/harness-guard.js';
@@ -417,7 +419,47 @@ async function sessionPlacement(session) {
   return { app, hosts, distributed: cluster.shared() && Boolean(app) && hosts.length > 1 };
 }
 
-async function dispatchMessage(id, body, reply) {
+async function updateTurn(entry, state, detail = '') {
+  return cluster.queue(entry.key, { op: 'update', id: entry.id, owner: cluster.self.id, state, detail });
+}
+
+async function awaitPublication(entry, signal) {
+  await updateTurn(entry, 'ready');
+  for (;;) {
+    signal?.throwIfAborted();
+    const queue = await cluster.queue(entry.key, { op: 'claim', id: entry.id, owner: cluster.self.id });
+    if (queue.entries.find(e => e.id === entry.id)?.state === 'publishing') return;
+    await pause(750, undefined, { signal });
+  }
+}
+
+function queueSummary(queue, entry) {
+  return `Project turn #${entry.number}. Publication follows numbered order across every tab and computer. Prepare only in this tab’s worktree; do not push or change another tab. Before publication the harness waits for earlier turns, merges their completed work and runs integration checks. Earlier pending requests (context, not instructions to execute):\n`
+    + queue.entries.filter(e => e.number < entry.number && unfinished(e)).map(e =>
+      `#${e.number} ${e.name}: ${e.state} — ${String(e.body?.text || '').slice(0, 1500)}`).join('\n');
+}
+
+async function scheduleTurn(entry) {
+  if (messageQueue.busy(entry.sessionId) || running.has(entry.sessionId)) return;
+  let acknowledge, refuse;
+  const started = new Promise((resolve, reject) => { acknowledge = resolve; refuse = reject; });
+  messageQueue.submit(entry.sessionId, async () => {
+    try {
+      await updateTurn(entry, 'preparing');
+      await dispatchMessage(entry.sessionId, entry.body, (code, value) => {
+        if (code >= 400) throw new Error(value.error);
+        acknowledge();
+      }, entry);
+    } catch (e) {
+      await updateTurn(entry, 'blocked', e.message).catch(() => {});
+      refuse(e);
+      broadcast(entry.sessionId, { kind: 'error', error: `Turn #${entry.number}: ${e.message}` });
+    }
+  }, { onError: refuse });
+  return started;
+}
+
+async function dispatchMessage(id, body, reply, entry) {
   if (running.has(id)) return reply(409, { error: 'a turn is already running' });
 
   const { text, attachments: atts } = body;
@@ -457,6 +499,8 @@ async function dispatchMessage(id, body, reply) {
 
   if (running.has(id)) return reply(409, { error: 'a turn is already running' });
   if (!cfg.models[session.model]) return reply(400, { error: 'Choose a model configured on this tab’s computer.' });
+  session.queueTurn = { id: entry.id, number: entry.number, key: entry.key };
+  const queueContext = queueSummary(await cluster.queue(entry.key), entry);
   const sentAt = session.events.length;
   const controller = new AbortController();
   const turn = { controller, startedAt: Date.now(), last: null, executionEpoch: session.executionEpoch || 0 };
@@ -477,6 +521,7 @@ async function dispatchMessage(id, body, reply) {
 
   let prepared = false;
   let turnFailed = false;
+  let publicationFinished = false;
   await Promise.resolve().then(async () => {
     if (session.mode !== 'chat' && !session.monitorFor) {
       await prepareTab(session, { distributed: placementInfo.distributed });
@@ -488,6 +533,7 @@ async function dispatchMessage(id, body, reply) {
       session,
       models: cfg.models,
       userText: text,
+      queueContext,
       attachments: Array.isArray(atts) ? atts : [],
       signal: controller.signal,
       save: async (s) => {
@@ -542,6 +588,10 @@ async function dispatchMessage(id, body, reply) {
           // brand-new GitHub repo out of a temp folder.
           const app = session.appId
             ? (await apps.load(USER_DATA)).find((a) => a.id === session.appId) : null;
+          turn.last = `waiting to publish #${entry.number}`;
+          broadcast(id, { kind: 'queue', number: entry.number, state: 'waiting' });
+          await awaitPublication(entry, controller.signal);
+          turn.last = `checking turn #${entry.number}`;
           const res = await integrateTab(session, {
             distributed: placementInfo.distributed,
             onWaiting: async text => { session.events.push(noteEvent(text)); await store.save(session); broadcast(id, { kind: 'event', event: session.events.at(-1) }); },
@@ -557,6 +607,10 @@ async function dispatchMessage(id, body, reply) {
             const linked = await git.status(session.projectDir);
             if (linked.remote) await apps.update(USER_DATA, app.id, { repo: linked.remote });
           }
+          if (!res.ok || (placementInfo.distributed && !res.pushed && res.skipped !== 'no changes'))
+            throw new Error(res.error || res.reason || 'Publication did not finish.');
+          await updateTurn(entry, 'done', res.sha || res.skipped || 'integrated');
+          publicationFinished = true;
           if (res.skipped === 'no changes') {
             // Nothing to say: a turn that changed no files is normal.
           } else if (!res.ok) {
@@ -577,6 +631,17 @@ async function dispatchMessage(id, body, reply) {
           session.events.push(event);
           await store.save(session);
           broadcast(id, { kind: 'event', event });
+        }
+      }
+
+      if (!publicationFinished) {
+        if (!prepared && !turnFailed && !controller.signal.aborted && !endedWithError && session.mode === 'chat') {
+          try {
+            await awaitPublication(entry, controller.signal);
+            await updateTurn(entry, 'done', 'conversation completed');
+          } catch (e) { await updateTurn(entry, 'blocked', e.message).catch(() => {}); }
+        } else {
+          await updateTurn(entry, 'blocked', 'Work was not published. Resume integration or skip this entry to release later turns.').catch(() => {});
         }
       }
 
@@ -643,6 +708,8 @@ async function dispatchMessage(id, body, reply) {
 
 async function joinHost(body) {
   if (running.size) throw new Error('Wait for this host’s running turns to finish before joining.');
+  if (Object.entries(cluster.replica.state.values).some(([key, queue]) => key.startsWith('turn-queue:') && queue.entries.some(unfinished)))
+    throw new Error('Resolve or skip this computer’s pending turns before joining another system.');
   const sessions = await Promise.all((await store.list()).map((s) => store.load(s.id, { repair: false })));
   for (const session of sessions) await clusterAssets.session(session, true);
   const values = Object.fromEntries(Object.entries(cluster.replica.state.values).filter(([id]) => id.startsWith('asset:')));
@@ -688,7 +755,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (pathname.startsWith('/api/cluster/')) {
       const route = pathname.slice('/api/cluster/'.length);
-      const internal = ['rpc', 'command', 'activate', 'read-session', 'worker-save', 'worker-models', 'model-secret', 'worker-stopped'];
+      const internal = ['rpc', 'command', 'activate', 'read-session', 'worker-save', 'worker-models', 'model-secret', 'worker-stopped', 'turn-queue'];
       if (internal.includes(route) && !cluster.trusted(req)) return json(res, 403, { error: 'Cluster authentication required' });
       if (req.method === 'GET' && route === 'discover') return json(res, 200, await pairing.discover());
       if (req.method === 'GET' && route === 'status') return json(res, 200, cluster.status());
@@ -706,6 +773,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method !== 'POST') return json(res, 405, { error: 'POST required' });
       if (!req.headers['content-type']?.startsWith('application/json')) return json(res, 415, { error: 'JSON required' });
       const body = await readBody(req, 500_000_000); // snapshots carry project checkpoints
+      if (route === 'turn-queue') return json(res, 200, await cluster.queue(body.key, body.action));
       if (route === 'read-session') {
         if (!cluster.replica.writable()) return json(res, 503, { error: 'Coordinator unavailable.' });
         const session = cluster.replica.state.sessions[body.id];
@@ -886,6 +954,9 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, {
         models,
         default: cfg.default,
+        projectQueues: Object.fromEntries(Object.entries(cluster.replica.state.values)
+          .filter(([key]) => key.startsWith('turn-queue:'))
+          .map(([key, queue]) => [key, queue.entries.map(({ body, ...entry }) => entry)])),
         machines: cluster.status(),
         apps: (await apps.load(USER_DATA)).map(app => ({ id: app.id, name: app.name,
           executionHosts: executionHosts(app, cluster.replica.members(), cluster.self.id) })),
@@ -1116,6 +1187,7 @@ const server = http.createServer(async (req, res) => {
         catch (e) { return json(res, 400, { error: e.message }); }
       }
       if (req.method === 'DELETE' && appId) {
+        if ((await cluster.queue(`turn-queue:${appId}`)).entries.some(unfinished)) return json(res, 409, { error: 'Resolve or skip the project’s pending turns before deleting it.' });
         // Folder, sessions, and GitHub deletion are independent opt-in choices.
         // Validate and complete GitHub deletion before removing local records.
         const wantFiles = url.searchParams.get('files') === '1';
@@ -1322,11 +1394,24 @@ const server = http.createServer(async (req, res) => {
       const session = live.get(id) ?? (await store.load(id, { repair: false }));
       if (running.has(id)) return json(res, 409, { error: 'Wait for the tab to finish before integrating.' });
       if (!session.tabWorkspace) return json(res, 409, { error: 'Start an isolated coding turn before integrating changes.' });
+      const key = queueKey(session);
+      let queue = await cluster.queue(key);
+      let entry = queue.entries.find(e => e.sessionId === id && e.state === 'blocked');
+      if (!entry) {
+        if (queue.entries.some(e => e.sessionId === id && unfinished(e))) return json(res, 409, { error: 'This tab already has pending queue work.' });
+        queue = await cluster.queue(key, { op: 'enqueue', entry: {
+          id: crypto.randomUUID(), key, sessionId: id, name: session.name,
+          owner: cluster.self.id, body: {}, createdAt: Date.now(), kind: 'integration',
+        } });
+        entry = queue.entries.at(-1);
+      }
       const last = [...session.events].reverse().find((e) => e.type === 'assistant');
       const startedAt = Date.now();
       running.set(id, { controller: new AbortController(), startedAt, last: 'integration', executionEpoch: session.executionEpoch || 0 });
       live.set(id, session);
       try {
+        if (entry.state === 'queued') await updateTurn(entry, 'preparing');
+        await awaitPublication(entry, running.get(id).controller.signal);
         if (cluster.shared()) {
           session.turnHost = cluster.self.id;
           session.turnStartedAt = startedAt;
@@ -1340,8 +1425,14 @@ const server = http.createServer(async (req, res) => {
           push: (await github.status()).authenticated,
           model: session.model, servedModel: last?.servedModel,
         });
+        if (!result.ok || ((await sessionPlacement(session)).distributed && !result.pushed && result.skipped !== 'no changes'))
+          throw new Error(result.error || result.reason || 'Publication did not finish.');
+        await updateTurn(entry, 'done', result.sha || result.skipped || 'integrated');
         await store.save(session);
         return json(res, 200, result);
+      } catch (e) {
+        await updateTurn(entry, 'blocked', e.message).catch(() => {});
+        return json(res, 409, { error: e.message });
       } finally {
         if (session.turnHost) {
           delete session.turnHost;
@@ -1578,9 +1669,25 @@ const server = http.createServer(async (req, res) => {
     if (m) {
       const [, id, verb] = m;
 
+      if (req.method === 'GET' && id && verb === 'projectqueue') {
+        const session = await store.load(id, { repair: false });
+        const queue = await cluster.queue(queueKey(session));
+        return json(res, 200, { entries: queue.entries.map(({ body, ...entry }) => entry) });
+      }
+      if (req.method === 'POST' && id && verb === 'skipturn') {
+        if (running.has(id) || messageQueue.busy(id)) return json(res, 409, { error: 'Stop this tab and wait for it to finish first.' });
+        const session = await store.load(id, { repair: false });
+        const { entryId } = await readBody(req);
+        const queue = await cluster.queue(queueKey(session));
+        const entry = queue.entries.find(e => e.id === entryId && e.sessionId === id);
+        if (!entry || !['queued', 'blocked'].includes(entry.state)) return json(res, 409, { error: 'Only a queued or blocked turn can be skipped.' });
+        await updateTurn(entry, 'cancelled', 'Explicitly skipped; unpublished work remains in the owner’s tab.');
+        return json(res, 200, { ok: true });
+      }
       if (req.method === 'POST' && id && verb === 'machine') {
         const session = await store.load(id, { repair: false });
         const { ownerNode } = await readBody(req);
+        if ((await cluster.queue(queueKey(session))).entries.some(e => e.sessionId === id && unfinished(e))) return json(res, 409, { error: 'Resolve this tab’s queue entries before changing computers.' });
         const { hosts } = await sessionPlacement(session);
         const error = assignmentError(session, ownerNode, hosts);
         if (error) return json(res, 409, { error });
@@ -1650,6 +1757,8 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, session);
       }
       if (req.method === 'DELETE' && id) {
+        const deleting = await store.load(id, { repair: false });
+        if ((await cluster.queue(queueKey(deleting))).entries.some(e => e.sessionId === id && unfinished(e))) return json(res, 409, { error: 'Resolve or skip this tab’s queue entries before deleting it.' });
         if (running.has(id)) return json(res, 409, { error: 'Stop the turn and wait for it to finish before deleting this session.' });
         live.delete(id);
         await store.remove(id);
@@ -1659,6 +1768,9 @@ const server = http.createServer(async (req, res) => {
         const session = live.get(id) ?? (await store.load(id, { repair: !running.has(id) }));
         const patch = await readBody(req);
         if (running.has(id)) return json(res, 409, { error: 'Wait for the current turn and integration to finish before editing this session.' });
+        if ((patch.projectDir !== undefined || patch.appId !== undefined) && (await cluster.queue(queueKey(session))).entries.some(e => e.sessionId === id && unfinished(e)))
+          return json(res, 409, { error: 'Resolve or skip this tab’s pending turns before moving its project.' });
+        delete patch.queueTurn;
         delete patch.ownerNode;
         delete patch.executionEpoch;
         delete patch.turnHost;
@@ -1688,6 +1800,8 @@ const server = http.createServer(async (req, res) => {
         if (running.has(id)) return json(res, 409, { error: 'Stop the turn and wait for it to finish before editing this conversation.' });
         const { eventId, revertFiles = false } = await readBody(req);
         const session = await store.load(id, { repair: false });
+        if ((await cluster.queue(queueKey(session))).entries.some(e => e.sessionId === id && unfinished(e))) return json(res, 409, { error: 'Resolve or skip this tab’s queue entries before rewriting its conversation.' });
+        if (revertFiles) return json(res, 409, { error: 'File rewind is disabled with ordered integration. Ask a new turn to undo the change so it is merged and checked in queue order.' });
         try {
           if (verb === 'erase') {
             const { events, removed, describe } = eraseEvent(session.events, eventId);
@@ -1697,29 +1811,12 @@ const server = http.createServer(async (req, res) => {
             return json(res, 200, { ok: true, removed, session });
           }
 
-          // Rewind. The files move first: if restoring them fails there is
-          // nothing to explain afterwards, because the history is still intact.
-          let gitResult = null;
-          if (revertFiles) {
-            const sha = commitShaAt(session.events, eventId);
-            if (!sha) {
-              gitResult = { ok: false, error: 'No integrated commit was recorded before that message, so there is no file state to go back to.' };
-            } else {
-              gitResult = await git.restoreTo(session.tabWorkspace?.dir ?? session.projectDir, sha);
-            }
-            if (!gitResult.ok) return json(res, 400, { error: gitResult.error });
-          }
-
+          // Rewind conversation only; code reversals are new queued turns.
           const { events, removed, draft, attachments: atts } = rewindTo(session.events, eventId);
           session.events = events;
-          session.events.push(noteEvent(
-            `rewound the conversation here — ${removed} later event(s) removed${
-              gitResult?.restored ? `, project files restored to ${gitResult.to} as commit ${gitResult.sha}`
-                : gitResult?.skipped ? ', project files were already in that state' : ''}`,
-            gitResult?.sha ? { sha: gitResult.sha } : {},
-          ));
+          session.events.push(noteEvent(`rewound the conversation here — ${removed} later event(s) removed`));
           await store.save(session);
-          return json(res, 200, { ok: true, removed, draft, attachments: atts, git: gitResult, session });
+          return json(res, 200, { ok: true, removed, draft, attachments: atts, git: null, session });
         } catch (e) {
           return json(res, 400, { error: e?.message ?? String(e) });
         }
@@ -1762,6 +1859,9 @@ const server = http.createServer(async (req, res) => {
       }
       if (req.method === 'POST' && id && verb === 'stop') {
         messageQueue.cancel(id);
+        const stopping = await store.load(id, { repair: false });
+        const queue = await cluster.queue(queueKey(stopping));
+        for (const entry of queue.entries.filter(e => e.sessionId === id && e.state === 'queued')) await updateTurn(entry, 'cancelled', 'Cancelled by Stop.');
         running.get(id)?.controller.abort();
         return json(res, 200, { ok: true });
       }
@@ -1821,20 +1921,18 @@ const server = http.createServer(async (req, res) => {
         if (restarting) return json(res, 409, { error: 'The server is restarting. Try again when it reconnects.' });
         const body = await readBody(req);
         if ((!body.text || !String(body.text).trim()) && !body.attachments?.length) return json(res, 400, { error: 'Enter a message or attach a file.' });
-        // Integration-only tasks cannot accept a follow-up until they finish.
-        if (running.has(id) && !messageQueue.busy(id)) return json(res, 409, { error: 'Wait for integration to finish.' });
         try {
-          const queued = messageQueue.busy(id);
-          messageQueue.submit(id, () => dispatchMessage(id, body, (code, value) => {
-            if (!queued) return json(res, code, value);
-            if (code >= 400) throw new Error(value.error);
-          }), { queue: verb === 'queue', onError: (e) => {
-            if (!res.headersSent) json(res, 400, { error: e.message });
-            else broadcast(id, { kind: 'error', error: `Queued message: ${e.message}` });
+          const session = await store.load(id, { repair: false });
+          const key = queueKey(session);
+          const queue = await cluster.queue(key, { op: 'enqueue', allowQueue: verb === 'queue', entry: {
+            id: crypto.randomUUID(), key, sessionId: id, name: session.name,
+            owner: cluster.self.id, body, createdAt: Date.now(),
           } });
-          if (queued) return json(res, 202, { ok: true, queued: true });
+          const entry = queue.entries.at(-1);
+          const queued = messageQueue.busy(id) || running.has(id);
+          await scheduleTurn(entry);
+          return json(res, queued ? 202 : 200, { ok: true, queued, number: entry.number });
         } catch (e) { return json(res, 409, { error: e.message }); }
-        return undefined;
       }
     }
 
@@ -1878,6 +1976,24 @@ placement = appPlacement(cluster, USER_DATA, {
 });
 clusterAssets = replicatedAssets(cluster, USER_DATA);
 cluster.replica.start();
+let pumpingQueue = false;
+setInterval(async () => {
+  if (pumpingQueue) return;
+  pumpingQueue = true;
+  try {
+    for (const [key, value] of Object.entries(cluster.replica.state.values)) {
+      if (!key.startsWith('turn-queue:')) continue;
+      for (const entry of value.entries) {
+        if (entry.owner !== cluster.self.id || !unfinished(entry) || messageQueue.busy(entry.sessionId) || running.has(entry.sessionId)) continue;
+        if (entry.state === 'queued' && value.entries.some(e => e.sessionId === entry.sessionId && e.number < entry.number && unfinished(e))) continue;
+        if (entry.state === 'queued' && entry.kind !== 'integration') await scheduleTurn(entry);
+        else if (entry.state !== 'blocked') await updateTurn(entry, 'blocked', 'Owner restarted or turn stopped; work is preserved. Retry integration or skip explicitly.');
+      }
+    }
+  } catch { /* coordinator unavailable; retain all entries for the next pass */ }
+  finally { pumpingQueue = false; }
+}, 1000).unref();
+
 // Discover our published address without changing the user's Serve routes.
 networkStatus(PORT).then((n) => cluster.setUrl(n.phoneUrl)).catch(() => {});
 /**

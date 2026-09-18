@@ -456,7 +456,7 @@ function turnHtml(turn, i, running, number, isLast) {
     if (u.ms > 1500) cost.push(`${(u.ms / 1000).toFixed(0)}s`);
 
     bits.push(`<div class="turn user">
-      <div class="who"><span class="qn">${number}</span> you
+      <div class="who"><span class="qn">${turn.user.turnNumber ?? number}</span> you
         <span class="at">${clock(turn.user.ts)}</span>${
   messageActions(turn.user.id, { rewind: true })}${messageToggle(key + '-input', 'your message')}</div>
       <div id="fold-${esc(key)}-input"${closedFolds.has(key + '-input') ? ' hidden' : ''}><div class="user-message">${esc(turn.user.text)}${
@@ -703,8 +703,10 @@ function paintSessionTabs() {
 function sessionOptionsSheet() {
   const session = state.session;
   openSheet(`<h2>${esc(session.name)}</h2>
+    <button class="rowlink" id="project-queue">Project turn queue <span>›</span></button>
     <button class="rowlink" id="session-edit">Edit session <span>›</span></button>
     <button class="rowlink" id="session-delete">Delete session <span>›</span></button>`);
+  $('project-queue').onclick = projectQueueSheet;
   $('session-edit').onclick = sessionSettingsSheet;
   $('session-delete').onclick = async () => {
     if (!confirm('Delete this session?')) return;
@@ -722,6 +724,31 @@ function sessionOptionsSheet() {
       }
     } catch (e) { showBanner(e.message, true); }
   };
+}
+
+async function projectQueueSheet() {
+  const session = state.session;
+  if (!session) return;
+  await refreshState();
+  const key = `turn-queue:${session.appId || session.id}`;
+  const entries = state.projectQueues?.[key] || [];
+  openSheet(`<h2>Project turn queue</h2>
+    <p class="dim">Turns prepare in parallel and publish in numbered order. Each turn merges and checks the latest code in its slot. Blocked turns must be retried through Git or explicitly skipped.</p>
+    ${entries.map(e => `<div class="item"><div class="grow"><div class="t">#${e.number} · ${esc(e.name)}</div><div class="s">${esc(e.state)} · ${esc(state.machines?.hosts?.find(h => h.id === e.owner)?.name || 'computer')}</div><div class="s">${esc(e.detail || '')}</div></div>
+      ${['queued', 'blocked'].includes(e.state) ? `<button class="ghost" data-skip-turn="${esc(e.id)}" data-turn-session="${esc(e.sessionId)}">skip</button>` : ''}</div>`).join('') || '<p class="dim">No turns queued yet.</p>'}
+    <div class="actions"><button class="ghost" id="queue-refresh">refresh</button><button class="primary" id="queue-close">done</button></div>`);
+  $('queue-close').onclick = closeSheet;
+  $('queue-refresh').onclick = projectQueueSheet;
+  $('sheet').querySelectorAll('[data-skip-turn]').forEach(button => {
+    button.onclick = async () => {
+      if (!confirm('Skip this turn’s publication slot? Its unfinished files stay on the original computer. Later turns may publish without it.')) return;
+      button.disabled = true;
+      try {
+        await api(`/api/sessions/${button.dataset.turnSession}/skipturn`, { method: 'POST', body: JSON.stringify({ entryId: button.dataset.skipTurn }) });
+        await projectQueueSheet();
+      } catch (e) { showBanner(e.message); button.disabled = false; }
+    };
+  });
 }
 
 function showSession() {
@@ -870,6 +897,7 @@ function listen(tab, id) {
       return;
     }
 
+    if (p.kind === 'queue') setRunning(true, t.startedAt, `waiting for turn #${p.number}`, tab);
     if (p.kind === 'started') setRunning(true, p.startedAt, null, tab);
     if (p.kind === 'event') {
       clearLive(tab);
@@ -944,6 +972,7 @@ async function refreshState() {
   // `running` (an array of busy session ids) land on top of the local boolean
   // of the same name - and [] is truthy, so send() silently refused forever.
   state.machines = s.machines;
+  state.projectQueues = s.projectQueues || {};
   state.apps = s.apps ?? [];
   state.models = s.models ?? {};
   state.default = s.default;
@@ -2964,7 +2993,7 @@ $('transcript').addEventListener('click', async (e) => {
     if (!confirm('Rewind to here? This message and everything after it are removed from the conversation.')) return;
     // Offered second, so the conversation can be wound back without touching
     // the files if that is all that is wanted.
-    const revertFiles = confirm('Also put the project files back the way they were at that point?\n\nNothing is lost: the current version stays in the Git history, and the restore is recorded as a new commit.');
+    const revertFiles = false; // File changes are reversed through a new, ordered coding turn.
     await editTranscript('rewind', { eventId: rewind.dataset.rewind, revertFiles });
     return;
   }

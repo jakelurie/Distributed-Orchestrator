@@ -1,0 +1,46 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { projectQueue, queueKey, unfinished } from '../src/core/project-queue.js';
+import { atomic } from '../src/core/cluster/raft.js';
+const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'project-queue-'));
+const key = queueKey({ appId: 'app' });
+const options = { read: async () => JSON.parse(await fs.readFile(path.join(dir, 'queue.json')).catch(e => {
+  if (e.code === 'ENOENT') return '{"next":1,"entries":[]}'; throw e;
+})), write: (key, value) => atomic(path.join(dir, 'queue.json'), value) };
+try {
+  let queue = projectQueue(options);
+  const add = (id, sessionId = id) => queue.change(key, { op: 'enqueue', entry: { id, sessionId, owner: id, body: { text: id } } });
+  await Promise.all([add('a'), add('b')]);
+  let data = await queue.read(key);
+  assert.deepEqual(data.entries.map(e => e.number), [1, 2]);
+  assert.deepEqual(data.entries.map(e => e.state), ['queued', 'queued']);
+  const change = (id, state) => queue.change(key, { id, owner: id, state });
+  const claim = id => queue.change(key, { op: 'claim', id, owner: id });
+  await change('a', 'preparing'); await change('b', 'preparing');
+  await change('b', 'ready');
+  assert.equal((await claim('b')).entries[1].state, 'ready', 'later ready work cannot pass earlier preparing work');
+  await change('a', 'blocked');
+  assert.equal((await claim('b')).entries[1].state, 'ready', 'failed earlier work retains its slot');
+  queue = projectQueue(options);
+  data = await queue.read(key);
+  assert.equal(data.entries[0].body.text, 'a', 'restart retains request and state');
+  await change('a', 'ready'); await claim('a');
+  await assert.rejects(change('a', 'cancelled'), /Cannot change/, 'cannot skip a publishing turn');
+  await assert.rejects(queue.change(key, { id: 'a', owner: 'b', state: 'done' }), /owning/);
+  await change('a', 'done');
+  assert.equal((await claim('b')).entries[1].state, 'publishing');
+  await change('b', 'blocked'); await change('b', 'cancelled');
+  assert.ok((await queue.read(key)).entries.every(e => !unfinished(e)));
+  data = await add('c'); assert.equal(data.entries.at(-1).number, 3);
+  await assert.rejects(add('d', 'c'), /already running/);
+  assert.equal((await queue.read(key)).next, 4, 'rejected requests consume no sequence numbers');
+  await change('c', 'preparing');
+  await queue.change(key, { op: 'enqueue', allowQueue: true, entry: { id: 'followup', sessionId: 'c', owner: 'c', body: { text: 'next' } } });
+  await change('c', 'blocked');
+  await assert.rejects(queue.change(key, { id: 'followup', owner: 'c', state: 'preparing' }), /earlier turn/);
+  await change('c', 'cancelled');
+  await queue.change(key, { id: 'followup', owner: 'c', state: 'preparing' });
+  console.log('PASS persistent numbered queue, concurrent allocation, FIFO publication, blocked recovery, skip and owner checks');
+} finally { await fs.rm(dir, { recursive: true, force: true }); }

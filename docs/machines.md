@@ -308,3 +308,31 @@ This is not a guarantee of invisible outages: losing the server serving the
 browser requires reconnecting, and a coordinator election can temporarily block
 durable session writes. Overlapping completed edits can still conflict; integration
 keeps those tab changes separate until the conflict is resolved.
+
+## Ordered turns across project tabs
+
+Every accepted message gets a permanent project turn number, shared by all
+computers and visible in the conversation and **Session options → Project turn
+queue**. Queued requests, owners, numbers and states survive restarts. Separate
+projects have independent queues; loose sessions have their own queues.
+
+Tabs prepare work in parallel and receive a summary of earlier pending requests.
+Finished work waits for its numbered publication slot. In that slot integration
+merges the latest completed work and runs the checks before publishing. A test or
+merge failure blocks that slot; later turns cannot silently overtake it. Use the
+tab's Git integration retry, or explicitly skip its queue entry. Skipping keeps
+unfinished files on their original computer; later turns can then proceed.
+Manual Git integration uses the same queue. There is no timeout that steals a
+publication slot from a disconnected computer.
+
+Requests which had not started resume on their owner after restart. Started or
+publishing work is marked blocked, never automatically replayed. An unavailable
+owner retains its slot until it returns; strict ordering deliberately means later
+publication may wait, while preparation on other computers can continue.
+
+Conversation rewind remains available after resolving the tab's pending entries.
+The old file-rewind option is disabled: request an undo in a new coding turn so it
+is ordered, merged and checked against everyone else's changes. Numbering does
+not eliminate semantic conflicts or replace tests. The existing two-host
+partition limitation still applies; a reachable coordinator is required for
+shared queue mutations, and Git continues to reject non-fast-forward pushes.

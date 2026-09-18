@@ -27,16 +27,21 @@ async function start(name) {
     provider: 'openai', model: name, label: name, baseUrl: `http://127.0.0.1:${mock.address().port}/v1`,
   } } }));
   const origin = `http://127.0.0.1:${port}`;
-  const child = spawn(process.execPath, ['server/index.js'], { env: { ...process.env,
+  const launch = () => spawn(process.execPath, ['server/index.js'], { env: { ...process.env,
     HARNESS_PORT: String(port), HARNESS_TOKEN: 'execution-test', HARNESS_DATA_DIR: dir,
     ORCHESTRATOR_PUBLIC_URL: origin, ORCHESTRATOR_NODE_NAME: name,
   }, stdio: 'ignore' });
+  const child = launch();
   const closed = once(child, 'exit');
   const request = (route, method = 'GET', body) => fetch(origin + route, { method,
     headers: { 'Content-Type': 'application/json', 'x-harness-token': 'execution-test' },
     body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(20000) });
   const call = async (...args) => { const r = await request(...args); const v = await r.json(); assert.ok(r.ok, JSON.stringify(v)); return v; };
-  const host = { child, closed, call, request, dir }; hosts.push(host);
+  const host = { child, closed, call, request, dir, restart: async () => {
+    host.child = launch(); host.closed = once(host.child, 'exit');
+    for (let i = 0; i < 60; i++) { try { await call('/api/cluster/status'); return; } catch { await pause(); } }
+    throw Error('server did not restart');
+  } }; hosts.push(host);
   for (let i = 0; i < 60; i++) { try { host.status = await call('/api/cluster/status'); return host; } catch { await pause(); } }
   throw Error('server did not start');
 }
@@ -57,6 +62,18 @@ try {
   assert.ok(release, 'a follower executed the model request');
   assert.ok((await a.call('/api/state')).running.includes(s.id));
   assert.equal((await a.request(`/api/sessions/${s.id}/machine`, 'POST', { ownerNode: a.status.self })).status, 409);
+  const parallel = await a.call('/api/sessions', 'POST', { appId: '__harness', name: 'parallel', mode: 'chat', model: 'model-a', ownerNode: a.status.self });
+  await b.call(`/api/sessions/${parallel.id}/send`, 'POST', { text: 'hello' });
+  let sharedQueue;
+  for (let i = 0; i < 80; i++) {
+    sharedQueue = (await a.call('/api/state')).projectQueues['turn-queue:__harness'];
+    if (sharedQueue.find(e => e.sessionId === parallel.id)?.state === 'ready') break;
+    await pause();
+  }
+  assert.equal(sharedQueue.find(e => e.sessionId === s.id).number, 1);
+  assert.equal(sharedQueue.find(e => e.sessionId === parallel.id).number, 2);
+  assert.equal(sharedQueue.find(e => e.sessionId === parallel.id).state, 'ready', 'later turn finishes preparation but waits for its publication slot');
+  assert.equal((await b.call('/api/state')).projectQueues['turn-queue:__harness'][1].state, 'ready');
   release();
   let finished;
   for (let i = 0; i < 80; i++) {
@@ -67,6 +84,14 @@ try {
   assert.ok(!finished.turnHost);
   assert.equal(finished.ownerNode, b.status.self);
   assert.ok(finished.events.some(e => e.type === 'assistant' && e.text === 'model-b'));
+  assert.equal((await a.request(`/api/sessions/${s.id}/rewind`, 'POST', { eventId: finished.events[0].id, revertFiles: true })).status, 409, 'file rewind cannot bypass publication order');
+  for (let i = 0; i < 80; i++) {
+    sharedQueue = (await a.call('/api/state')).projectQueues['turn-queue:__harness'];
+    if (sharedQueue.every(e => e.state === 'done')) break;
+    await pause();
+  }
+  assert.ok(sharedQueue.every(e => e.state === 'done'));
+  assert.equal(finished.events.find(e => e.type === 'user').turnNumber, 1);
   const stale = structuredClone(finished);
   const moved = await a.call(`/api/sessions/${s.id}/machine`, 'POST', { ownerNode: a.status.self });
   assert.equal(moved.ownerNode, a.status.self);
@@ -112,6 +137,28 @@ try {
     await pause();
   }
   assert.equal((await a.request(`/api/sessions/${local.id}/machine`, 'POST', { ownerNode: b.status.self })).status, 409);
+  const resumable = await a.call('/api/sessions', 'POST', { appId: '__harness', name: 'durable follow-up', mode: 'chat', model: 'model-b', ownerNode: b.status.self });
+  b.child.kill('SIGKILL'); await b.closed;
+  const queueRequest = await fetch(a.status.hosts[0].url + '/api/cluster/turn-queue', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'x-cluster-key': identity.secret },
+    body: JSON.stringify({ key: 'turn-queue:__harness', action: { op: 'enqueue', entry: {
+      id: 'durable-followup', key: 'turn-queue:__harness', sessionId: resumable.id,
+      name: resumable.name, owner: b.status.self, body: { text: 'after restart' },
+    } } }),
+  });
+  assert.equal(queueRequest.status, 200);
+  await b.restart();
+  let resumed;
+  for (let i = 0; i < 100; i++) {
+    try { resumed = await a.call('/api/sessions/' + resumable.id); }
+    catch { await pause(); continue; }
+
+    if (resumed.events.some(e => e.type === 'assistant') && !resumed.turnHost) break;
+    await pause();
+  }
+  assert.equal(resumed.events.filter(e => e.type === 'user' && e.text === 'after restart').length, 1);
+  assert.ok(resumed.events.some(e => e.type === 'assistant' && e.text === 'model-b'));
+  assert.equal((await a.call('/api/state')).projectQueues['turn-queue:__harness'].find(e => e.id === 'durable-followup').state, 'done');
   await a.call(`/api/sessions/${s.id}`, 'DELETE');
   console.log('PASS follower-owned turns, local model inventories, SSE proxy, busy assignment guard, single-host eligibility and commands from another computer');
 } finally {
