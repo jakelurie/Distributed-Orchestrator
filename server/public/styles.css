@@ -451,6 +451,25 @@ body {
 }
 .copy-reply:active { background: var(--line); color: var(--fg); }
 .copy-reply.failed { color: var(--fg); border-color: var(--fg-faint); }
+
+/* Delete and rewind, in the same quiet pill as copy: they change what the model
+   is sent, so they belong on the message, not behind a menu. */
+.msg-acts { display: flex; align-items: center; gap: 6px; }
+.turn.user .msg-acts { margin-left: auto; }
+.turn.assistant .msg-acts { margin-left: 6px; }
+.msg-act {
+  min-height: 28px; padding: 4px 10px;
+  font-family: var(--mono); font-size: 11px;
+  color: var(--fg-dim);
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+  position: relative;
+}
+.msg-act::after { content: ''; position: absolute; inset: -8px -6px; }
+.msg-act:active { background: var(--line); color: var(--fg); }
+.turn.user .msg-acts + .message-toggle { flex: 0 0 44px; margin-left: 8px; }
 .act .act-at { flex: 0 0 auto; color: var(--fg-faint); font-size: 11px; }
 
 .turn.user .turn-cost { margin-top: 5px; text-align: right; }

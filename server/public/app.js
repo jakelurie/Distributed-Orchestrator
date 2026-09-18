@@ -415,6 +415,19 @@ function foldSummary(turn, running) {
   return { tone: empty ? 'warn' : tone, text: parts.join(' · ') };
 }
 
+/**
+ * Per-message controls: take it out of the context, or wind back to it.
+ *
+ * Both edit what the model will be sent next turn, which is why they live on
+ * the message itself rather than in a menu somewhere: the thing being changed
+ * is the thing you are looking at.
+ */
+function messageActions(eventId, { rewind = false } = {}) {
+  return `<span class="msg-acts">${rewind
+    ? `<button class="msg-act" data-rewind="${esc(eventId)}" aria-label="Rewind the conversation to this message">rewind</button>` : ''}
+    <button class="msg-act" data-erase="${esc(eventId)}" aria-label="Delete this message from the conversation">delete</button></span>`;
+}
+
 function messageToggle(key, label) {
   const open = !closedFolds.has(key);
   return `<button class="message-toggle" data-fold="${esc(key)}" aria-label="Toggle ${label}" aria-expanded="${open}"><span class="act-caret">${open ? '▴' : '▾'}</span></button>`;
@@ -435,7 +448,8 @@ function turnHtml(turn, i, running, number, isLast) {
 
     bits.push(`<div class="turn user">
       <div class="who"><span class="qn">${number}</span> you
-        <span class="at">${clock(turn.user.ts)}</span>${messageToggle(key + '-input', 'your message')}</div>
+        <span class="at">${clock(turn.user.ts)}</span>${
+  messageActions(turn.user.id, { rewind: true })}${messageToggle(key + '-input', 'your message')}</div>
       <div id="fold-${esc(key)}-input"${closedFolds.has(key + '-input') ? ' hidden' : ''}><div class="user-message">${esc(turn.user.text)}${
   (turn.user.attachments ?? []).length
     ? `<div class="shots">${turn.user.attachments.map((a) => (a.role === 'document'
@@ -467,7 +481,7 @@ function turnHtml(turn, i, running, number, isLast) {
           ? `<span class="served">${esc(a.servedModel)}</span>` : ''}
         <span class="at">${clock(a.ts)}</span>
         <button class="copy-reply" data-copy="${esc(copyId)}"
-          aria-label="Copy this reply as plain text">copy</button>${isFinal ? messageToggle(replyKey, 'final reply') : ''}</div>
+          aria-label="Copy this reply as plain text">copy</button>${messageActions(a.id)}${isFinal ? messageToggle(replyKey, 'final reply') : ''}</div>
       <div${isFinal ? ` id="fold-${esc(replyKey)}"${closedFolds.has(replyKey) ? ' hidden' : ''}` : ''}>${think}<div class="body">${render(a.text)}</div></div></div>`;
     if (isFinal) finalReply = reply; else inner.push(reply);
   }
@@ -584,6 +598,36 @@ async function openSession(id) {
   clearLive('chat');
   showSession();
   listen('chat', id);
+}
+
+/**
+ * Apply a delete or a rewind, and show the conversation as it now stands.
+ *
+ * The server returns the whole session rather than a patch: the transcript is
+ * the thing that changed, and re-rendering from the truth is cheaper to reason
+ * about than replaying the edit on the copy held here.
+ */
+async function editTranscript(verb, body) {
+  // The transcript on screen belongs to the open tab, which is not always the
+  // chat one — the monitor companion draws into the same view.
+  const id = cur().session?.id;
+  if (!id) return;
+  try {
+    const res = await api(`/api/sessions/${id}/${verb}`, { method: 'POST', body: JSON.stringify(body) });
+    cur().session = res.session;
+    if (state.session?.id === id) state.session = res.session;
+    // A rewind is nearly always a prelude to asking for the same thing
+    // differently, so the message comes back to the composer instead of being
+    // thrown away with the turn it started.
+    if (res.draft && !$('input').value.trim()) {
+      $('input').value = res.draft;
+      $('input').style.height = 'auto';
+      $('input').style.height = `${Math.min($('input').scrollHeight, window.innerHeight * 0.4)}px`;
+      paintComposerAction();
+    }
+    showSession();
+    showBanner('');
+  } catch (e) { showBanner(e.message, true); }
 }
 
 function nextTabName(appId) {
@@ -2769,6 +2813,25 @@ $('transcript').addEventListener('click', async (e) => {
       copy.textContent = 'copy';
       copy.classList.remove('failed');
     }, ok ? 1200 : 3000);
+    return;
+  }
+
+  const erase = e.target.closest('[data-erase]');
+  if (erase) {
+    e.stopPropagation();          // these sit inside a fold header
+    if (!confirm('Delete this message? It is removed from the conversation and from the context sent to the model.')) return;
+    await editTranscript('erase', { eventId: erase.dataset.erase });
+    return;
+  }
+
+  const rewind = e.target.closest('[data-rewind]');
+  if (rewind) {
+    e.stopPropagation();
+    if (!confirm('Rewind to here? This message and everything after it are removed from the conversation.')) return;
+    // Offered second, so the conversation can be wound back without touching
+    // the files if that is all that is wanted.
+    const revertFiles = confirm('Also put the project files back the way they were at that point?\n\nNothing is lost: the current version stays in the Git history, and the restore is recorded as a new commit.');
+    await editTranscript('rewind', { eventId: rewind.dataset.rewind, revertFiles });
     return;
   }
 

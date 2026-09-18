@@ -102,8 +102,13 @@ export function toolResultEvent({ callId, name, ok, output }) {
   };
 }
 
-export function noteEvent(text) {
-  return { id: newId('n'), ts: Date.now(), type: 'note', text };
+/**
+ * @param extra  structured facts about the note — a commit sha, say. The text
+ *               is for the reader; these are for code, so that rewinding to a
+ *               point in the conversation does not depend on parsing English.
+ */
+export function noteEvent(text, extra = {}) {
+  return { id: newId('n'), ts: Date.now(), type: 'note', text, ...extra };
 }
 
 /** Events the models actually see. Notes are bookkeeping for the UI. */

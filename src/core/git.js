@@ -130,6 +130,56 @@ export async function commitAndPush(dir, { model, servedModel, push = true, auto
 }
 
 /**
+ * Put the files back the way they were at a commit, as a new commit.
+ *
+ * History is never rewritten: the work that is being undone stays in the log,
+ * and the undo is one more commit on top of it. That is the difference between
+ * changing your mind and losing a day — the discarded version is still there to
+ * go back to if the rewind turns out to have been the wrong call.
+ */
+export async function restoreTo(dir, sha) {
+  const st = await status(dir);
+  if (!st.repo) return { ok: false, error: 'not a git repository' };
+
+  const target = await run(['rev-parse', '--verify', `${sha}^{commit}`], st.root);
+  if (!target.ok) return { ok: false, error: `commit ${sha} is not in this repository` };
+
+  const before = await run(['status', '--porcelain'], st.root);
+  if (before.out) {
+    return { ok: false, error: 'The project has uncommitted changes. Commit or discard them before rewinding the files.' };
+  }
+
+  const from = (await run(['rev-parse', '--short', 'HEAD'], st.root)).out;
+  // Index and working tree become exactly that commit's tree, while HEAD stays
+  // where it is — so the commit below records the old state as a new step
+  // forward rather than discarding anything.
+  const read = await run(['read-tree', '-u', '--reset', target.out], st.root);
+  if (!read.ok) return { ok: false, error: read.err || 'could not read that commit' };
+
+  const after = await run(['status', '--porcelain'], st.root);
+  if (!after.out) return { ok: true, skipped: 'the files are already in that state', from };
+
+  const files = pathsFrom(after.out);
+  const identity = [];
+  for (const [key, fallback] of [['user.name', 'Distributed Orchestrator'], ['user.email', 'orchestrator@localhost']]) {
+    if (!(await run(['config', '--get', key], st.root)).out) identity.push('-c', `${key}=${fallback}`);
+  }
+  const message = `harness: restore project to ${target.out.slice(0, 8)}\n\n${
+    files.slice(0, 40).map((f) => `- ${f}`).join('\n')}${files.length > 40 ? `\n…and ${files.length - 40} more` : ''}`;
+  const commit = await run([...identity, 'commit', '-m', message], st.root);
+  if (!commit.ok) return { ok: false, error: commit.err || commit.out || 'git commit failed' };
+
+  return {
+    ok: true,
+    restored: true,
+    from,
+    to: target.out.slice(0, 8),
+    sha: (await run(['rev-parse', '--short', 'HEAD'], st.root)).out,
+    files,
+  };
+}
+
+/**
  * Create a private GitHub repo for a folder and push its current branch.
  *
  * Named after the app, preserving case. Private is deliberate here: a new

@@ -41,6 +41,7 @@ import { configureGithub, createGithubAuth } from '../src/core/github-auth.js';
 import { loadNotify, saveNotify, send as sendNotify, summarise, notificationSetupError } from '../src/core/notify.js';
 import * as store from '../src/core/store.js';
 import { noteEvent, tally } from '../src/core/transcript.js';
+import { eraseEvent, rewindTo, commitShaAt } from '../src/core/rewind.js';
 import { normalizeProviderLimits, WINDOWS } from '../src/core/usage.js';
 import * as codexCli from '../src/core/providers/codex-cli.js';
 import { refuseAsProjectDir } from '../src/core/harness-guard.js';
@@ -528,6 +529,7 @@ async function dispatchMessage(id, body, reply) {
             const where = res.pushed ? 'integrated and pushed' : `integrated locally (not pushed — ${res.reason})`;
             session.events.push(noteEvent(
               `git: ${where} ${res.files.length} file${res.files.length === 1 ? '' : 's'} · ${res.sha}`,
+              { sha: res.sha },
             ));
           }
           if (session.events.at(-1)?.type === 'note') {
@@ -1488,6 +1490,49 @@ const server = http.createServer(async (req, res) => {
         await store.save(session);
         return json(res, 200, session);
       }
+      // Editing the past. Both refuse while a turn is running: the transcript
+      // in memory is the one the model is mid-way through sending.
+      if (req.method === 'POST' && id && ['erase', 'rewind'].includes(verb)) {
+        if (running.has(id)) return json(res, 409, { error: 'Stop the turn and wait for it to finish before editing this conversation.' });
+        const { eventId, revertFiles = false } = await readBody(req);
+        const session = await store.load(id, { repair: false });
+        try {
+          if (verb === 'erase') {
+            const { events, removed, describe } = eraseEvent(session.events, eventId);
+            session.events = events;
+            session.events.push(noteEvent(`removed ${describe} from the conversation — it is no longer sent to the model`));
+            await store.save(session);
+            return json(res, 200, { ok: true, removed, session });
+          }
+
+          // Rewind. The files move first: if restoring them fails there is
+          // nothing to explain afterwards, because the history is still intact.
+          let gitResult = null;
+          if (revertFiles) {
+            const sha = commitShaAt(session.events, eventId);
+            if (!sha) {
+              gitResult = { ok: false, error: 'No integrated commit was recorded before that message, so there is no file state to go back to.' };
+            } else {
+              gitResult = await git.restoreTo(session.tabWorkspace?.dir ?? session.projectDir, sha);
+            }
+            if (!gitResult.ok) return json(res, 400, { error: gitResult.error });
+          }
+
+          const { events, removed, draft, attachments: atts } = rewindTo(session.events, eventId);
+          session.events = events;
+          session.events.push(noteEvent(
+            `rewound the conversation here — ${removed} later event(s) removed${
+              gitResult?.restored ? `, project files restored to ${gitResult.to} as commit ${gitResult.sha}`
+                : gitResult?.skipped ? ', project files were already in that state' : ''}`,
+            gitResult?.sha ? { sha: gitResult.sha } : {},
+          ));
+          await store.save(session);
+          return json(res, 200, { ok: true, removed, draft, attachments: atts, git: gitResult, session });
+        } catch (e) {
+          return json(res, 400, { error: e?.message ?? String(e) });
+        }
+      }
+
       if (req.method === 'POST' && id && verb === 'fork') {
         const { model, name } = await readBody(req);
         return json(res, 200, await store.fork(id, { model, name }));
