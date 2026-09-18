@@ -430,6 +430,9 @@ async function dispatchMessage(id, body, reply) {
   const controller = new AbortController();
   const turn = { controller, startedAt: Date.now(), last: null };
   running.set(id, turn);
+  // Replicated with the session, so if this host disappears mid-turn the
+  // next main can fail this one tab instead of leaving it looking busy.
+  if (cluster.shared()) session.turnHost = cluster.self.id;
   // The threshold depends on the backend: an agent CLI legitimately
   // goes quiet for many minutes while running its own loop.
   beacons.start(id, { model: session.model, stallMs: stallMsFor(cfg.models[session.model]) });
@@ -561,6 +564,10 @@ async function dispatchMessage(id, body, reply) {
         }
       } catch { /* a scan failure must not affect the turn */ }
 
+      if (session.turnHost) {
+        delete session.turnHost;
+        if (!cluster.shared() || cluster.replica.writable()) await store.save(session).catch(() => {});
+      }
       running.delete(id);
       live.delete(id);
       broadcast(id, { kind: 'done' });
@@ -664,7 +671,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (req.method !== 'POST') return json(res, 405, { error: 'POST required' });
       if (!req.headers['content-type']?.startsWith('application/json')) return json(res, 415, { error: 'JSON required' });
-      const body = await readBody(req, 128_000_000);
+      const body = await readBody(req, 500_000_000); // snapshots carry project checkpoints
       if (route === 'request-join') return json(res, 200, await pairing.requestJoin(body.url));
       if (route === 'approve-host') return json(res, 200, await pairing.approve(body.url));
       if (route === 'cancel-join') return json(res, 200, pairing.cancel());
@@ -1682,8 +1689,37 @@ clusterAssets = replicatedAssets(cluster, USER_DATA);
 cluster.replica.start();
 // Discover our published address without changing the user's Serve routes.
 networkStatus(PORT).then((n) => cluster.setUrl(n.phoneUrl)).catch(() => {});
+/**
+ * A turn whose host went away (switched off, crashed, or lost its place as
+ * main) fails on its own: the main that is left marks just that tab as
+ * interrupted. Every other tab keeps running. Nothing is replayed.
+ */
+let reconciling = false;
+async function failOrphanedTurns() {
+  if (reconciling || !cluster.shared() || !cluster.replica.writable()) return;
+  reconciling = true;
+  try {
+    for (const [id, value] of Object.entries(cluster.replica.state.sessions)) {
+      if (!value?.turnHost || running.has(id)) continue;
+      const host = value.turnHost === cluster.self.id ? 'this host'
+        : cluster.replica.state.history[value.turnHost]?.name || 'another host';
+      const session = await store.load(id);
+      delete session.turnHost;
+      const note = noteEvent(
+        `turn interrupted — it was running on ${host}, which stopped or disconnected before it finished. `
+        + 'Nothing was replayed. Work it had started may have partly happened, so check the project '
+        + 'before assuming nothing did. Send another message to continue here.',
+      );
+      session.events.push(note);
+      await store.save(session);
+      broadcast(id, { kind: 'event', event: note });
+      broadcast(id, { kind: 'done' });
+    }
+  } catch { /* retried on the next pass */ } finally { reconciling = false; }
+}
 setInterval(() => {
   if (cluster.shared() && !cluster.replica.writable()) for (const turn of running.values()) turn.controller.abort();
+  failOrphanedTurns();
 }, 500).unref();
 setInterval(async () => {
   if (!cluster.replica.writable()) return;
@@ -1765,6 +1801,7 @@ async function shutdown(signal) {
       + 'project directory before assuming nothing happened. Send another message to continue.',
     );
     session.events.push(note);
+    delete session.turnHost;
     broadcast(id, { kind: 'event', event: note });
     // Best effort: the process is going away either way, and a failed save
     // must not stop the other sessions from getting their note.

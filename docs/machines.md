@@ -45,8 +45,22 @@ limit; CPU, disk and network capacity still apply.
 
 Preferred main biases the next election. It does not interrupt a healthy current
 main just to move work. Heartbeats run every 700 ms; elections begin after roughly
-3.5–6.5 seconds without a main, subject to connection latency. Running turns are
-aborted after quorum loss is detected. Already-started external side effects and
+3.5–6.5 seconds without a main, subject to connection latency. A host first asks
+its peers whether anyone is still leading (a pre-vote), so relaunching or
+reconnecting a host never deposes a healthy main: it simply follows it. With two
+hosts the first to ask becomes main; a peer that answers "no" blocks it, a peer
+that is switched off does not. Joining a second host can no longer leave either
+host needing the other to elect itself, including a join interrupted halfway.
+
+Turns run on the main. When a host that is not the main switches off, nothing
+running is affected. When the main switches off, the other host takes over and
+each tab that was mid-turn on it gets an "interrupted" note; only those tabs
+fail, and nothing is replayed. Running turns are also aborted on a host that
+loses its place as main (after quorum loss is detected).
+
+Committed history is compacted into `cluster/snapshot.json`, so `replica.json`
+stays small and heartbeats no longer rewrite the whole log. A host that was
+offline long enough to miss compacted history receives the snapshot. Already-started external side effects and
 background programs cannot be undone or fenced by a JavaScript coordinator.
 Uncertain sends/tools are **not automatically replayed** after a failure.
 

@@ -25,10 +25,15 @@ export async function createCluster(dir, { port, request = fetch, onChange = () 
   const replica = new Replica(root, { self, onChange, send: (node, message) => rpc(node.url, 'rpc', message) });
   await replica.init();
   async function rpc(origin, route, body, token) {
+    const payload = JSON.stringify(body);
+    // Elections must notice a switched-off host quickly; bulk catch-up and
+    // snapshots get time proportional to their size (at least ~500 KB/s).
+    const timeout = ['admit', 'activate'].includes(route) ? 90000
+      : ['vote', 'prevote'].includes(body?.kind) ? 2500 : 5000 + Math.ceil(payload.length / 500_000) * 1000;
     const response = await request(new URL(`/api/cluster/${route}`, origin), {
       method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/json',
         ...(token ? { 'x-harness-token': token } : { 'x-cluster-key': replica.disk.secret }) },
-      body: JSON.stringify(body), signal: AbortSignal.timeout(['admit', 'activate'].includes(route) ? 90000 : 5000),
+      body: payload, signal: AbortSignal.timeout(timeout),
     });
     const value = await response.json();
     if (!response.ok) throw new Error(value.error || `Machine returned ${response.status}`);
@@ -56,7 +61,7 @@ export async function createCluster(dir, { port, request = fetch, onChange = () 
       const u = new URL(url); if (!['http:', 'https:'].includes(u.protocol)) throw new Error('Invalid host address');
       self.url = u.origin;
       await atomic(identityFile, self);
-      replica.disk.initial = [self]; await replica.persist(); replica.rebuild();
+      await replica.setStandalone(self);
     },
     ticket() {
       const payload = Buffer.from(JSON.stringify({ cluster: replica.disk.clusterId, expires: Date.now() + 7 * 86400000 })).toString('base64url');
@@ -73,10 +78,10 @@ export async function createCluster(dir, { port, request = fetch, onChange = () 
     status() {
       const now = Date.now();
       const members = replica.members();
-      const seen = (id) => Math.max(replica.lastContact.get(id) || 0, replica.disk.sightings?.[id] || 0, replica.state.values['host-seen:' + id] || 0);
+      const seen = (id) => Math.max(replica.lastContact.get(id) || 0, replica.sightings?.[id] || 0, replica.state.values['host-seen:' + id] || 0);
       return { id: replica.disk.clusterId, self: self.id, leader: replica.leader, preferred: replica.state.preferred,
         role: replica.role, writable: replica.writable(), term: replica.disk.term,
-        conflicts: replica.disk.conflicts || 0, committed: replica.disk.commit, replicated: replica.disk.log.length,
+        conflicts: replica.disk.conflicts || 0, committed: replica.disk.commit, replicated: replica.length(),
         mode: members.length === 1 ? 'standalone' : members.length === 2 ? 'two-host availability' : 'majority consensus',
         quorum: quorum(members.length),
         recoveryIssues: Object.values(replica.state.sessions).filter((s) => s.workspaceError).map((s) => ({ session: s.name, error: s.workspaceError })),
@@ -115,18 +120,16 @@ export async function createCluster(dir, { port, request = fetch, onChange = () 
       joinPending = true;
       replica.stop();
       try {
-        const snapshot = await rpc(target.origin, 'admit', { member: self }, token.trim());
+        const admitted = await rpc(target.origin, 'admit', { member: self }, token.trim());
         // Preserve the old standalone history before adopting the cluster.
-        await atomic(path.join(root, `before-join-${Date.now()}.json`), replica.disk);
-        replica.disk = snapshot;
-        replica.role = 'follower'; replica.leader = null;
-        await replica.persist(); replica.rebuild(); replica.resetElection();
+        await atomic(path.join(root, `before-join-${Date.now()}.json`), replica.exportState());
+        await replica.importState(admitted.disk ? admitted : { disk: admitted, snapshot: null });
         await rpc(target.origin, 'activate', { member: self });
         // Joining an existing installation imports its transcripts, retaining
         // distinct IDs rather than overwriting an existing cluster session.
         for (const [id, value] of Object.entries(values)) await rpc(target.origin, 'command', { type: 'value', id, value });
         for (const session of sessions) {
-          if (snapshot.log.some((e) => e.command.type === 'session' && e.command.id === session.id)) {
+          if (replica.state.sessions[session.id] || replica.disk.log.some((e) => e.command.type === 'session' && e.command.id === session.id)) {
             session.id += `-${self.id.slice(0, 8)}`;
           }
           await rpc(target.origin, 'command', { type: 'session', id: session.id, value: { ...session, ownerNode: self.id } });
@@ -142,7 +145,7 @@ export async function createCluster(dir, { port, request = fetch, onChange = () 
       if (replica.members().some((n) => n.id === member.id || n.url === u.origin)) throw new Error('Machine already joined');
       // Admit as a learner. Activation waits for it to acknowledge the log
       // before a joint configuration can give it a vote.
-      return structuredClone(replica.disk);
+      return replica.exportState();
     },
     async activate(member) {
       if (joinPending) throw new Error('A membership change is already running');

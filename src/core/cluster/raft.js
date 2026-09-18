@@ -1,13 +1,32 @@
 /** Durable replicated log. No execution is replayed when a coordinator changes.
  * One voter is standalone; two deliberately favour availability during a split.
  * Three and up require a majority, including both sets during membership changes.
+ *
+ * Elections use a pre-vote round, so a host that restarts or loses a heartbeat
+ * cannot depose a healthy main: it only campaigns once every reachable peer
+ * agrees nobody is leading. With two hosts the first to ask wins; a peer that
+ * answers "no" blocks it, a peer that does not answer at all does not.
+ *
+ * Committed entries are compacted into snapshot.json so replica.json stays
+ * small; a follower that falls behind the compacted prefix receives the
+ * snapshot instead of the entries.
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
 export const quorum = (n) => n < 3 ? 1 : Math.floor(n / 2) + 1;
+const majority = (n) => Math.floor(n / 2) + 1;
 const copy = (value) => structuredClone(value);
+const size = (value) => Buffer.byteLength(JSON.stringify(value));
+// A peer that answered within this window still counts toward quorum.
+const QUORUM_MS = 3000;
+// Hearing from a main this recently means an election would only disrupt it.
+const LEADER_MS = 3500;
+// Compact once the committed tail holds this many entries or bytes.
+const COMPACT_ENTRIES = 64;
+const COMPACT_BYTES = 16_000_000;
+const BATCH_BYTES = 8_000_000;
 export async function atomic(file, value) {
   await fs.mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.${crypto.randomUUID()}.tmp`;
@@ -20,14 +39,29 @@ export async function atomic(file, value) {
   const directory = await fs.open(path.dirname(file), 'r');
   try { await directory.sync(); } finally { await directory.close(); }
 }
+function blankState(initial) {
+  const state = { sessions: {}, viewers: {}, preferred: initial[0].id, history: {}, values: {} };
+  for (const node of initial) state.history[node.id] = node;
+  return state;
+}
+function applyCommand(state, c) {
+  if (c.type === 'session') {
+    if (c.value === null) delete state.sessions[c.id]; else state.sessions[c.id] = c.value;
+  } else if (c.type === 'viewer') state.viewers[c.value.id] = c.value;
+  else if (c.type === 'preferred') state.preferred = c.id;
+  else if (c.type === 'configuration') for (const node of c.members) state.history[node.id] = node;
+  else if (c.type === 'value') state.values[c.id] = c.value;
+}
 
 export class Replica {
   constructor(dir, { self, send, now = () => performance.now(), random = Math.random, onChange = () => {} }) {
     Object.assign(this, { dir, self, send, now, random, onChange });
     this.file = path.join(dir, 'replica.json');
+    this.snapshotFile = path.join(dir, 'snapshot.json');
     this.role = 'follower'; this.leader = null; this.lastContact = new Map();
     this.next = new Map(); this.match = new Map(); this.queue = Promise.resolve();
-    this.proposals = Promise.resolve(); this.busy = false; this.lastQuorum = -Infinity;
+    this.acked = new Map(); this.inflight = new Map(); this.leaderSeen = -Infinity;
+    this.proposals = Promise.resolve(); this.busy = false; this.snapshot = null; this.applied = 0;
   }
   async init() {
     try { this.disk = JSON.parse(await fs.readFile(this.file, 'utf8')); }
@@ -37,7 +71,22 @@ export class Replica {
         votedFor: null, commit: 0, log: [], initial: [this.self] };
       await this.persist();
     }
+    Object.assign(this.disk, { base: this.disk.base || 0, baseTerm: this.disk.baseTerm || 0, baseId: this.disk.baseId ?? null });
+    try { this.snapshot = JSON.parse(await fs.readFile(this.snapshotFile, 'utf8')); }
+    catch (e) { if (e.code !== 'ENOENT') throw e; }
+    if (this.disk.base && !this.snapshot) throw new Error(`Cluster snapshot missing: ${this.snapshotFile}`);
+    if (this.snapshot && this.snapshot.index > this.disk.base) {
+      // Crashed between writing a snapshot and trimming the log. A compaction
+      // only covers committed entries, so they are still here; an installed
+      // snapshot replaces the log entirely.
+      const compacted = this.disk.commit >= this.snapshot.index;
+      this.disk.log = compacted ? this.disk.log.slice(this.snapshot.index - this.disk.base) : [];
+      Object.assign(this.disk, { base: this.snapshot.index, baseTerm: this.snapshot.term, baseId: this.snapshot.id,
+        commit: Math.max(this.disk.commit, this.snapshot.index) });
+      await this.persist();
+    }
     this.rebuild(); this.resetElection();
+    await this.exclusive(() => this.compact());
     if (this.members().length === 1) await this.campaign();
     return this;
   }
@@ -45,161 +94,310 @@ export class Replica {
     const task = this.queue.catch(() => {}).then(fn); this.queue = task; return task;
   }
   persist() { return atomic(this.file, this.disk); }
+  length() { return this.disk.base + this.disk.log.length; }
+  entry(i) { return i > this.disk.base ? this.disk.log[i - this.disk.base - 1] : undefined; }
+  termAt(i) { return i === 0 ? 0 : i === this.disk.base ? this.disk.baseTerm : this.entry(i)?.term; }
+  idAt(i) { return i === 0 ? null : i === this.disk.base ? this.disk.baseId : this.entry(i)?.id; }
   resetElection() {
     const preferred = this.state?.preferred === this.self.id;
     this.deadline = this.now() + (preferred ? 3500 : 5000) + this.random() * 1500;
   }
   configuration() {
     const entry = this.disk.log.findLast((e) => e.command.type === 'configuration');
-    return entry?.command || { members: this.disk.initial };
+    return entry?.command || this.snapshot?.configuration || { members: this.disk.initial };
+  }
+  configurationAt(index) {
+    const entry = this.disk.log.slice(0, index - this.disk.base).findLast((e) => e.command.type === 'configuration');
+    return entry?.command || this.snapshot?.configuration || { members: this.disk.initial };
   }
   members() {
     const config = this.configuration();
     return [...new Map([...(config.old || []), ...config.members].map((n) => [n.id, n])).values()];
   }
+  // One or two hosts: any single host may lead, and a split can produce two mains.
+  availability() { return this.configuration().members.length <= 2; }
   enough(ids) {
     const c = this.configuration();
     const count = (members) => members.filter((n) => ids.has(n.id)).length;
-    // Joint transitions require an actual old majority, even for a two-host
-    // availability cluster: both hosts must acknowledge upgrading to three.
-    return count(c.members) >= (c.old ? Math.floor(c.members.length / 2) + 1 : quorum(c.members.length)) &&
-      (!c.old || count(c.old) >= Math.floor(c.old.length / 2) + 1);
+    // Growing to two hosts must never need both of them: that is exactly how a
+    // join interrupted before its final configuration used to leave the
+    // survivor unable to elect itself once the other machine switched off.
+    if (c.members.length <= 2) return count(c.members) >= 1;
+    // Upgrading to three or more requires an actual old majority, even for a
+    // two-host availability cluster: both hosts must acknowledge it.
+    return count(c.members) >= majority(c.members.length) &&
+      (!c.old || count(c.old) >= majority(c.old.length));
   }
   rebuild() {
-    const state = { sessions: {}, viewers: {}, preferred: this.disk.initial[0].id, history: {}, values: {} };
-    for (const node of this.disk.initial) state.history[node.id] = node;
-    for (const { command: c } of this.disk.log.slice(0, this.disk.commit)) {
-      if (c.type === 'session') {
-        if (c.value === null) delete state.sessions[c.id]; else state.sessions[c.id] = c.value;
-      } else if (c.type === 'viewer') state.viewers[c.value.id] = c.value;
-      else if (c.type === 'preferred') state.preferred = c.id;
-      else if (c.type === 'configuration') for (const node of c.members) state.history[node.id] = node;
-      else if (c.type === 'value') state.values[c.id] = c.value;
-    }
-    this.state = state;
+    this.state = this.snapshot ? copy(this.snapshot.state) : blankState(this.disk.initial);
+    this.applied = this.snapshot ? this.snapshot.index : 0;
+    this.apply();
+  }
+  apply() {
+    for (let i = this.applied + 1; i <= this.disk.commit; i++) applyCommand(this.state, this.entry(i).command);
+    this.applied = this.disk.commit;
     this.onChange(this);
+  }
+  async compact(force = false) {
+    let index = this.disk.commit;
+    const base = this.disk.base;
+    // A main keeps entries that connected hosts still need, so a host a few
+    // entries behind catches up from the log rather than a full snapshot.
+    if (this.role === 'leader') {
+      const recent = this.recent();
+      for (const [id, at] of this.match) if (id !== this.self.id && recent.has(id)) index = Math.min(index, at);
+    }
+    if (index <= base) return;
+    const tail = this.disk.log.slice(0, index - base);
+    if (!force && tail.length < COMPACT_ENTRIES && size(tail) < COMPACT_BYTES) return;
+    if (this.applied !== index) this.apply();
+    const snapshot = { index, term: this.termAt(index), id: this.idAt(index), configuration: this.configurationAt(index), state: this.state };
+    await atomic(this.snapshotFile, snapshot);
+    this.snapshot = { ...snapshot, state: copy(this.state) };
+    this.disk.log = this.disk.log.slice(index - base);
+    Object.assign(this.disk, { base: index, baseTerm: snapshot.term, baseId: snapshot.id });
+    await this.persist();
+  }
+  /** Standalone hosts may change their own published address. */
+  async setStandalone(self) {
+    this.disk.initial = [self];
+    if (this.snapshot) {
+      this.snapshot.configuration = { members: [self] };
+      this.snapshot.state.history[self.id] = self;
+      await atomic(this.snapshotFile, this.snapshot);
+    }
+    await this.persist(); this.rebuild();
+  }
+  exportState() { return { disk: copy(this.disk), snapshot: this.snapshot && copy(this.snapshot) }; }
+  async importState({ disk, snapshot }) {
+    if (snapshot) await atomic(this.snapshotFile, snapshot); else await fs.rm(this.snapshotFile, { force: true });
+    this.snapshot = snapshot || null;
+    this.disk = { base: 0, baseTerm: 0, baseId: null, ...disk };
+    this.role = 'follower'; this.leader = null;
+    await this.persist(); this.rebuild(); this.resetElection();
   }
   stepDown(term) {
     if (term > this.disk.term) { this.disk.term = term; this.disk.votedFor = null; }
-    this.role = 'follower'; this.leader = null; this.lastQuorum = -Infinity;
+    this.role = 'follower'; this.leader = null; this.acked.clear();
+  }
+  recent() {
+    const at = this.now();
+    return new Set([this.self.id, ...[...this.acked].filter(([, t]) => at - t < QUORUM_MS).map(([id]) => id)]);
   }
   writable() {
-    return this.role === 'leader' && this.now() - this.lastQuorum < 3000 &&
-      this.disk.log[this.disk.commit - 1]?.term === this.disk.term;
+    return this.role === 'leader' && this.enough(this.recent()) && this.termAt(this.disk.commit) === this.disk.term;
+  }
+  leaderAlive() {
+    return (this.role === 'leader' && this.writable()) || (Boolean(this.leader) && this.now() - this.leaderSeen < LEADER_MS);
+  }
+  logCurrent(message) {
+    const last = this.length(), lastTerm = this.termAt(last);
+    return message.lastTerm > lastTerm || (message.lastTerm === lastTerm && message.lastIndex >= last);
   }
   async receive(message) {
     return this.exclusive(async () => {
       if (!this.members().some((n) => n.id === message.from)) throw new Error('Unknown cluster member');
+      if (message.kind === 'prevote') {
+        // Changes nothing: it only asks whether a real election could succeed.
+        const busy = this.leaderAlive() && this.leader !== message.from;
+        return { term: this.disk.term, ok: !busy && message.term >= this.disk.term && this.logCurrent(message), leader: busy ? this.leader : null };
+      }
+      if (message.kind === 'vote' && message.term > this.disk.term && this.leaderAlive() && this.leader !== message.from) {
+        return { term: this.disk.term, ok: false, leader: this.leader };
+      }
       if (message.term > this.disk.term) { this.stepDown(message.term); await this.persist(); }
       if (message.term < this.disk.term) return { term: this.disk.term, ok: false };
       this.lastContact.set(message.from, Date.now());
       if (message.kind === 'vote') {
-        const last = this.disk.log.at(-1);
-        const current = !last || message.lastTerm > last.term ||
-          (message.lastTerm === last.term && message.lastIndex >= this.disk.log.length);
-        const ok = current && (!this.disk.votedFor || this.disk.votedFor === message.from);
+        const ok = this.logCurrent(message) && (!this.disk.votedFor || this.disk.votedFor === message.from);
         if (ok) { this.disk.votedFor = message.from; this.resetElection(); await this.persist(); }
         return { term: this.disk.term, ok };
       }
+      if (message.kind === 'snapshot') return this.install(message);
       if (message.kind !== 'append') throw new Error('Unknown cluster message');
-      this.role = 'follower'; this.leader = message.from; this.resetElection();
-      this.disk.sightings = { ...(message.sightings || {}), [message.from]: Date.now() };
-      if (message.prev > this.disk.log.length || (message.prev && this.disk.log[message.prev - 1].term !== message.prevTerm)) {
-        return { term: this.disk.term, ok: false, length: this.disk.log.length };
+      this.role = 'follower'; this.leader = message.from; this.leaderSeen = this.now(); this.resetElection();
+      this.sightings = { ...(message.sightings || {}), [message.from]: Date.now() };
+      const commitBefore = this.disk.commit, termBefore = this.disk.term;
+      let prev = message.prev, entries = message.entries;
+      if (prev < this.disk.base) {
+        // Entries up to our base are already compacted. Check that they are
+        // the same history before skipping them.
+        const skip = this.disk.base - prev;
+        if (entries.length < skip) return { term: this.disk.term, ok: false, length: this.disk.base, ahead: true };
+        const boundary = entries[skip - 1];
+        if (boundary.term !== this.disk.baseTerm || (this.disk.baseId && boundary.id !== this.disk.baseId)) {
+          await this.divergedBase();
+          return { term: this.disk.term, ok: false, length: 0 };
+        }
+        prev = this.disk.base; entries = entries.slice(skip);
       }
-      let index = message.prev;
-      for (const entry of message.entries) {
-        const old = this.disk.log[index];
+      if (prev > this.length()) return { term: this.disk.term, ok: false, length: this.length() };
+      if (prev && (this.termAt(prev) !== message.prevTerm || (message.prevId && this.idAt(prev) && this.idAt(prev) !== message.prevId))) {
+        if (prev === this.disk.base) { await this.divergedBase(); return { term: this.disk.term, ok: false, length: 0 }; }
+        return { term: this.disk.term, ok: false, length: Math.min(prev - 1, this.length()) };
+      }
+      let index = prev, truncated = false, changed = false;
+      for (const entry of entries) {
+        const old = this.entry(index + 1);
         if (old && (old.term !== entry.term || old.id !== entry.id)) {
           if (index < this.disk.commit) {
-            if (this.members().length >= 3) throw new Error('Refusing to replace a committed majority log');
+            if (!this.availability()) throw new Error('Refusing to replace a committed majority log');
             // Two isolated hosts can both accept changes. Keep the losing
             // branch on disk for recovery; never silently erase its transcript.
-            await atomic(path.join(this.dir, `conflict-${Date.now()}-${crypto.randomUUID()}.json`), this.disk);
-            this.disk.commit = index;
-            this.disk.conflicts = (this.disk.conflicts || 0) + 1;
+            await this.archive();
+            this.disk.commit = index; truncated = true;
           }
-          this.disk.log.length = index;
+          this.disk.log.length = index - this.disk.base;
         }
-        if (!this.disk.log[index]) this.disk.log.push(copy(entry));
+        if (!this.entry(index + 1)) { this.disk.log.push(copy(entry)); changed = true; }
         index++;
       }
       this.disk.commit = Math.max(this.disk.commit, Math.min(message.commit, index));
-      await this.persist(); this.rebuild();
+      // A heartbeat that changes nothing is not rewritten to disk.
+      if (changed || truncated || this.disk.commit !== commitBefore || this.disk.term !== termBefore) {
+        await this.persist();
+        if (truncated) this.rebuild(); else this.apply();
+        await this.compact();
+      }
       return { term: this.disk.term, ok: true, length: index };
     });
+  }
+  async archive(conflict = true) {
+    const name = `conflict-${Date.now()}-${crypto.randomUUID()}`;
+    await atomic(path.join(this.dir, `${name}.json`), this.disk);
+    if (this.snapshot) await fs.copyFile(this.snapshotFile, path.join(this.dir, `${name}-snapshot.json`));
+    if (conflict) this.disk.conflicts = (this.disk.conflicts || 0) + 1;
+  }
+  /** Our compacted history is a losing two-host branch: keep it and start over. */
+  async divergedBase() {
+    if (!this.availability()) throw new Error('Refusing to replace a committed majority log');
+    await this.archive();
+    // Keep the membership so the main that replaces this history is still known.
+    this.disk.initial = this.members();
+    await fs.rm(this.snapshotFile, { force: true });
+    this.snapshot = null;
+    Object.assign(this.disk, { base: 0, baseTerm: 0, baseId: null, commit: 0, log: [] });
+    await this.persist(); this.rebuild();
+  }
+  async install(message) {
+    this.role = 'follower'; this.leader = message.from; this.leaderSeen = this.now(); this.resetElection();
+    if (message.index <= this.disk.commit && this.termAt(message.index) === message.snapTerm && this.idAt(message.index) === message.snapId) {
+      return { term: this.disk.term, ok: true, length: message.index };
+    }
+    // Usually this host was simply offline and behind. Committed entries the
+    // snapshot might not contain are still kept; beyond it they are a conflict.
+    if (this.disk.commit > this.disk.base) await this.archive(this.disk.commit > message.index);
+    const snapshot = { index: message.index, term: message.snapTerm, id: message.snapId, configuration: message.configuration, state: message.state };
+    await atomic(this.snapshotFile, snapshot);
+    this.snapshot = snapshot;
+    Object.assign(this.disk, { base: snapshot.index, baseTerm: snapshot.term, baseId: snapshot.id, commit: snapshot.index, log: [] });
+    await this.persist(); this.rebuild();
+    return { term: this.disk.term, ok: true, length: snapshot.index };
+  }
+  voteRequest(kind, term) {
+    const last = this.length();
+    return { kind, from: this.self.id, term, lastIndex: last, lastTerm: this.termAt(last) || 0 };
+  }
+  /** Ask every reachable peer whether an election could succeed right now. */
+  async preVote() {
+    const request = this.voteRequest('prevote', this.disk.term + 1);
+    const grants = new Set([this.self.id]); let refused = false;
+    await Promise.all(this.members().filter((n) => n.id !== this.self.id).map(async (node) => {
+      try {
+        const response = await this.send(node, request);
+        if (response.ok) grants.add(node.id); else refused = true;
+      } catch { /* An unreachable peer neither grants nor blocks. */ }
+    }));
+    return this.enough(grants) && !(refused && this.availability());
   }
   async campaign() {
     if (!this.members().some((n) => n.id === this.self.id)) return;
     const request = await this.exclusive(async () => {
       this.role = 'candidate'; this.leader = null; this.disk.term++; this.disk.votedFor = this.self.id;
       this.resetElection(); await this.persist();
-      return { kind: 'vote', from: this.self.id, term: this.disk.term,
-        lastIndex: this.disk.log.length, lastTerm: this.disk.log.at(-1)?.term || 0 };
+      return this.voteRequest('vote', this.disk.term);
     });
-    const votes = new Set([this.self.id]);
+    const votes = new Set([this.self.id]); let refused = false;
     await Promise.all(this.members().filter((n) => n.id !== this.self.id).map(async (node) => {
       try {
         const response = await this.send(node, request);
         await this.exclusive(async () => {
           if (response.term > this.disk.term) { this.stepDown(response.term); await this.persist(); }
-          if (response.term === request.term && response.ok) votes.add(node.id);
+          if (response.term === request.term && response.ok) votes.add(node.id); else refused = true;
         });
       } catch { /* Unreachable voters are never counted. */ }
     }));
     await this.exclusive(async () => {
       if (this.role !== 'candidate' || this.disk.term !== request.term || !this.enough(votes)) return;
-      this.role = 'leader'; this.leader = this.self.id; this.lastQuorum = this.now();
-      for (const n of this.members()) { this.next.set(n.id, this.disk.log.length + 1); this.match.set(n.id, 0); }
+      // Two hosts: whoever asks first leads. A peer that answered no is alive
+      // and has chosen someone else, so winning alone would split the cluster.
+      if (refused && this.availability()) { this.role = 'follower'; return; }
+      this.role = 'leader'; this.leader = this.self.id; this.acked.clear();
+      for (const id of votes) if (id !== this.self.id) this.acked.set(id, this.now());
+      for (const n of this.members()) { this.next.set(n.id, this.length() + 1); this.match.set(n.id, 0); }
       this.disk.log.push({ term: this.disk.term, id: crypto.randomUUID(), command: { type: 'noop' } });
       await this.persist();
     });
     if (this.role === 'leader') await this.replicate();
   }
   async replicate() {
-    if (this.replicating) return this.replicating;
-    this.replicating = this._replicate().finally(() => { this.replicating = null; });
-    return this.replicating;
-  }
-  async _replicate() {
     if (this.role !== 'leader') return;
     const term = this.disk.term;
-    const acknowledgements = new Set([this.self.id]);
-    await Promise.all(this.members().filter((n) => n.id !== this.self.id).map(async (node) => {
-      try {
-        const next = this.next.get(node.id) || 1;
-        const prev = next - 1;
+    // Each peer has at most one request in flight, so a slow catch-up on one
+    // host never delays heartbeats or commits for the others.
+    for (const node of this.members()) {
+      if (node.id === this.self.id || this.inflight.has(node.id)) continue;
+      this.inflight.set(node.id, this.sendTo(node, term).finally(() => this.inflight.delete(node.id)));
+    }
+    let timer;
+    await Promise.race([Promise.all(this.inflight.values()), new Promise((r) => { timer = setTimeout(r, 1000); timer.unref?.(); })]);
+    clearTimeout(timer);
+    await this.exclusive(() => this.advance(term));
+  }
+  async sendTo(node, term) {
+    try {
+      const next = this.next.get(node.id) || 1;
+      const prev = next - 1;
+      let message;
+      if (prev < this.disk.base) {
+        message = { kind: 'snapshot', from: this.self.id, term, index: this.snapshot.index, snapTerm: this.snapshot.term,
+          snapId: this.snapshot.id, configuration: this.snapshot.configuration, state: this.snapshot.state };
+      } else {
         const entries = [];
         let bytes = 0;
-        for (const entry of this.disk.log.slice(prev, prev + 32)) {
-          const size = Buffer.byteLength(JSON.stringify(entry));
-          if (entries.length && bytes + size > 32_000_000) break;
-          entries.push(copy(entry)); bytes += size;
+        for (const entry of this.disk.log.slice(prev - this.disk.base, prev - this.disk.base + 32)) {
+          const bytesOf = size(entry);
+          if (entries.length && bytes + bytesOf > BATCH_BYTES) break;
+          entries.push(copy(entry)); bytes += bytesOf;
         }
-        const response = await this.send(node, { kind: 'append', from: this.self.id, term,
-          prev, prevTerm: this.disk.log[prev - 1]?.term || 0, entries, commit: this.disk.commit,
-          sightings: { ...this.disk.sightings, ...Object.fromEntries(this.lastContact), [this.self.id]: Date.now() } });
-        await this.exclusive(async () => {
-          if (response.term > this.disk.term) { this.stepDown(response.term); await this.persist(); return; }
-          if (this.role !== 'leader' || this.disk.term !== term) return;
-          if (response.ok) {
-            this.match.set(node.id, prev + entries.length); this.next.set(node.id, prev + entries.length + 1);
-            acknowledgements.add(node.id); this.lastContact.set(node.id, Date.now());
-          } else this.next.set(node.id, Math.max(1, Math.min(next - 1, (response.length ?? prev) + 1)));
-        });
-      } catch { /* Retry catch-up on the next heartbeat. */ }
-    }));
-    await this.exclusive(async () => {
-      if (this.role !== 'leader' || term !== this.disk.term) return;
-      if (this.enough(acknowledgements)) this.lastQuorum = this.now();
-      this.match.set(this.self.id, this.disk.log.length);
-      for (let i = this.disk.log.length; i > this.disk.commit; i--) {
-        if (this.disk.log[i - 1].term !== term) continue;
-        if (this.enough(new Set([...this.match].filter(([, at]) => at >= i).map(([id]) => id)))) {
-          this.disk.commit = i; await this.persist(); this.rebuild(); break;
-        }
+        message = { kind: 'append', from: this.self.id, term, prev, prevTerm: this.termAt(prev) || 0, prevId: this.idAt(prev),
+          entries, commit: this.disk.commit,
+          sightings: { ...this.sightings, ...Object.fromEntries(this.lastContact), [this.self.id]: Date.now() } };
       }
-    });
+      const response = await this.send(node, message);
+      await this.exclusive(async () => {
+        if (response.term > this.disk.term) { this.stepDown(response.term); await this.persist(); return; }
+        if (this.role !== 'leader' || this.disk.term !== term) return;
+        // Any answer in our term means that host still recognises this main.
+        this.acked.set(node.id, this.now()); this.lastContact.set(node.id, Date.now());
+        const reached = message.kind === 'snapshot' ? message.index : prev + message.entries.length;
+        if (response.ok) {
+          this.match.set(node.id, reached); this.next.set(node.id, reached + 1);
+        } else if (response.ahead) this.next.set(node.id, response.length + 1);
+        else this.next.set(node.id, Math.max(1, Math.min(next - 1, (response.length ?? prev) + 1)));
+        await this.advance(term);
+      });
+    } catch { /* Retry catch-up on the next heartbeat. */ }
+  }
+  async advance(term) {
+    if (this.role !== 'leader' || term !== this.disk.term) return;
+    this.match.set(this.self.id, this.length());
+    for (let i = this.length(); i > this.disk.commit; i--) {
+      if (this.termAt(i) !== term) continue;
+      if (this.enough(new Set([...this.match].filter(([, at]) => at >= i).map(([id]) => id)))) {
+        this.disk.commit = i; await this.persist(); this.apply(); await this.compact(); break;
+      }
+    }
   }
   propose(command) {
     const task = this.proposals.catch(() => {}).then(async () => {
@@ -212,8 +410,10 @@ export class Replica {
       const deadline = this.now() + 10000;
       do {
         await this.replicate();
-        const index = this.disk.log.findIndex((e) => e.id === id);
-        if (index >= 0 && index < this.disk.commit) return;
+        const at = this.disk.log.findIndex((e) => e.id === id);
+        // Missing from the log means compacted, which only happens once committed;
+        // a main never truncates its own log, so it cannot have been discarded.
+        if (at >= 0 ? this.disk.base + at + 1 <= this.disk.commit : this.role === 'leader' && this.disk.term === term) return;
         if (this.role !== 'leader' || this.disk.term !== term) throw new Error('Coordinator changed; the result is uncertain. Refresh before retrying.');
         await new Promise((r) => setTimeout(r, 50));
       } while (this.now() < deadline);
@@ -221,16 +421,28 @@ export class Replica {
     });
     this.proposals = task; return task;
   }
+  /** A leader completes a joint membership change once its first half commits. */
+  finishJoin() {
+    const c = this.configuration();
+    if (!c.old || this.finishing || !this.writable()) return;
+    const at = this.disk.log.findLastIndex((e) => e.command.type === 'configuration');
+    if (at >= 0 && this.disk.base + at + 1 > this.disk.commit) return;
+    this.finishing = this.propose({ type: 'configuration', members: c.members })
+      .catch(() => {}).finally(() => { this.finishing = null; });
+  }
   async tick() {
     if (this.busy) return;
     this.busy = true;
     try {
       if (this.role === 'leader') {
         await this.replicate();
-        if (!this.writable()) this.stepDown(this.disk.term);
-      } else if (this.now() > this.deadline) await this.campaign();
+        if (!this.writable()) this.stepDown(this.disk.term); else this.finishJoin();
+      } else if (this.now() > this.deadline) {
+        this.resetElection();
+        if (await this.preVote()) await this.campaign();
+      }
     } finally { this.busy = false; }
   }
-  start() { this.timer = setInterval(() => this.tick().catch(() => {}), 700); this.timer.unref(); }
+  start() { clearInterval(this.timer); this.timer = setInterval(() => this.tick().catch(() => {}), 700); this.timer.unref(); }
   stop() { clearInterval(this.timer); }
 }
