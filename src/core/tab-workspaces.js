@@ -33,7 +33,7 @@ async function locked(repo, action) {
   try { return await task; } finally { if (queues.get(repo.common) === task) queues.delete(repo.common); }
 }
 
-export async function prepareTab(session) {
+export async function prepareTab(session, { distributed = false } = {}) {
   let repo;
   try { repo = await repository(session.projectDir); }
   catch {
@@ -42,6 +42,11 @@ export async function prepareTab(session) {
   }
   return locked(repo, async () => {
     const branch = await git(repo.root, 'symbolic-ref', '--short', 'HEAD');
+    if (distributed) {
+      if (!await clean(repo.root)) throw new Error('Commit the project’s local changes before syncing across computers.');
+      await git(repo.root, 'fetch', 'origin', `refs/heads/${branch}`);
+      await git(repo.root, 'merge', '--ff-only', 'FETCH_HEAD');
+    }
     let head;
     try { head = await git(repo.root, 'rev-parse', 'HEAD'); }
     catch {
@@ -133,6 +138,54 @@ async function publish(repo, target, options) {
   return { pushed, reason, created };
 }
 
+// Git's remote branch update is the cross-machine serialization point. A
+// rejected push never updates the local target. Fetch, merge and test the new
+// candidate again; never force-push or reuse checks against an older base.
+async function integrateDistributed(repo, session, options) {
+  const ws = session.tabWorkspace;
+  const saved = await commitAndPush(ws.dir, { push: false });
+  if (!saved.ok) return saved;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    options.signal?.throwIfAborted();
+    if (await git(repo.root, 'symbolic-ref', '--short', 'HEAD') !== ws.target || !await clean(repo.root))
+      throw new Error('The project has local changes. Tab work is saved; integration is waiting.');
+    const local = await git(repo.root, 'rev-parse', 'HEAD');
+    await git(repo.root, 'fetch', 'origin', `refs/heads/${ws.target}`);
+    const remote = await git(repo.root, 'rev-parse', 'FETCH_HEAD');
+    try {
+      await git(ws.dir, 'merge', '--no-edit', local);
+      await git(ws.dir, 'merge', '--no-edit', remote);
+    } catch {
+      await git(ws.dir, 'merge', '--abort').catch(() => {});
+      throw new Error(`Changes from another computer conflict with this tab. Work is saved on ${ws.branch}; resolve the merge in this tab and retry integration.`);
+    }
+    const candidate = await git(ws.dir, 'rev-parse', 'HEAD');
+    const log = path.join(repo.common, 'harness-tabs', `${path.basename(ws.dir)}-checks.log`);
+    session.integrationLog = log;
+    await options.onCheck?.(log);
+    await validate(ws.dir, log, remote, options.signal);
+    options.signal?.throwIfAborted();
+    if (await git(ws.dir, 'rev-parse', 'HEAD') !== candidate || !await clean(ws.dir)
+      || await git(repo.root, 'rev-parse', 'HEAD') !== local || !await clean(repo.root))
+      throw new Error('Files changed during integration checks; retry integration.');
+    try { await git(ws.dir, 'push', 'origin', `${candidate}:refs/heads/${ws.target}`); }
+    catch (e) {
+      // Retry only a changed remote tip, never an uncertain unchanged failure.
+      await git(repo.root, 'fetch', 'origin', `refs/heads/${ws.target}`);
+      const latest = await git(repo.root, 'rev-parse', 'FETCH_HEAD');
+      if (latest === candidate) { /* the push succeeded but its reply was lost */ }
+      else if (latest !== remote) {
+        await options.onWaiting?.('Another computer published first; merging and checking its changes.');
+        continue;
+      } else throw e;
+    }
+    await git(repo.root, 'merge', '--ff-only', candidate);
+    const files = (await git(ws.dir, 'diff', '--name-only', local, candidate)).split('\n').filter(Boolean);
+    return { ok: true, integrated: true, pushed: true, committed: true, sha: candidate.slice(0, 8), files };
+  }
+  throw new Error('Other computers are still publishing changes. Tab work is saved; retry integration when they finish.');
+}
+
 export async function integrateTab(session, options = {}) {
   const ws = session.tabWorkspace;
   if (!ws) throw new Error('This session has no isolated worktree. Start a coding turn before integrating.');
@@ -141,6 +194,7 @@ export async function integrateTab(session, options = {}) {
   return locked(repo, async () => {
     if (await git(ws.dir, 'symbolic-ref', '--short', 'HEAD') !== ws.branch) throw new Error('Tab branch changed; integration stopped.');
     options.signal?.throwIfAborted();
+    if (options.distributed) return integrateDistributed(repo, session, options);
     const saved = await commitAndPush(ws.dir, { push: false });
     if (!saved.ok) return saved;
     const head = await git(repo.root, 'rev-parse', 'HEAD');

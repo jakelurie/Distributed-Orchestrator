@@ -28,6 +28,7 @@ import { portableWorkspaces } from '../src/core/cluster/workspaces.js';
 import { appPlacement, replicationHosts } from '../src/core/cluster/placement.js';
 import { deviceInventory } from '../src/core/cluster/devices.js';
 import { hostPairing } from '../src/core/cluster/pairing.js';
+import { executionHosts, executionOwner, assignmentError, sessionWriteError } from '../src/core/cluster/execution.js';
 import { createCluster } from '../src/core/cluster/index.js';
 import { createNodes } from '../src/core/nodes.js';
 import { runTurn } from '../src/core/agent.js';
@@ -152,9 +153,9 @@ async function resolveToken(dir) {
   return fresh;
 }
 
-// Portable app/model configuration and API keys travel only over authenticated
-// cluster transport. CLI login state and machine-local network settings do not.
-const SHARED_SETTINGS = ['models.json', 'secrets.json', 'apps.json'];
+// App records and API keys travel over authenticated cluster transport.
+// Model definitions, local endpoints, CLI paths and logins stay on their host.
+const SHARED_SETTINGS = ['secrets.json', 'apps.json'];
 let settingsApplied = '';
 async function snapshotSettings() {
   for (const name of SHARED_SETTINGS) {
@@ -169,6 +170,12 @@ async function snapshotSettings() {
     }
   }
 }
+async function saveModelSecret(alias, apiKey) {
+  if (cluster.shared() && cluster.replica.role !== 'leader') await cluster.shareSecret(alias, apiKey);
+  await setSecret(USER_DATA, alias, apiKey);
+  if (cluster.shared() && cluster.replica.role === 'leader') await snapshotSettings();
+}
+
 async function restoreSettings() {
   const values = SHARED_SETTINGS.map((name) => cluster.replica.state.values['settings:' + name] ?? null);
   const fingerprint = JSON.stringify(values);
@@ -404,13 +411,20 @@ async function serveStatic(res, name) {
   }
 }
 
+async function sessionPlacement(session) {
+  const app = session.appId ? (await apps.load(USER_DATA)).find(a => a.id === session.appId) : null;
+  const hosts = executionHosts(app, cluster.replica.members(), cluster.self.id);
+  return { app, hosts, distributed: cluster.shared() && Boolean(app) && hosts.length > 1 };
+}
+
 async function dispatchMessage(id, body, reply) {
-  if (cluster.shared() && !cluster.replica.writable()) return reply(409, { error: 'Coordinator changed; resend this message on the active host.' });
   if (running.has(id)) return reply(409, { error: 'a turn is already running' });
 
   const { text, attachments: atts } = body;
   const session = await store.load(id);
   if (cluster.shared()) {
+    if (session.turnHost) return reply(409, { error: 'The previous turn is still marked running. Wait for it to finish or reconnect its computer.' });
+    if (executionOwner(session, null, cluster.replica.leader) !== cluster.self.id) return reply(409, { error: 'This tab belongs to another computer.' });
     if (session.tabWorkspace && session.tabWorkspace.ownerNode !== cluster.self.id) return reply(409, { error: 'This tab has a Git worktree on another host. Reconnect that host to continue; tab branches are not yet migrated between hosts.' });
     await clusterAssets.session(session);
     for (const attachment of atts || []) await clusterAssets.restore(attachment);
@@ -435,18 +449,26 @@ async function dispatchMessage(id, body, reply) {
     } else await workspaces.prepare(session);
     await store.save(session);
   }
+  const placementInfo = await sessionPlacement(session);
+  if (session.appId && !placementInfo.hosts.includes(cluster.self.id)) return reply(409, { error: 'This computer is not enabled for this project.' });
   live.set(id, session);
   const cfg = await loadConfig(USER_DATA);
   if (cfg.error) return reply(400, { error: cfg.error });
 
   if (running.has(id)) return reply(409, { error: 'a turn is already running' });
+  if (!cfg.models[session.model]) return reply(400, { error: 'Choose a model configured on this tab’s computer.' });
   const sentAt = session.events.length;
   const controller = new AbortController();
-  const turn = { controller, startedAt: Date.now(), last: null };
+  const turn = { controller, startedAt: Date.now(), last: null, executionEpoch: session.executionEpoch || 0 };
   running.set(id, turn);
   // Replicated with the session, so if this host disappears mid-turn the
   // next main can fail this one tab instead of leaving it looking busy.
-  if (cluster.shared()) session.turnHost = cluster.self.id;
+  if (cluster.shared()) {
+    session.turnHost = cluster.self.id;
+    session.turnStartedAt = turn.startedAt;
+    try { await store.save(session); }
+    catch (e) { running.delete(id); live.delete(id); return reply(503, { error: e.message }); }
+  }
   // The threshold depends on the backend: an agent CLI legitimately
   // goes quiet for many minutes while running its own loop.
   beacons.start(id, { model: session.model, stallMs: stallMsFor(cfg.models[session.model]) });
@@ -457,7 +479,7 @@ async function dispatchMessage(id, body, reply) {
   let turnFailed = false;
   await Promise.resolve().then(async () => {
     if (session.mode !== 'chat' && !session.monitorFor) {
-      await prepareTab(session);
+      await prepareTab(session, { distributed: placementInfo.distributed });
       if (cluster.shared()) session.tabWorkspace.ownerNode = cluster.self.id;
       prepared = true;
       await store.save(session);
@@ -469,7 +491,6 @@ async function dispatchMessage(id, body, reply) {
       attachments: Array.isArray(atts) ? atts : [],
       signal: controller.signal,
       save: async (s) => {
-        if (cluster.shared() && !cluster.replica.writable()) throw new Error('Coordinator lost quorum; turn stopped.');
         return store.save(s);
       },
       monitorsFile: monitorsPath(USER_DATA),
@@ -511,7 +532,7 @@ async function dispatchMessage(id, body, reply) {
       // On by default: only an explicit false turns it off, so sessions
       // created before this became the default still push.
       const endedWithError = session.events.slice(sentAt).some((e) => e.type === 'note');
-      if (prepared && !turnFailed && !controller.signal.aborted && !endedWithError && session.gitPush !== false) {
+      if (prepared && !turnFailed && !controller.signal.aborted && !endedWithError && (placementInfo.distributed || session.gitPush !== false)) {
         try {
           const last = [...session.events].reverse().find((e) => e.type === 'assistant');
           // Auto-create a repo only for a session that belongs to an app —
@@ -522,6 +543,8 @@ async function dispatchMessage(id, body, reply) {
           const app = session.appId
             ? (await apps.load(USER_DATA)).find((a) => a.id === session.appId) : null;
           const res = await integrateTab(session, {
+            distributed: placementInfo.distributed,
+            onWaiting: async text => { session.events.push(noteEvent(text)); await store.save(session); broadcast(id, { kind: 'event', event: session.events.at(-1) }); },
             signal: controller.signal,
             onCheck: (log) => upsertMonitor(USER_DATA, { id: `integration-${id}`, label: 'Integration checks', kind: 'file', path: log, session: id }),
             push: (await github.status()).authenticated,
@@ -576,7 +599,8 @@ async function dispatchMessage(id, body, reply) {
 
       if (session.turnHost) {
         delete session.turnHost;
-        if (!cluster.shared() || cluster.replica.writable()) await store.save(session).catch(() => {});
+        delete session.turnStartedAt;
+        await store.save(session).catch(() => {});
       }
       running.delete(id);
       live.delete(id);
@@ -664,7 +688,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (pathname.startsWith('/api/cluster/')) {
       const route = pathname.slice('/api/cluster/'.length);
-      const internal = ['rpc', 'command', 'activate'];
+      const internal = ['rpc', 'command', 'activate', 'read-session', 'worker-save', 'worker-models', 'model-secret'];
       if (internal.includes(route) && !cluster.trusted(req)) return json(res, 403, { error: 'Cluster authentication required' });
       if (req.method === 'GET' && route === 'discover') return json(res, 200, await pairing.discover());
       if (req.method === 'GET' && route === 'status') return json(res, 200, cluster.status());
@@ -682,6 +706,36 @@ const server = http.createServer(async (req, res) => {
       if (req.method !== 'POST') return json(res, 405, { error: 'POST required' });
       if (!req.headers['content-type']?.startsWith('application/json')) return json(res, 415, { error: 'JSON required' });
       const body = await readBody(req, 500_000_000); // snapshots carry project checkpoints
+      if (route === 'read-session') {
+        if (!cluster.replica.writable()) return json(res, 503, { error: 'Coordinator unavailable.' });
+        const session = cluster.replica.state.sessions[body.id];
+        return json(res, 200, { session: session && body.metadata ? { ownerNode: session.ownerNode, executionEpoch: session.executionEpoch } : session || null });
+      }
+      if (route === 'worker-save') {
+        try {
+          await cluster.changeSession(body.session?.id, current => {
+            const parent = body.session?.monitorFor && cluster.replica.state.sessions[body.session.monitorFor];
+            if ((current?.ownerNode || parent?.ownerNode) !== body.host || body.session.ownerNode !== body.host)
+              throw new Error('Tab ownership changed; this computer cannot save it.');
+            const error = sessionWriteError(current, body.session);
+            if (error) throw new Error(error);
+            return body.session;
+          });
+          return json(res, 200, { ok: true });
+        } catch (e) { return json(res, 409, { error: e.message }); }
+      }
+      if (route === 'model-secret') {
+        if (!cluster.replica.writable()) return json(res, 503, { error: 'Coordinator unavailable.' });
+        await restoreSettings();
+        await setSecret(USER_DATA, body.alias, body.apiKey);
+        await snapshotSettings();
+        resetClients();
+        return json(res, 200, { ok: true });
+      }
+      if (route === 'worker-models') {
+        const cfg = await loadConfig(USER_DATA);
+        return json(res, 200, { models: Object.fromEntries(Object.entries(cfg.models).map(([id, m]) => [id, { ...m, apiKey: undefined }])), default: cfg.default });
+      }
       if (route === 'request-join') return json(res, 200, await pairing.requestJoin(body.url));
       if (route === 'approve-host') return json(res, 200, await pairing.approve(body.url));
       if (route === 'cancel-join') return json(res, 200, pairing.cancel());
@@ -725,17 +779,35 @@ const server = http.createServer(async (req, res) => {
       }
       return json(res, 404, { error: 'Unknown cluster operation' });
     }
-    // Shared workspace requests always execute through the elected main. Host
-    // setup/inspection stays local and no uncertain mutation is retried.
+    // Session traffic goes to its owner, regardless of which browser host received it.
+    // The coordinator supplies authoritative ownership; proxies never retry a mutation.
+    let workerRequest = false;
+    if (cluster.shared()) {
+      const sessionRoute = pathname.match(/^\/api\/sessions\/([^/]+)(?:\/(\w+))?$/);
+      const scoped = /^\/api\/(git|monitors|files|file|activity|dirs|procs|models)(?:[/?]|$)/.test(pathname);
+      const sessionId = sessionRoute?.[1] || (scoped && (url.searchParams.get('session') || req.headers['x-harness-session']));
+      if (sessionId && sessionRoute?.[2] !== 'machine') {
+        const session = await cluster.readSession(sessionId);
+        if (!session) return json(res, 404, { error: 'Session not found' });
+        const owner = executionOwner(session, null, cluster.replica.leader);
+        if (owner !== cluster.self.id) {
+          if (req.method === 'GET' && sessionRoute && !sessionRoute[2] && !cluster.status().hosts.some(h => h.id === owner && h.active))
+            return json(res, 200, { ...session, ownerOffline: true });
+          if (req.headers['x-harness-worker'] && cluster.trusted(req)) return json(res, 409, { error: 'Tab owner changed. Refresh before retrying.' });
+          return cluster.proxy(req, res, owner, req.method === 'GET' && sessionRoute && !sessionRoute[2] ? () => json(res, 200, { ...session, ownerOffline: true }) : undefined);
+        }
+        workerRequest = true;
+      }
+    }
     if (cluster.shared() && pathname.startsWith('/api/') &&
-        !/^\/api\/(network|node-info|nodes|harness)(?:[/?]|$)/.test(pathname)) {
-      if (cluster.replica.role !== 'leader') {
+        !/^\/api\/(network|node-info|nodes|harness|models)(?:[/?]|$)/.test(pathname)) {
+      if (!workerRequest && cluster.replica.role !== 'leader') {
         if (cluster.trusted(req)) return json(res, 503, { error: 'Coordinator changed. Refresh before retrying.' });
         return cluster.proxy(req, res);
       }
-      if (!cluster.replica.writable()) return json(res, 503, { error: 'Waiting for coordinator quorum.' });
+      if (!workerRequest && !cluster.replica.writable()) return json(res, 503, { error: 'Waiting for coordinator quorum.' });
       await restoreSettings();
-      res.syncSettings = req.method !== 'GET' && /^\/api\/(models|apps|github)(?:[/?]|$)/.test(pathname);
+      res.syncSettings = !workerRequest && req.method !== 'GET' && /^\/api\/(models|apps|github)(?:[/?]|$)/.test(pathname);
     }
     if (req.method === 'GET' && pathname === '/api/node-info') {
       return json(res, 200, { protocol: 1, name: process.env.ORCHESTRATOR_NODE_NAME || os.hostname(),
@@ -787,6 +859,16 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, n);
     }
 
+    if (req.method === 'GET' && pathname === '/api/execution-models') {
+      const app = (await apps.load(USER_DATA)).find(a => a.id === url.searchParams.get('app'));
+      const host = url.searchParams.get('host') || cluster.self.id;
+      if (!executionHosts(app, cluster.replica.members(), cluster.self.id).includes(host))
+        return json(res, 403, { error: 'This computer is not enabled for the project.' });
+      if (host !== cluster.self.id) return json(res, 200, await cluster.hostModels(host));
+      const cfg = await loadConfig(USER_DATA);
+      return json(res, 200, { models: Object.fromEntries(Object.entries(cfg.models).map(([id, m]) => [id, { ...m, apiKey: undefined }])), default: cfg.default });
+    }
+
     if (req.method === 'GET' && pathname === '/api/state') {
       const cfg = await loadConfig(USER_DATA);
       const models = Object.fromEntries(
@@ -795,25 +877,31 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, {
         models,
         default: cfg.default,
-        apps: (await apps.load(USER_DATA)).map(({ id, name }) => ({ id, name })),
+        machines: cluster.status(),
+        apps: (await apps.load(USER_DATA)).map(app => ({ id: app.id, name: app.name,
+          executionHosts: executionHosts(app, cluster.replica.members(), cluster.self.id) })),
         error: cfg.error,
         sessions: (await store.list()).filter((x) => !x.id.endsWith('--monitor')),
         home: os.homedir(),
-        running: [...running.keys()],
+        running: [...new Set([...running.keys(), ...Object.values(cluster.replica.state.sessions).filter(s => s.turnHost).map(s => s.id)])],
         // Elapsed time belongs to the turn, not to whoever happens to be
         // watching: a phone that reloads must not restart the clock at zero.
-        turns: Object.fromEntries(
+        turns: { ...Object.fromEntries(Object.values(cluster.replica.state.sessions).filter(s => s.turnHost).map(s => [s.id, { startedAt: s.turnStartedAt }])), ...Object.fromEntries(
           [...running.entries()].map(([k, v]) => [k, { startedAt: v.startedAt, last: v.last }]),
-        ),
+        ) },
         // Liveness, not just "is it running": a turn can be running and stuck.
         beacons: Object.fromEntries(beacons.all().map((b) => [b.sessionId, b])),
       });
     }
 
     // ---- model config, editable from the phone
+    if (req.method === 'GET' && pathname === '/api/models/catalog') {
+      const cfg = await loadConfig(USER_DATA);
+      return json(res, 200, { models: Object.fromEntries(Object.entries(cfg.models).map(([id, m]) => [id, { ...m, apiKey: undefined }])), default: cfg.default });
+    }
     if (req.method === 'POST' && pathname === '/api/models/key') {
       const { alias, apiKey } = await readBody(req);
-      await setSecret(USER_DATA, alias, apiKey);
+      await saveModelSecret(alias, apiKey);
       resetClients();
       return json(res, 200, { ok: true });
     }
@@ -853,7 +941,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       try {
         const alias = await addModel(USER_DATA, body);
-        if (body.apiKey) await setSecret(USER_DATA, alias, body.apiKey);
+        if (body.apiKey) await saveModelSecret(alias, body.apiKey);
         resetClients();
         return json(res, 200, { alias });
       } catch (e) {
@@ -1010,6 +1098,8 @@ const server = http.createServer(async (req, res) => {
             const app = (await apps.load(USER_DATA)).find((a) => a.id === appId);
             if (!app) throw new Error('no such app');
             patch.hosts = replicationHosts(patch.hosts, cluster.replica.members(), app.ownerNode || app.hosts?.[0] || cluster.self.id);
+            if (Object.values(cluster.replica.state.sessions).some(s => s.appId === appId && !patch.hosts.includes(executionOwner(s, app, cluster.self.id))))
+              throw new Error('This computer still owns project tabs. Keep it enabled until those tabs are removed.');
           }
           // Every host notices the replicated change and reconciles its copy.
           return json(res, 200, await apps.update(USER_DATA, appId, patch));
@@ -1224,9 +1314,17 @@ const server = http.createServer(async (req, res) => {
       if (running.has(id)) return json(res, 409, { error: 'Wait for the tab to finish before integrating.' });
       if (!session.tabWorkspace) return json(res, 409, { error: 'Start an isolated coding turn before integrating changes.' });
       const last = [...session.events].reverse().find((e) => e.type === 'assistant');
-      running.set(id, { controller: new AbortController(), startedAt: Date.now(), last: 'integration' });
+      const startedAt = Date.now();
+      running.set(id, { controller: new AbortController(), startedAt, last: 'integration', executionEpoch: session.executionEpoch || 0 });
+      live.set(id, session);
       try {
+        if (cluster.shared()) {
+          session.turnHost = cluster.self.id;
+          session.turnStartedAt = startedAt;
+          await store.save(session);
+        }
         const result = await integrateTab(session, {
+          distributed: (await sessionPlacement(session)).distributed,
           retryPush: true,
           signal: running.get(id).controller.signal,
           onCheck: (log) => upsertMonitor(USER_DATA, { id: `integration-${id}`, label: 'Integration checks', kind: 'file', path: log, session: id }),
@@ -1235,7 +1333,15 @@ const server = http.createServer(async (req, res) => {
         });
         await store.save(session);
         return json(res, 200, result);
-      } finally { running.delete(id); }
+      } finally {
+        if (session.turnHost) {
+          delete session.turnHost;
+          delete session.turnStartedAt;
+          await store.save(session).catch(() => {});
+        }
+        live.delete(id);
+        running.delete(id);
+      }
     }
 
     // ---- monitors: whatever the user or the agent asked to watch
@@ -1463,8 +1569,35 @@ const server = http.createServer(async (req, res) => {
     if (m) {
       const [, id, verb] = m;
 
+      if (req.method === 'POST' && id && verb === 'machine') {
+        const session = await store.load(id, { repair: false });
+        const { ownerNode } = await readBody(req);
+        const { hosts } = await sessionPlacement(session);
+        const error = assignmentError(session, ownerNode, hosts);
+        if (error) return json(res, 409, { error });
+        const inventory = ownerNode === cluster.self.id ? await loadConfig(USER_DATA) : await cluster.hostModels(ownerNode);
+        if (!inventory.models[session.model]) session.model = inventory.default;
+        // Assignment shares the same serialized commit path as worker writes.
+        const assign = latest => {
+          const changed = assignmentError(latest, ownerNode, hosts);
+          if (changed) throw new Error(changed);
+          latest.model = session.model;
+          latest.ownerNode = ownerNode;
+          latest.executionEpoch = (latest.executionEpoch || 0) + 1;
+          return latest;
+        };
+        try {
+          const updated = cluster.shared() ? await cluster.changeSession(id, assign) : await store.save(assign(session));
+          return json(res, 200, updated);
+        } catch (e) { return json(res, 409, { error: e.message }); }
+      }
+      if (req.method === 'GET' && id && verb === 'models') {
+        const cfg = await loadConfig(USER_DATA);
+        return json(res, 200, { models: Object.fromEntries(Object.entries(cfg.models).map(([key, m]) => [key, { ...m, apiKey: undefined }])), default: cfg.default });
+      }
       if (req.method === 'POST' && !id) {
-        const { name, model, projectDir: askedDir, system, mode, appId } = await readBody(req);
+        const { name, model, projectDir: askedDir, system, mode, appId, ownerNode: requestedOwner } = await readBody(req);
+        let ownerNode = cluster.self.id;
         // An app owns its directory; a session attached to one works there
         // rather than carrying a directory of its own.
         let projectDir = askedDir;
@@ -1474,6 +1607,9 @@ const server = http.createServer(async (req, res) => {
           if (!app) return json(res, 400, { error: 'no such app' });
           projectDir = app.dir;
           editsHarness = Boolean(app.editsHarness);
+          const eligible = executionHosts(app, cluster.replica.members(), cluster.self.id);
+          ownerNode = requestedOwner || (eligible.includes(cluster.self.id) ? cluster.self.id : eligible[0]);
+          if (!eligible.includes(ownerNode)) return json(res, 400, { error: 'This computer is not enabled for the project.' });
         }
         // A session may not be rooted where it could modify the harness — unless
         // it is a session of the built-in Harness app, which is allowed the
@@ -1482,8 +1618,11 @@ const server = http.createServer(async (req, res) => {
         if (refusal) return json(res, 400, { error: refusal });
         // Typing a path that does not exist yet is a normal thing to do on a
         // phone; create it now rather than failing on the first tool call.
-        if (projectDir) await fs.mkdir(projectDir, { recursive: true });
-        const session = store.newSession({ name, model, projectDir, system, mode, appId: appId ?? null });
+        if (projectDir && ownerNode === cluster.self.id) await fs.mkdir(projectDir, { recursive: true });
+        const inventory = ownerNode === cluster.self.id ? await loadConfig(USER_DATA) : await cluster.hostModels(ownerNode);
+        const selectedModel = inventory.models[model] ? model : inventory.default;
+        const session = store.newSession({ name, model: selectedModel, projectDir, system, mode, appId: appId ?? null });
+        session.ownerNode = ownerNode;
         if (editsHarness) session.editsHarness = true;
         await store.save(session);
         return json(res, 200, session);
@@ -1512,6 +1651,9 @@ const server = http.createServer(async (req, res) => {
         const patch = await readBody(req);
         if (running.has(id)) return json(res, 409, { error: 'Wait for the current turn and integration to finish before editing this session.' });
         delete patch.ownerNode;
+        delete patch.executionEpoch;
+        delete patch.turnHost;
+        delete patch.turnStartedAt;
         delete patch.tabWorkspace;
         delete patch.integrationLog;
         if (patch.projectDir && patch.projectDir !== session.projectDir) delete session.tabWorkspace;
@@ -1595,6 +1737,7 @@ const server = http.createServer(async (req, res) => {
           });
           companion.id = monitorId;          // deterministic, so it is found again
           companion.monitorFor = id;
+          companion.ownerNode = parent.ownerNode;
           companion.confineToProjectDir = false; // monitors often watch /tmp logs
           await store.save(companion);
         }
@@ -1705,9 +1848,7 @@ function lanAddress() {
 
 await store.init(USER_DATA);
 TOKEN = await resolveToken(USER_DATA);
-cluster = await createCluster(USER_DATA, { port: PORT, onChange: (replica) => {
-  if (replica.role !== 'leader') for (const turn of running.values()) turn.controller.abort();
-} });
+cluster = await createCluster(USER_DATA, { port: PORT });
 pairing = hostPairing({ cluster, inventory, join: joinHost, publish: async () => {
   // Reuses the Phone access routine: it never replaces an existing Serve route.
   const n = await setupPhoneAccess(PORT);
@@ -1731,9 +1872,9 @@ cluster.replica.start();
 // Discover our published address without changing the user's Serve routes.
 networkStatus(PORT).then((n) => cluster.setUrl(n.phoneUrl)).catch(() => {});
 /**
- * A turn whose host went away (switched off, crashed, or lost its place as
- * main) fails on its own: the main that is left marks just that tab as
- * interrupted. Every other tab keeps running. Nothing is replayed.
+ * The coordinator marks turns interrupted when their execution host disappears.
+ * Healthy replicas may keep executing; becoming a follower is not a failure.
+ * Nothing is replayed, and an interrupted writer is fenced by its epoch.
  */
 let reconciling = false;
 async function failOrphanedTurns() {
@@ -1742,24 +1883,37 @@ async function failOrphanedTurns() {
   try {
     for (const [id, value] of Object.entries(cluster.replica.state.sessions)) {
       if (!value?.turnHost || running.has(id)) continue;
+      if (value.turnHost !== cluster.self.id && cluster.status().hosts.some(n => n.id === value.turnHost && n.active)) continue;
       const host = value.turnHost === cluster.self.id ? 'this host'
         : cluster.replica.state.history[value.turnHost]?.name || 'another host';
       const session = await store.load(id);
       delete session.turnHost;
+      delete session.turnStartedAt;
+      session.executionEpoch = (session.executionEpoch || 0) + 1;
       const note = noteEvent(
         `turn interrupted — it was running on ${host}, which stopped or disconnected before it finished. `
         + 'Nothing was replayed. Work it had started may have partly happened, so check the project '
-        + 'before assuming nothing did. Send another message to continue here.',
+        + 'before assuming nothing did. Reconnect its computer before sending another message.',
       );
       session.events.push(note);
-      await store.save(session);
+      const changed = await cluster.changeSession(id, current => {
+        if (current?.turnHost !== value.turnHost || current?.turnStartedAt !== value.turnStartedAt) return undefined;
+        return session;
+      });
+      if (!changed) continue;
       broadcast(id, { kind: 'event', event: note });
       broadcast(id, { kind: 'done' });
     }
   } catch { /* retried on the next pass */ } finally { reconciling = false; }
 }
 setInterval(() => {
-  if (cluster.shared() && !cluster.replica.writable()) for (const turn of running.values()) turn.controller.abort();
+  if (cluster.shared()) for (const [id, turn] of running) {
+    if (turn.checkingOwner) continue;
+    turn.checkingOwner = true;
+    cluster.readSession(id, true).then(s => {
+      if (s?.ownerNode !== cluster.self.id || (s.executionEpoch || 0) !== (turn.executionEpoch || 0)) turn.controller.abort();
+    }).catch(() => turn.controller.abort()).finally(() => { turn.checkingOwner = false; });
+  }
   failOrphanedTurns();
 }, 500).unref();
 setInterval(async () => {

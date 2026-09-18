@@ -5,6 +5,7 @@ import os from 'node:os';
 import http from 'node:http';
 import https from 'node:https';
 import { Replica, atomic, quorum } from './raft.js';
+import { sessionWriteError } from './execution.js';
 import { numberedMachines } from './machines.js';
 
 const sameSecret = (a, b) => {
@@ -52,8 +53,51 @@ export async function createCluster(dir, { port, request = fetch, onChange = () 
         .map(([app, r]) => ({ project: names[app], host, state: r.state, error: r.error }));
     });
   }
+  const sessionWrites = new Map();
   const service = {
     replica, self,
+    async readSession(id, metadata = false) {
+      if (replica.role === 'leader') {
+        if (!replica.writable()) throw new Error('Coordinator lost quorum.');
+        return structuredClone(replica.state.sessions[id]);
+      }
+      const leader = service.leader();
+      if (!leader) throw new Error('Waiting for the coordinator.');
+      return (await rpc(leader.url, 'read-session', { id, metadata })).session;
+    },
+    async changeSession(id, transform) {
+      const previous = sessionWrites.get(id) || Promise.resolve();
+      const pending = previous.catch(() => {}).then(async () => {
+        if (!replica.writable()) throw new Error('Coordinator lost quorum.');
+        const value = transform(structuredClone(replica.state.sessions[id]));
+        if (value === undefined) return;
+        await replica.propose({ type: 'session', id, value });
+        return value;
+      });
+      sessionWrites.set(id, pending);
+      try { return await pending; }
+      finally { if (sessionWrites.get(id) === pending) sessionWrites.delete(id); }
+    },
+    async saveSession(session) {
+      if (replica.role === 'leader') return service.changeSession(session.id, current => {
+        const error = sessionWriteError(current, session);
+        if (error) throw new Error(error);
+        return session;
+      });
+      const leader = service.leader();
+      if (!leader) throw new Error('Waiting for the coordinator.');
+      await rpc(leader.url, 'worker-save', { host: self.id, session });
+    },
+    async shareSecret(alias, apiKey) {
+      const leader = service.leader();
+      if (!leader) throw new Error('Waiting for the coordinator.');
+      return rpc(leader.url, 'model-secret', { alias, apiKey });
+    },
+    async hostModels(id) {
+      const host = replica.members().find(n => n.id === id);
+      if (!host) throw new Error('Unknown computer');
+      return rpc(host.url, 'worker-models', {});
+    },
     invite(member) {
       if (!replica.writable()) throw new Error('Create the join code on the current main host.');
       if (!self.url) throw new Error('Set up Phone access first so the new host can reach this machine.');
@@ -168,21 +212,22 @@ export async function createCluster(dir, { port, request = fetch, onChange = () 
         await replica.propose({ type: 'configuration', members: [...old, member] });
       } finally { joinPending = false; }
     },
-    proxy(req, res) {
-      const leader = service.leader();
+    proxy(req, res, hostId, unavailable) {
+      const leader = hostId ? replica.members().find(n => n.id === hostId) : service.leader();
       if (!leader || leader.id === self.id) { res.writeHead(503, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Coordinator election in progress. No operation was replayed.' })); return; }
       const target = new URL(leader.url);
-      const headers = { ...req.headers, host: target.host, 'x-cluster-key': replica.disk.secret };
+      const headers = { ...req.headers, host: target.host, 'x-cluster-key': replica.disk.secret, 'x-harness-worker': hostId || '' };
       delete headers.cookie; delete headers['x-harness-token'];
       const upstream = (target.protocol === 'https:' ? https : http).request(target.origin + req.url, { method: req.method, headers }, (reply) => {
         clearTimeout(timeout);
         const responseHeaders = { ...reply.headers }; delete responseHeaders['set-cookie'];
         res.writeHead(reply.statusCode, responseHeaders); reply.pipe(res); reply.on('error', () => res.destroy());
       });
-      const timeout = setTimeout(() => upstream.destroy(), 10000);
+      const timeout = setTimeout(() => upstream.destroy(), req.url.split('?')[0] === '/api/git/push' ? 650000 : 10000);
       upstream.on('error', () => {
         clearTimeout(timeout);
         if (res.headersSent) return res.destroy();
+        if (unavailable) return unavailable();
         res.writeHead(503, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Coordinator unavailable. Waiting for takeover; this request was not retried.' }));
       });

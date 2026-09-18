@@ -82,3 +82,14 @@ assert.equal(context.nextTabName(null), 'Tab 2');
 assert.match(source, /name: \$\('n-name'\)\.value\.trim\(\) \|\| nextTabName\(\$\('n-app'\)\.value\)/);
 const server = await fs.readFile('server/index.js', 'utf8');
 assert.match(server, /name: 'Tab 1', model: cfg.default, projectDir: app.dir, appId: app.id/);
+
+state.apps = [{ id: 'a', executionHosts: ['mac', 'pc'] }];
+state.machines = { leader: 'mac', hosts: [{ id: 'mac', number: 1, name: 'Mac' }, { id: 'pc', number: 2, name: 'PC' }] };
+state.sessions = [{ id: 'remote', appId: 'a', name: 'Remote', ownerNode: 'pc' }];
+state.session = state.sessions[0];
+context.paintSessionTabs();
+assert.match($('session-tabs').innerHTML, /Computer 2: PC/);
+assert.match($('session-tabs').innerHTML, /<text x="14" y="13">2<\/text>/);
+state.apps[0].executionHosts = ['pc'];
+context.paintSessionTabs();
+assert.doesNotMatch($('session-tabs').innerHTML, /tab-computer/);

@@ -69,7 +69,9 @@ try {
   assert.equal((await survivor.call('/api/sessions/' + session.id)).name, 'replicated rename');
   assert.equal((await survivor.call('/api/cluster/status')).hosts.length, 3);
   assert.equal((await survivor.call('/api/cluster/status')).viewers.length, 1);
-  await survivor.call('/api/sessions/' + session.id, 'PATCH', { name: 'after crash' });
+  const unavailable = await fetch(survivor.origin + '/api/sessions/' + session.id, { method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', 'x-harness-token': 'cluster-test' }, body: JSON.stringify({ name: 'after crash' }) });
+  assert.equal(unavailable.status, 503, 'an offline owner is never silently replaced for a mutation');
   assert.equal((await survivor.call('/api/transcription')).configured, true);
   const restored = await fetch(survivor.origin + '/api/file?path=' + encodeURIComponent(attachment.path), {
     headers: { 'x-harness-token': 'cluster-test' },

@@ -26,7 +26,7 @@ try {
   await a.replicate();
   assert.deepEqual(b.state.sessions.s, a.state.sessions.s);
   assert.deepEqual(c.state.sessions.s, a.state.sessions.s);
-  store.useCluster({ shared: () => true, self: members[1], replica: b, command: () => { throw Error('stale write forwarded'); } });
+  store.useCluster({ shared: () => true, self: members[1], replica: b, saveSession: () => { throw Error('Coordinator lost quorum'); } });
   await assert.rejects(store.save({ id: 's', events: ['stale'] }), /quorum/);
   store.useCluster(null);
   assert.deepEqual(a.state.sessions.s.events, ['hello']);

@@ -12,7 +12,7 @@ export function replicatedAssets(cluster, dir) {
       const data = await fs.readFile(attachment.path);
       if (data.length > 25 * 1024 * 1024) throw new Error('Attachment exceeds 25 MB');
       const id = hash(data);
-      await cluster.replica.propose({ type: 'value', id: 'asset:' + id,
+      await cluster.command({ type: 'value', id: 'asset:' + id,
         value: { data: data.toString('base64'), hash: id, originalPath: attachment.path, extension: path.extname(attachment.path).replace(/[^.a-zA-Z0-9]/g, '') } });
       attachment.clusterAsset = id;
     },

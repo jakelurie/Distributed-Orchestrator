@@ -5,7 +5,11 @@ const executionNode = new URLSearchParams(location.search).get('node') || '';
 const nativeFetch = window.fetch.bind(window);
 const nodeApi = (url) => executionNode && url.startsWith('/api/') && !url.startsWith('/api/nodes')
   ? `/api/nodes/${encodeURIComponent(executionNode)}${url}` : url;
-const fetch = (url, options) => nativeFetch(typeof url === 'string' ? nodeApi(url) : url, options);
+const fetch = (url, options) => nativeFetch(typeof url === 'string' ? nodeApi(url) : url, {
+  ...options, headers: { ...options?.headers,
+    ...(typeof state !== 'undefined' && state.session?.id ? { 'x-harness-session': state.session.id } : {}),
+  },
+});
 const sessionStorageKey = `lastSession${executionNode ? ':' + executionNode : ''}`;
 let executionName = executionNode ? 'remote machine' : '';
 if (executionNode) nativeFetch('/api/nodes').then((r) => r.json()).then((nodes) => {
@@ -121,7 +125,7 @@ function emphasis(t) {
         return `<a href="${href}" target="_blank" rel="noopener">${label}</a>`;
       }
       if (href.startsWith('/')) {
-        return `<a href="${nodeApi('/api/file')}?path=${encodeURIComponent(href)}" target="_blank" rel="noopener">${label}</a>`;
+        return `<a href="${nodeApi('/api/file')}?path=${encodeURIComponent(href)}&session=${encodeURIComponent(state.session?.id || '')}" target="_blank" rel="noopener">${label}</a>`;
       }
       return label;   // relative or unknown: show the words, drop the link
     })
@@ -463,7 +467,7 @@ function turnHtml(turn, i, running, number, isLast) {
            <span class="file-meta"><span class="file-name">${esc(a.name)}</span>
            <span class="file-sub">${humanSize(a.bytes ?? 0)}</span></span>
          </button>`
-      : `<img src="${nodeApi('/api/file')}?path=${encodeURIComponent(a.path)}" alt="${esc(a.name)}">`)).join('')}</div>`
+      : `<img src="${nodeApi('/api/file')}?path=${encodeURIComponent(a.path)}&session=${encodeURIComponent(state.session?.id || '')}" alt="${esc(a.name)}">`)).join('')}</div>`
     : ''}</div>
       ${cost.length ? `<div class="usage turn-cost">${cost.join(' · ')}</div>` : ''}</div></div>`);
   }
@@ -596,6 +600,8 @@ async function openSession(id) {
   openingSession = null;
 
   state.session = session;
+  try { state.models = (await api(`/api/sessions/${id}/models`)).models; } catch { /* owner may reconnect */ }
+  if (state.session?.id !== id) return;
   tabs.chat.session = session;
   localStorage.setItem(sessionStorageKey, id);
   if (session.appId) localStorage.setItem(`${sessionStorageKey}:app:${session.appId}`, id);
@@ -664,6 +670,15 @@ async function openProject(app) {
   } catch (e) { showBanner(e.message, true); }
 }
 
+function tabComputerBadge(session) {
+  const app = state.apps?.find(a => a.id === session.appId);
+  if ((app?.executionHosts?.length || 0) < 2) return '';
+  const host = state.machines?.hosts?.find(h => h.id === (session.ownerNode || state.machines.leader));
+  if (!host) return '';
+  const label = esc(`Computer ${host.number}: ${host.name}`).replace(/"/g, '&quot;');
+  return `<span class="tab-computer" title="${label}" aria-label="${label}"><svg viewBox="0 0 28 24" aria-hidden="true"><rect x="1" y="1" width="26" height="17" rx="2"/><path d="M14 18v5M8 23h12"/><text x="14" y="13">${host.number}</text></svg></span>`;
+}
+
 function paintSessionTabs() {
   const bar = $('session-tabs');
   if (!bar) return;
@@ -675,7 +690,7 @@ function paintSessionTabs() {
   // Tabs follow creation order, not the recently-active ordering of the browser.
   sessions.sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0) || a.id.localeCompare(b.id));
   bar.innerHTML = `<div class="session-tab-list" aria-label="Sessions">${sessions.map((s) =>
-    `<button class="ghost${s.id === current.id ? ' on' : ''}" data-session-id="${esc(s.id)}" aria-current="${s.id === current.id ? 'page' : 'false'}" title="${esc(s.name)}"><span class="session-tab-name">${esc(s.name)}</span>${(state.busy ?? []).includes(s.id) ? '<span class="session-busy-dot" role="img" aria-label="Working"></span>' : ''}</button>`).join('')}</div>
+    `<button class="ghost${s.id === current.id ? ' on' : ''}" data-session-id="${esc(s.id)}" aria-current="${s.id === current.id ? 'page' : 'false'}" title="${esc(s.name)}"><span class="session-tab-name">${esc(s.name)}</span>${tabComputerBadge(s)}${(state.busy ?? []).includes(s.id) ? '<span class="session-busy-dot" role="img" aria-label="Working"></span>' : ''}</button>`).join('')}</div>
     <button class="tap" id="session-add" aria-label="New session" title="New session">＋</button>
     <button class="tap" id="session-options" aria-label="Session options" title="Session options">⋯</button>`;
   bar.querySelectorAll('[data-session-id]').forEach((el) => {
@@ -928,9 +943,15 @@ async function refreshState() {
   // Assign field by field. A blanket Object.assign once let the server's
   // `running` (an array of busy session ids) land on top of the local boolean
   // of the same name - and [] is truthy, so send() silently refused forever.
+  state.machines = s.machines;
   state.apps = s.apps ?? [];
   state.models = s.models ?? {};
   state.default = s.default;
+  try {
+    const inventory = await api(state.session?.id ? `/api/sessions/${state.session.id}/models` : '/api/models/catalog');
+    if (inventory.models) state.models = inventory.models;
+    if (inventory.default) state.default = inventory.default;
+  } catch { /* the owner may be reconnecting */ }
   state.sessions = s.sessions ?? [];
   state.home = s.home ?? '';
   state.busy = s.running ?? [];
@@ -989,6 +1010,7 @@ async function sessionsSheet() { return appsSheet(); }
 let draft = {};   // survives a detour through the directory browser
 
 async function newSheet() {
+  await refreshState();
   // Each session gets its own folder. Inheriting the previous session's meant
   // one session started at ~ and every later one did too, so every project on
   // the machine was in scope for all of them.
@@ -1004,6 +1026,7 @@ async function newSheet() {
       ${appList.map((a) => `<option value="${esc(a.id)}"${draft.appId === a.id ? ' selected' : ''}>${esc(a.name)}</option>`).join('')}
     </select>
     <label>Name</label><input id="n-name" placeholder="${esc(nextTabName(draft.appId))}" />
+    <div id="n-computer-row" hidden><label>Computer</label><select id="n-computer"></select></div>
     <label>Model</label><select id="n-model">${modelOptions(state.default)}</select>
     <label>Mode</label>
     <select id="n-mode">
@@ -1025,6 +1048,7 @@ async function newSheet() {
 
   const keep = () => {
     draft = {
+      ownerNode: $('n-computer').value || undefined,
       appId: $('n-app').value || null,
       name: $('n-name').value, system: $('n-sys').value,
       dir: $('n-dir').value, model: $('n-model').value, mode: $('n-mode').value,
@@ -1045,8 +1069,27 @@ async function newSheet() {
 
   // The app's directory wins, and the field goes read-only so the two cannot
   // disagree about where the session is working.
+  let modelRequest = 0;
+  const loadComputerModels = async () => {
+    const request = ++modelRequest;
+    $('n-go').disabled = true;
+    try {
+      const inventory = await api(`/api/execution-models?app=${encodeURIComponent($('n-app').value)}&host=${encodeURIComponent($('n-computer').value)}`);
+      if (request !== modelRequest || !$('n-computer')) return;
+      $('n-model').innerHTML = Object.values(inventory.models).map(m => `<option value="${esc(m.alias)}">${esc(m.label || m.alias)}${m.hasKey ? '' : ' — no key'}</option>`).join('');
+      $('n-model').value = inventory.models[draft.model] ? draft.model : inventory.default;
+      $('n-go').disabled = false;
+    } catch (e) { if (request === modelRequest) showBanner(e.message); }
+  };
+  $('n-computer').onchange = loadComputerModels;
   const applyApp = () => {
     $('n-name').placeholder = nextTabName($('n-app').value);
+    const eligible = state.apps?.find(a => a.id === $('n-app').value)?.executionHosts || [state.machines?.leader];
+    const hosts = (state.machines?.hosts || []).filter(h => eligible.includes(h.id));
+    $('n-computer-row').hidden = hosts.length < 2;
+    $('n-computer').innerHTML = hosts.map(h => `<option value="${esc(h.id)}">${h.number} · ${esc(h.name)}${h.active ? '' : ' · offline'}</option>`).join('');
+    if (hosts.some(h => h.id === draft.ownerNode)) $('n-computer').value = draft.ownerNode;
+    if (hosts.length) loadComputerModels();
     const app = appList.find((a) => a.id === $('n-app').value);
     if (app) {
       $('n-dir').value = app.dir;
@@ -1074,6 +1117,7 @@ async function newSheet() {
       method: 'POST',
       body: JSON.stringify({
         appId: $('n-app').value || null,
+        ownerNode: $('n-computer').value || undefined,
         name: $('n-name').value.trim() || nextTabName($('n-app').value),
         model: $('n-model').value,
         mode: $('n-mode').value,
@@ -1220,6 +1264,11 @@ async function sessionSettingsSheet() {
       <label>Name</label>
       <div class="row"><input id="s-name" value="${esc(session.name ?? '')}" spellcheck="false" />
       <button class="ghost" id="s-rename" style="flex:0 0 80px">rename</button></div>
+      ${(state.apps?.find(a => a.id === session.appId)?.executionHosts?.length || 0) > 1 ? `
+        <label>Computer</label>
+        <div id="s-computers">${state.machines.hosts.filter(h => state.apps.find(a => a.id === session.appId).executionHosts.includes(h.id)).map(h => `
+          <button class="rowlink" data-tab-computer="${esc(h.id)}" ${session.tabWorkspace || session.turnHost ? 'disabled' : ''}><span>${h.number} · ${esc(h.name)}</span><span class="dim">${h.id === session.ownerNode ? 'owns this tab' : h.active ? 'use computer' : 'offline'}</span></button>`).join('')}</div>
+        <p class="dim">Each tab uses its computer’s models and files. To work on another computer after this tab has started, create a new tab there.</p>` : ''}
       <label>Model — tap to switch, history carries over</label>
       <div id="s-models">${Object.values(state.models).map((m) => `
         <div class="item${m.alias === session.model ? ' on' : ''}" data-switch="${esc(m.alias)}">
@@ -1260,6 +1309,18 @@ async function sessionSettingsSheet() {
       })()}` : ''}
 
     <div class="actions"><button class="ghost" id="session-git">Git &amp; GitHub</button><button class="primary" id="s-close">done</button></div>`);
+  $('sheet').querySelectorAll('[data-tab-computer]').forEach(button => {
+    button.onclick = async () => {
+      button.disabled = true;
+      try {
+        const updated = await api(`/api/sessions/${session.id}/machine`, { method: 'POST', body: JSON.stringify({ ownerNode: button.dataset.tabComputer }) });
+        cur().session = updated;
+        state.session = updated;
+        await openSession(updated.id);
+        await sessionSettingsSheet();
+      } catch (e) { showBanner(e.message); button.disabled = false; }
+    };
+  });
   $('session-git').onclick = gitSheet;
   $('s-close').onclick = closeSheet;
   if ($('s-rename')) {
@@ -2499,7 +2560,7 @@ function appEditSheet(app = null, draft = null) {
  *
  * Shown only once another machine has joined. Returns a reader for the ticked
  * machines, or null when there is no choice to make. New projects start on
- * the current main, because that is where tabs run.
+ * their original host; additional hosts can own their own tabs.
  */
 async function paintAppMachines(app, draft) {
   const box = $('ap-machines');
@@ -2520,7 +2581,7 @@ async function paintAppMachines(app, draft) {
     return m.error || m.state;
   };
   box.innerHTML = `<label>Machines</label>
-    <p class="dim">Hosted on ${esc(owner?.name || 'its original computer')}. Select additional computers to replicate this app through its Git repository. Replicas receive pushed changes; they do not move running processes or tab worktrees. Tabs run on the main${main ? ` (${esc(main.name)})` : ''}, so keep the project there to work on it. Unticking a machine deletes its copy once everything in it is pushed; a copy with unsaved work is kept and flagged.</p>
+    <p class="dim">Hosted on ${esc(owner?.name || 'its original computer')}. Select additional computers to replicate this app through its Git repository. Each selected computer can own tabs and use its own AI sources. Tabs sync through Git and merge and test before publishing; conflicts keep their work separate. Harness is always enabled on every joined computer. Unticking a machine deletes its copy once everything in it is pushed; a copy with unsaved work is kept and flagged.</p>
     ${hosts.map((h) => `<div class="item"><label class="grow"><input type="checkbox" data-host="${esc(h.id)}" ${placed.has(h.id) ? 'checked' : ''}${h.id === ownerId ? ' disabled' : ''} />
       ${esc(h.name)}${h.id === data.leader ? ' · main' : ''}${h.active ? '' : ' · offline'}${h.id === ownerId ? ' · app host' : ' · replicate here'}
       ${note(states[h.id]) ? `<div class="s">${esc(note(states[h.id]))}</div>` : ''}</label></div>`).join('')}`;
@@ -2741,7 +2802,7 @@ async function filesSheet(start) {
 
 async function viewFile(file, kind) {
   const name = file.split('/').pop();
-  const src = nodeApi(`/api/file?path=${encodeURIComponent(file)}`);
+  const src = nodeApi(`/api/file?path=${encodeURIComponent(file)}&session=${encodeURIComponent(state.session?.id || '')}`);
   const back = `<div class="actions"><button class="ghost" id="v-back">back</button>
     <button class="primary" id="v-close">done</button></div>`;
 

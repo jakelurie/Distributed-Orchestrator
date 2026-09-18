@@ -39,4 +39,4 @@ console.log('PASS the project sheet lists machines, defaults to the main, and sh
 
 assert.match(box.innerHTML, /Hosted on desktop/);
 assert.match(box.innerHTML, /replicate here/);
-assert.doesNotMatch(source, /computerBadge|data-takeover|s-computers/);
+assert.match(source, /Each selected computer can own tabs/);

@@ -1,0 +1,64 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { prepareTab, integrateTab } from '../src/core/tab-workspaces.js';
+import { executionHosts, assignmentError, sessionWriteError } from '../src/core/cluster/execution.js';
+const exec = promisify(execFile);
+const root = await fs.mkdtemp(path.join(os.tmpdir(), 'distributed-integration-'));
+const git = async (dir, ...args) => (await exec('git', ['-c', 'user.name=test', '-c', 'user.email=test@localhost', ...args], { cwd: dir })).stdout.trim();
+const members = [{ id: 'a' }, { id: 'b' }];
+assert.deepEqual(executionHosts({ builtin: true }, members, 'a'), ['a', 'b']);
+assert.deepEqual(executionHosts({ ownerNode: 'a' }, members, 'b'), ['a']);
+assert.deepEqual(executionHosts({ hosts: ['a', 'b'] }, members, 'a'), ['a', 'b']);
+assert.match(assignmentError({}, 'b', ['a']), /Enable/);
+assert.match(assignmentError({ turnHost: 'a' }, 'b', ['a', 'b']), /Wait/);
+assert.match(assignmentError({ tabWorkspace: { ownerNode: 'a' } }, 'b', ['a', 'b']), /new tab/);
+assert.match(sessionWriteError({ ownerNode: 'a' }, { ownerNode: 'b' }), /ownership/);
+assert.match(sessionWriteError({ ownerNode: 'a', executionEpoch: 2 }, { ownerNode: 'a', executionEpoch: 1 }), /stale/);
+assert.equal(sessionWriteError({ ownerNode: 'a', executionEpoch: 2 }, { ownerNode: 'a', executionEpoch: 2 }), null);
+try {
+  const remote = path.join(root, 'remote.git'), a = path.join(root, 'a'), b = path.join(root, 'b');
+  await git(root, 'init', '--bare', '-b', 'main', remote);
+  await git(root, 'clone', remote, a);
+  await fs.writeFile(path.join(a, 'package.json'), JSON.stringify({ scripts: { test: 'node check.cjs' } }));
+  await fs.writeFile(path.join(a, 'check.cjs'), "const fs = require('node:fs'); if (fs.existsSync('bad')) process.exit(1);\n");
+  await fs.writeFile(path.join(a, 'shared.txt'), 'original\n');
+  await git(a, 'add', '.'); await git(a, 'commit', '-m', 'initial'); await git(a, 'push', 'origin', 'main');
+  await git(root, 'clone', remote, b);
+  const sa = { id: 'a', projectDir: a }, sb = { id: 'b', projectDir: b };
+  await Promise.all([prepareTab(sa, { distributed: true }), prepareTab(sb, { distributed: true })]);
+  await fs.writeFile(path.join(sa.tabWorkspace.dir, 'a.txt'), 'from a');
+  await fs.writeFile(path.join(sb.tabWorkspace.dir, 'b.txt'), 'from b');
+  let checked = 0, resume, retries = 0;
+  const barrier = new Promise(resolve => { resume = resolve; });
+  const options = { distributed: true,
+    onCheck: async () => { if (++checked === 2) resume(); await barrier; },
+    onWaiting: () => { retries++; },
+  };
+  const results = await Promise.all([integrateTab(sa, options), integrateTab(sb, options)]);
+  assert.ok(retries >= 1, 'the losing publication fetches, merges and checks again');
+  assert.ok(results.every(r => r.pushed));
+  assert.equal(await git(remote, 'show', 'main:a.txt'), 'from a');
+  assert.equal(await git(remote, 'show', 'main:b.txt'), 'from b');
+  const ca = { id: 'ca', projectDir: a }, cb = { id: 'cb', projectDir: b };
+  await Promise.all([prepareTab(ca, { distributed: true }), prepareTab(cb, { distributed: true })]);
+  await fs.writeFile(path.join(ca.tabWorkspace.dir, 'shared.txt'), 'from a\n');
+  await fs.writeFile(path.join(cb.tabWorkspace.dir, 'shared.txt'), 'from b\n');
+  await integrateTab(ca, { distributed: true });
+  await assert.rejects(integrateTab(cb, { distributed: true }), /conflict/);
+  assert.equal(await git(remote, 'show', 'main:shared.txt'), 'from a');
+  assert.equal(await fs.readFile(path.join(cb.tabWorkspace.dir, 'shared.txt'), 'utf8'), 'from b\n');
+  const failed = { id: 'failed', projectDir: b };
+  await prepareTab(failed, { distributed: true });
+  await fs.writeFile(path.join(failed.tabWorkspace.dir, 'bad'), 'bad');
+  const before = await git(remote, 'rev-parse', 'main');
+  await assert.rejects(integrateTab(failed, { distributed: true }), /check failed/);
+  assert.equal(await git(remote, 'rev-parse', 'main'), before);
+  await git(b, 'remote', 'set-url', 'origin', path.join(root, 'missing.git'));
+  await assert.rejects(prepareTab({ id: 'offline', projectDir: b }, { distributed: true }));
+  assert.equal(await git(remote, 'rev-parse', 'main'), before);
+  console.log('PASS separate computers merge simultaneous changes, preserve conflicts, block failing checks and refuse offline sync');
+} finally { await fs.rm(root, { recursive: true, force: true }); }

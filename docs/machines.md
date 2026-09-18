@@ -2,7 +2,7 @@
 
 ## Shared system and failover
 
-Settings → Machines numbers computers in network join order and lets you rename them. Tab labels have no machine badges or takeover controls. It shows the current host, every joined host, recorded browser
+Settings → Machines numbers computers in network join order and lets you rename them. Tab labels show a numbered computer icon only for projects enabled on multiple computers. The number appears inside the icon. It shows the current host, every joined host, recorded browser
 viewers, and devices observed through the installed Tailscale client. Host status
 means the orchestrator responded; Tailscale status means the device is online on
 that network. These are separate. Browser activity is a heartbeat, not proof that
@@ -52,11 +52,14 @@ hosts the first to ask becomes main; a peer that answers "no" blocks it, a peer
 that is switched off does not. Joining a second host can no longer leave either
 host needing the other to elect itself, including a join interrupted halfway.
 
-Turns run on the main. When a host that is not the main switches off, nothing
-running is affected. When the main switches off, the other host takes over and
-each tab that was mid-turn on it gets an "interrupted" note; only those tabs
-fail, and nothing is replayed. Running turns are also aborted on a host that
-loses its place as main (after quorum loss is detected).
+Each tab runs on its assigned computer, which can be a replica or the main.
+The main coordinates durable session history, not all AI execution. A browser on
+any joined host can send to a tab; its owner handles the models, files, tools,
+uploads and event stream. Requests are never retried on another computer.
+If an owner goes offline, its saved transcript stays readable and its execution
+waits for that computer. Interrupted turns are marked and stale writes refused;
+work is not automatically replayed or moved. Losing coordinator connectivity
+stops affected turns when their next save or ownership check fails.
 
 Committed history is compacted into `cluster/snapshot.json`, so `replica.json`
 stays small and heartbeats no longer rewrite the whole log. A host that was
@@ -65,15 +68,15 @@ background programs cannot be undone or fenced by a JavaScript coordinator.
 Uncertain sends/tools are **not automatically replayed** after a failure.
 
 Sessions are persisted in the cluster log before a shared save succeeds.
-Model definitions, API secrets and app records are copied only through authenticated
+API secrets and app records are copied only through authenticated
 cluster transport; therefore join only computers you trust with those secrets.
-Host-specific subscription CLI logins, network configuration, notification services,
-usage ledgers and live processes remain local. Shared model/app setting mutations wait for their checkpoint to commit before
+Model definitions (including local endpoints and CLI paths), subscription CLI logins, network configuration, notification services,
+usage ledgers and live processes remain local. Shared credential/app setting mutations wait for their checkpoint to commit before
 reporting success.
 
 Each project chooses its machines under **Edit project → Machines** (shown once
 a second host has joined), when it is created or later. New projects start on the
-current main. The app host stays selected; other machines are optional replicas. Changing replication does not move the app’s processes or tab worktrees. Every ticked machine keeps its own Git copy: it clones the project's
+current main. The app host stays selected; each additional selected machine gets a copy and can own tabs. Existing processes and tab worktrees stay where they were created. Every ticked machine keeps its own Git copy: it clones the project's
 repository into `~/Projects/<name>` (or adopts a clone of the same repository
 already there, and never writes over an unrelated folder), then fast-forwards
 clean copies about every two minutes so work pushed from another machine arrives.
@@ -84,9 +87,30 @@ A project needs a Git remote (created on its first saved turn when GitHub is
 connected) before another machine can clone it. Projects made before this keep
 living only on the machine that made them. Project files are no longer copied
 through the cluster log, so there is no size limit; old checkpoints are dropped.
-Turns run on the main, so the main must be one of a project's machines to work on
-it. A tab's isolated Git worktree stays on the host that made it. Loose sessions
-outside a project run only on the host that made them.
+The built-in Harness project is always enabled on every joined host, using each
+host's installed checkout. Other projects expose only their selected computers
+in **New session → Computer**. The model picker loads that computer's own model
+registry; CLI subscriptions must be installed and logged in there. Single-host
+projects have no computer badge or picker, even when viewed from another host.
+An unused tab's computer can be changed in Edit session; after an isolated
+worktree exists, create another tab on the other computer to preserve its work.
+A computer that still owns project tabs cannot be removed from the project.
+Loose sessions outside a project run only on the host that made them.
+
+For a multi-host coding project, all copies must use the same reachable Git remote
+and target branch, and have permission to push. A new project needs its first
+published commit before multi-host coding can start. Starting a coding turn
+fetches and fast-forwards its local copy before creating/updating the tab's
+isolated worktree. Integration merges both the local target and current remote
+head into the tab, runs the project's automated checks, and pushes without force.
+Only a successful push advances its local target. Git serializes remote updates:
+if another computer wins the race, integration fetches, merges and tests again
+(up to three attempts). Conflicts, failing checks, dirty copies, missing remotes
+and disconnected hosts leave tab work intact for correction or retry. Automated
+integration checks are required (package.json test or .harness-integration.json).
+A finished turn without changes may still run those checks to verify its merged
+version. Work in progress is kept on its owner; replication shares published work.
+
 Uploaded attachment bytes are replicated with checksums and restored
 into the receiving host’s attachment store. The built-in orchestrator project uses each host's
 own checkout rather than copying a running installation over another.

@@ -80,9 +80,8 @@ export async function save(session) {
   if (shared()) {
     session.updatedAt = Date.now();
     session.ownerNode ||= cluster.self.id;
-    // A stopped former main must not forward a stale in-memory transcript to
-    // its replacement. Session writers execute only on the current main.
-    await cluster.replica.propose({ type: 'session', id: session.id, value: session });
+    // The coordinator accepts writes from the assigned execution host.
+    await cluster.saveSession(session);
     return session;
   }
   const prior = writing.get(session.id) ?? Promise.resolve();
@@ -119,7 +118,7 @@ export async function save(session) {
  *                it corrupts a live transcript.
  */
 export async function load(id, { repair = true } = {}) {
-  const session = shared() ? structuredClone(cluster.replica.state.sessions[id]) : JSON.parse(await fs.readFile(fileFor(id), 'utf8'));
+  const session = shared() ? await cluster.readSession(id) : JSON.parse(await fs.readFile(fileFor(id), 'utf8'));
   if (!session) throw new Error('Session not found');
   // Built-in sessions follow this checkout, not a historical folder alias.
   if (session.appId === HARNESS_APP_ID && session.projectDir !== HARNESS_ROOT) {
@@ -188,7 +187,7 @@ export async function list() {
 }
 
 export async function remove(id) {
-  if (shared()) return cluster.replica.propose({ type: 'session', id, value: null });
+  if (shared()) return cluster.command({ type: 'session', id, value: null });
   await fs.rm(fileFor(id), { force: true });
 }
 
