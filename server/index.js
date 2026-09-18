@@ -25,7 +25,7 @@ import zlib from 'node:zlib';
 
 import { replicatedAssets } from '../src/core/cluster/assets.js';
 import { portableWorkspaces } from '../src/core/cluster/workspaces.js';
-import { appPlacement, validHosts, hostsFor } from '../src/core/cluster/placement.js';
+import { appPlacement, replicationHosts } from '../src/core/cluster/placement.js';
 import { deviceInventory } from '../src/core/cluster/devices.js';
 import { hostPairing } from '../src/core/cluster/pairing.js';
 import { createCluster } from '../src/core/cluster/index.js';
@@ -689,6 +689,13 @@ const server = http.createServer(async (req, res) => {
       if (route === 'rpc') return json(res, 200, await cluster.replica.receive(body));
       if (route === 'command') { await cluster.replica.propose(body); return json(res, 200, { ok: true }); }
       if (route === 'viewer') return json(res, 200, await cluster.viewer(body, req.headers['user-agent'] || ''));
+      if (route === 'name') {
+        if (!cluster.replica.members().some((n) => n.id === body.id)) return json(res, 400, { error: 'Unknown host' });
+        const name = typeof body.name === 'string' ? body.name.trim() : '';
+        if (!name || name.length > 100) return json(res, 400, { error: 'Use a computer name between 1 and 100 characters.' });
+        await cluster.command({ type: 'value', id: 'machine-name:' + body.id, value: name });
+        return json(res, 200, { ok: true });
+      }
       if (route === 'preferred') {
         if (!cluster.replica.members().some((n) => n.id === body.id)) return json(res, 400, { error: 'Unknown host' });
         await cluster.command({ type: 'preferred', id: body.id }); return json(res, 200, { ok: true });
@@ -983,9 +990,9 @@ const server = http.createServer(async (req, res) => {
         try {
           const cfg = await loadConfig(USER_DATA);
           if (!cfg.default) return json(res, 400, { error: 'Add an AI source before creating a project.' });
-          const placed = cluster.shared() && body.hosts !== undefined ? validHosts(body.hosts, cluster.replica.members()) : null;
+          const placed = cluster.shared() && body.hosts !== undefined ? replicationHosts(body.hosts, cluster.replica.members(), cluster.self.id) : null;
           const app = await apps.create(USER_DATA, { ...body, hosts: placed,
-            ownerNode: placed && !placed.includes(cluster.self.id) ? placed[0] : undefined });
+            ownerNode: undefined });
           const session = store.newSession({
             name: 'Tab 1', model: cfg.default, projectDir: app.dir, appId: app.id,
           });
@@ -997,18 +1004,12 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'PATCH' && appId) {
         try {
           const patch = await readBody(req);
+          delete patch.ownerNode;
           if (patch.hosts !== undefined) {
             if (!cluster.shared()) throw new Error('Join another machine before choosing where this project lives.');
-            patch.hosts = validHosts(patch.hosts, cluster.replica.members());
             const app = (await apps.load(USER_DATA)).find((a) => a.id === appId);
-            // The app's own folder and processes follow it to a machine it still lives on.
-            const owner = app && hostsFor(app, cluster.self.id)[0];
-            if (app && !patch.hosts.includes(app.ownerNode || owner)) {
-              patch.ownerNode = patch.hosts.includes(cluster.self.id) ? cluster.self.id : patch.hosts[0];
-              const copy = cluster.replica.state.values['placement:' + patch.ownerNode]?.[appId]?.dir;
-              if (copy) patch.dir = copy;
-              patch.pid = null;
-            }
+            if (!app) throw new Error('no such app');
+            patch.hosts = replicationHosts(patch.hosts, cluster.replica.members(), app.ownerNode || app.hosts?.[0] || cluster.self.id);
           }
           // Every host notices the replicated change and reconciles its copy.
           return json(res, 200, await apps.update(USER_DATA, appId, patch));
@@ -1510,6 +1511,7 @@ const server = http.createServer(async (req, res) => {
         const session = live.get(id) ?? (await store.load(id, { repair: !running.has(id) }));
         const patch = await readBody(req);
         if (running.has(id)) return json(res, 409, { error: 'Wait for the current turn and integration to finish before editing this session.' });
+        delete patch.ownerNode;
         delete patch.tabWorkspace;
         delete patch.integrationLog;
         if (patch.projectDir && patch.projectDir !== session.projectDir) delete session.tabWorkspace;

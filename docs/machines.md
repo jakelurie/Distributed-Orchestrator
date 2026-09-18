@@ -2,7 +2,7 @@
 
 ## Shared system and failover
 
-Settings → Machines shows the current host, every joined host, recorded browser
+Settings → Machines numbers computers in network join order and lets you rename them. Tab labels have no machine badges or takeover controls. It shows the current host, every joined host, recorded browser
 viewers, and devices observed through the installed Tailscale client. Host status
 means the orchestrator responded; Tailscale status means the device is online on
 that network. These are separate. Browser activity is a heartbeat, not proof that
@@ -73,7 +73,7 @@ reporting success.
 
 Each project chooses its machines under **Edit project → Machines** (shown once
 a second host has joined), when it is created or later. New projects start on the
-current main. Every ticked machine keeps its own Git copy: it clones the project's
+current main. The app host stays selected; other machines are optional replicas. Changing replication does not move the app’s processes or tab worktrees. Every ticked machine keeps its own Git copy: it clones the project's
 repository into `~/Projects/<name>` (or adopts a clone of the same repository
 already there, and never writes over an unrelated folder), then fast-forwards
 clean copies about every two minutes so work pushed from another machine arrives.

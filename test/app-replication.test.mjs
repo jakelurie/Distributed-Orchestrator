@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import { replicationHosts } from '../src/core/cluster/placement.js';
+import { numberedMachines } from '../src/core/cluster/machines.js';
+const members = [{ id: 'a', name: 'Mac', joinedAt: 200 }, { id: 'b', name: 'PC', joinedAt: 100 }];
+assert.deepEqual(replicationHosts(['a', 'b'], members, 'a'), ['a', 'b']);
+assert.deepEqual(replicationHosts(['a'], members, 'a'), ['a']);
+assert.throws(() => replicationHosts(['b'], members, 'a'), /Keep the app host/);
+assert.throws(() => replicationHosts(['a', 'unknown'], members, 'a'), /not part/);
+const history = Object.fromEntries(members.map(n => [n.id, n]));
+const machines = numberedMachines(history, [...members].reverse(), { 'machine-name:a': 'Mac laptop' });
+assert.deepEqual(machines.map(n => [n.number, n.name]), [[1, 'Mac laptop'], [2, 'PC']]);
+assert.deepEqual(numberedMachines(history, [members[1]]).map(n => n.number), [1, 2]);
+console.log('PASS app replication retains its host and machine numbers follow membership order');

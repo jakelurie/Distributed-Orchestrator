@@ -5,6 +5,7 @@ import os from 'node:os';
 import http from 'node:http';
 import https from 'node:https';
 import { Replica, atomic, quorum } from './raft.js';
+import { numberedMachines } from './machines.js';
 
 const sameSecret = (a, b) => {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
@@ -95,7 +96,7 @@ export async function createCluster(dir, { port, request = fetch, onChange = () 
         mode: members.length === 1 ? 'standalone' : members.length === 2 ? 'two-host availability' : 'majority consensus',
         quorum: quorum(members.length),
         placementIssues: placementIssues(),
-        hosts: Object.values({ ...replica.state.history, ...Object.fromEntries(members.map((n) => [n.id, n])) }).map((n) => ({
+        hosts: numberedMachines(replica.state.history, members, replica.state.values).map((n) => ({
           ...n, active: n.id === self.id || now - seen(n.id) < 15000,
           lastSeen: n.id === self.id ? now : seen(n.id) || null,
           member: members.some((m) => m.id === n.id),

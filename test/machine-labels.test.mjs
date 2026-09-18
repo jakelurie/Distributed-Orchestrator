@@ -4,8 +4,8 @@ import vm from 'node:vm';
 
 const source = await fs.readFile('server/public/app.js', 'utf8');
 const hosts = [
-  { id: 'laptop', name: 'Laptop', active: true },
-  { id: 'desktop', name: 'Desktop', active: true },
+  { id: 'laptop', name: 'Laptop', number: 1, active: true },
+  { id: 'desktop', name: 'Desktop', number: 2, active: true },
 ];
 const list = {};
 const context = { list, data: { hosts, self: 'laptop', leader: 'desktop' }, esc: String, seen: () => 'today' };
@@ -26,3 +26,6 @@ vm.runInContext(source.slice(source.indexOf("    $('tailnet-list').innerHTML = i
 assert.match(tailnet.innerHTML, /Laptop<\/div>/);
 assert.doesNotMatch(tailnet.innerHTML, /this device/);
 console.log('PASS machine labels track the primary independently of the serving host');
+
+assert.match(list.innerHTML, /🖥 1/);
+assert.match(list.innerHTML, /🖥 2/);

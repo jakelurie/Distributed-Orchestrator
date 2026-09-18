@@ -25,14 +25,18 @@ assert.equal(box.innerHTML, '');
 
 ({ box, paint } = sheet({ leader: 'A', hosts }));
 assert.equal(typeof await paint(null), 'function');
-assert.match(box.innerHTML, /data-host="A" checked/);
+assert.match(box.innerHTML, /data-host="A" checked disabled/);
 assert.match(box.innerHTML, /data-host="B"  \/>/);
 assert.match(box.innerHTML, /laptop · main/);
 assert.match(box.innerHTML, /desktop · offline/);
 
 ({ box, paint } = sheet({ leader: 'A', hosts }));
-await paint({ machines: [{ id: 'A', placed: false }, { id: 'B', placed: true, state: 'kept', error: 'kept on this machine because it has stashed changes' }] });
+await paint({ ownerNode: 'B', machines: [{ id: 'A', placed: false }, { id: 'B', placed: true, state: 'kept', error: 'kept on this machine because it has stashed changes' }] });
 assert.match(box.innerHTML, /data-host="A"  \/>/);
-assert.match(box.innerHTML, /data-host="B" checked/);
+assert.match(box.innerHTML, /data-host="B" checked disabled/);
 assert.match(box.innerHTML, /stashed changes/);
 console.log('PASS the project sheet lists machines, defaults to the main, and shows copy state');
+
+assert.match(box.innerHTML, /Hosted on desktop/);
+assert.match(box.innerHTML, /replicate here/);
+assert.doesNotMatch(source, /computerBadge|data-takeover|s-computers/);

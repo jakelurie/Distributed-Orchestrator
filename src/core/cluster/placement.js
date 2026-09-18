@@ -35,6 +35,13 @@ export function validHosts(hosts, members) {
   return ids;
 }
 
+/** Replication adds copies without moving the app's owning computer. */
+export function replicationHosts(hosts, members, owner) {
+  const ids = validHosts(hosts, members);
+  if (!ids.includes(owner)) throw new Error('Keep the app host selected. Other computers are optional replicas.');
+  return ids;
+}
+
 /** Why a copy cannot be deleted yet, or null when every change in it is pushed. */
 export async function unsafeToRemove(dir, run = git) {
   if (!(await exists(dir))) return null;

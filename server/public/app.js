@@ -1433,13 +1433,29 @@ async function machinesSheet() {
     if ($('machine-list') !== list) return;
     $('cluster-summary').textContent = `${data.hosts.filter((n) => n.member).length} hosts · ${data.viewers.filter((v) => v.active).length} connected viewers · ${data.mode}`;
     if (data.mode === 'two-host availability') $('cluster-summary').append(document.createTextNode('. Both hosts may become main during a network split; divergent history is preserved for recovery.'));
-    list.innerHTML = data.hosts.map((n) => `<div class="item machine-item"><div class="grow"><div class="t">${esc(n.name)}</div>
+    list.innerHTML = data.hosts.map((n) => `<div class="item machine-item"><div class="grow"><div class="t"><span class="computer-badge">🖥 ${n.number}</span> ${esc(n.name)}</div>
       <div class="s">${n.active ? 'active' : 'offline'} · ${n.id === data.leader ? 'main' : 'replica'}${n.id === data.preferred ? ' · preferred main' : ''}</div>
+      <div class="s">${esc(n.platform === 'darwin' ? 'Mac' : n.platform === 'win32' ? 'Windows PC' : n.platform || 'Computer')}</div>
       <div class="s">Last contact: ${esc(seen(n.lastSeen))}</div></div>
+      ${n.member ? `<button class="ghost" data-machine-name="${esc(n.id)}">rename</button>` : ''}
       ${n.member && n.id !== data.preferred ? `<button class="ghost" data-prefer="${esc(n.id)}">prefer main</button>` : ''}</div>`).join('');
     list.querySelectorAll('[data-prefer]').forEach((button) => { button.onclick = async () => {
       try { await call('preferred', { id: button.dataset.prefer }); await machinesSheet(); }
       catch (e) { if ($('machine-error')) $('machine-error').textContent = e.message; }
+    }; });
+    list.querySelectorAll('[data-machine-name]').forEach((button) => { button.onclick = async () => {
+      const host = data.hosts.find((n) => n.id === button.dataset.machineName);
+      openSheet(`<h2>Rename computer ${host.number}</h2><label>Name</label><input id="machine-name-input" maxlength="100" /><div class="actions"><button class="ghost" id="machine-name-cancel">cancel</button><button class="primary" id="machine-name-save">save</button></div>`);
+      $('machine-name-input').value = host.name;
+      $('machine-name-cancel').onclick = machinesSheet;
+      $('machine-name-save').onclick = async () => {
+        try {
+          await call('name', { id: host.id, name: $('machine-name-input').value });
+          await refreshState();
+          paintHeader();
+          await machinesSheet();
+        } catch (e) { showBanner(e.message); }
+      };
     }; });
     $('viewer-list').innerHTML = data.viewers.map((v) => `<div class="item machine-item"><div class="grow"><div class="t">${esc(v.name)}</div><div class="s">${v.active ? 'connected' : 'disconnected'} · last activity ${esc(seen(v.lastSeen))}</div><div class="s">First seen ${esc(seen(v.firstSeen))}</div></div></div>`).join('') || '<p class="dim">No browser heartbeat received yet. This view updates when you refresh.</p>';
     $('cluster-join').hidden = data.hosts.filter((n) => n.member).length > 1;
@@ -2493,6 +2509,9 @@ async function paintAppMachines(app, draft) {
   if (!box?.isConnected || hosts.length < 2) return null;
   const states = Object.fromEntries((app?.machines || []).map((m) => [m.id, m]));
   const placed = new Set(draft || (app?.machines ? app.machines.filter((m) => m.placed).map((m) => m.id) : [data.leader]));
+  const ownerId = app?.ownerNode || app?.hosts?.[0] || data.leader;
+  placed.add(ownerId);
+  const owner = hosts.find((h) => h.id === ownerId);
   const main = hosts.find((h) => h.id === data.leader);
   const note = (m) => {
     if (!m?.state) return '';
@@ -2501,9 +2520,9 @@ async function paintAppMachines(app, draft) {
     return m.error || m.state;
   };
   box.innerHTML = `<label>Machines</label>
-    <p class="dim">Each ticked machine keeps its own copy, cloned from the project's Git repository and kept up to date. Tabs run on the main${main ? ` (${esc(main.name)})` : ''}, so keep the project there to work on it. Unticking a machine deletes its copy once everything in it is pushed; a copy with unsaved work is kept and flagged.</p>
-    ${hosts.map((h) => `<div class="item"><label class="grow"><input type="checkbox" data-host="${esc(h.id)}" ${placed.has(h.id) ? 'checked' : ''} />
-      ${esc(h.name)}${h.id === data.leader ? ' · main' : ''}${h.active ? '' : ' · offline'}
+    <p class="dim">Hosted on ${esc(owner?.name || 'its original computer')}. Select additional computers to replicate this app through its Git repository. Replicas receive pushed changes; they do not move running processes or tab worktrees. Tabs run on the main${main ? ` (${esc(main.name)})` : ''}, so keep the project there to work on it. Unticking a machine deletes its copy once everything in it is pushed; a copy with unsaved work is kept and flagged.</p>
+    ${hosts.map((h) => `<div class="item"><label class="grow"><input type="checkbox" data-host="${esc(h.id)}" ${placed.has(h.id) ? 'checked' : ''}${h.id === ownerId ? ' disabled' : ''} />
+      ${esc(h.name)}${h.id === data.leader ? ' · main' : ''}${h.active ? '' : ' · offline'}${h.id === ownerId ? ' · app host' : ' · replicate here'}
       ${note(states[h.id]) ? `<div class="s">${esc(note(states[h.id]))}</div>` : ''}</label></div>`).join('')}`;
   return () => [...box.querySelectorAll('[data-host]')].filter((el) => el.checked).map((el) => el.dataset.host);
 }
