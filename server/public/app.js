@@ -575,6 +575,7 @@ function clearLive(tab = state.tab) {
 let openingSession = null;   // the tap we are still fetching for
 
 async function openSession(id) {
+  if (sessionOffline(state.sessions.find(s => s.id === id))) return showBanner('This tab’s computer is offline. Reconnect it to open the tab.');
   window.cancelDictation?.();
   openingSession = id;
 
@@ -658,22 +659,34 @@ function nextTabName(appId) {
 }
 
 function projectSession(app) {
-  const sessions = state.sessions.filter((s) => s.appId === app.id);
+  const sessions = state.sessions.filter((s) => s.appId === app.id && !sessionOffline(s));
   const remembered = localStorage.getItem(`${sessionStorageKey}:app:${app.id}`);
   return sessions.find((s) => s.id === state.session?.id)
     || sessions.find((s) => s.id === remembered) || sessions[0];
 }
 
+const openingProjects = new Set();
+
 async function openProject(app) {
+  if (openingProjects.has(app.id)) return;
+  openingProjects.add(app.id);
   try {
     let session = projectSession(app);
     if (!session) {
+      if (state.sessions.some(s => s.appId === app.id)) return showBanner('This app’s tabs are on offline computers. Reconnect a computer to open its tabs.');
       session = await api('/api/sessions', { method: 'POST',
         body: JSON.stringify({ appId: app.id, name: nextTabName(app.id), model: state.default }) });
       state.sessions.unshift(session);
     }
     await openSession(session.id);
   } catch (e) { showBanner(e.message, true); }
+  finally { openingProjects.delete(app.id); }
+}
+
+function sessionOffline(session) {
+  if (!session || !state.machines?.hosts) return false;
+  const owner = session.ownerNode || state.machines.leader;
+  return Boolean(owner) && !state.machines.hosts.some(h => h.id === owner && h.active !== false);
 }
 
 function tabComputerBadge(session) {
@@ -693,14 +706,14 @@ function paintSessionTabs() {
   if (!current) { bar.innerHTML = ''; return; }
   const sessions = current.appId ? state.sessions.filter((s) => s.appId === current.appId) : [current];
   if (!sessions.some((s) => s.id === current.id)) sessions.push(current);
-  // Tabs follow creation order, not the recently-active ordering of the browser.
-  sessions.sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0) || a.id.localeCompare(b.id));
+  // Keep offline tabs at the right, preserving creation order in each group.
+  sessions.sort((a, b) => Number(sessionOffline(a)) - Number(sessionOffline(b)) || (a.createdAt ?? 0) - (b.createdAt ?? 0) || a.id.localeCompare(b.id));
   bar.innerHTML = `<div class="session-tab-list" aria-label="Sessions">${sessions.map((s) =>
-    `<button class="ghost${s.id === current.id ? ' on' : ''}" data-session-id="${esc(s.id)}" aria-current="${s.id === current.id ? 'page' : 'false'}" title="${esc(s.name)}"><span class="session-tab-name">${esc(s.name)}</span>${tabComputerBadge(s)}${(state.busy ?? []).includes(s.id) ? '<span class="session-busy-dot" role="img" aria-label="Working"></span>' : ''}</button>`).join('')}</div>
+    `<button class="ghost${s.id === current.id ? ' on' : ''}${sessionOffline(s) ? ' offline' : ''}" ${sessionOffline(s) ? 'disabled aria-label="' + esc(s.name) + ' · computer offline"' : ''} data-session-id="${esc(s.id)}" aria-current="${s.id === current.id ? 'page' : 'false'}" title="${esc(s.name)}${sessionOffline(s) ? ' · computer offline' : ''}"><span class="session-tab-name">${esc(s.name)}</span>${tabComputerBadge(s)}${(state.busy ?? []).includes(s.id) ? '<span class="session-busy-dot" role="img" aria-label="Working"></span>' : ''}</button>`).join('')}</div>
     <button class="tap" id="session-add" aria-label="New session" title="New session">＋</button>
     <button class="tap" id="session-options" aria-label="Session options" title="Session options">⋯</button>`;
   bar.querySelectorAll('[data-session-id]').forEach((el) => {
-    el.onclick = () => { if (el.dataset.sessionId !== state.session?.id) openSession(el.dataset.sessionId); };
+    el.onclick = () => { if (!el.disabled && el.dataset.sessionId !== state.session?.id) openSession(el.dataset.sessionId); };
   });
   $('session-add').onclick = () => { draft = { appId: current.appId }; newSheet(); };
   $('session-options').onclick = sessionOptionsSheet;
@@ -1142,27 +1155,38 @@ async function newSheet() {
     keep();
     browseSheet($('n-dir').value, (chosen) => { draft.dir = chosen; newSheet(); });
   };
-  $('n-go').onclick = async () => {
+  let submitting = false;
+  const createButton = $('n-go');
+  createButton.onclick = async () => {
+    if (submitting || createButton.disabled) return;
     const chosen = $('n-dir').value.trim().replace(/\/+$/, '');
     if (!chosen && !$('n-app').value) return showBanner('give this session a folder of its own');
     if (chosen === state.home.replace(/\/+$/, '')) {
       return showBanner('that is your home folder — give the session its own directory, or everything on the machine is in scope');
     }
-    const session = await api('/api/sessions', {
-      method: 'POST',
-      body: JSON.stringify({
-        appId: $('n-app').value || null,
-        ownerNode: $('n-computer').value || undefined,
-        name: $('n-name').value.trim() || nextTabName($('n-app').value),
-        model: $('n-model').value,
-        mode: $('n-mode').value,
-        projectDir: chosen,
-        system: $('n-sys').value,
-      }),
-    });
-    draft = {};
-    state.sessions.unshift(session);
-    openSession(session.id);
+    submitting = true;
+    createButton.disabled = true;
+    try {
+      const session = await api('/api/sessions', {
+        method: 'POST',
+        body: JSON.stringify({
+          appId: $('n-app').value || null,
+          ownerNode: $('n-computer').value || undefined,
+          name: $('n-name').value.trim() || nextTabName($('n-app').value),
+          model: $('n-model').value,
+          mode: $('n-mode').value,
+          projectDir: chosen,
+          system: $('n-sys').value,
+        }),
+      });
+      draft = {};
+      state.sessions.unshift(session);
+      await openSession(session.id);
+    } catch (e) {
+      showBanner(e.message, true);
+      submitting = false;
+      createButton.disabled = false;
+    }
   };
 }
 

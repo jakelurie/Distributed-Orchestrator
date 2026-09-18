@@ -722,7 +722,8 @@ button.primary.danger:active { background: #db5f78; }
 #session-tabs { display: flex; flex: 0 0 auto; min-width: 0; width: 100%; padding: 4px 8px; gap: 4px; background: var(--bg-2); border-bottom: 1px solid var(--line); }
 .session-tab-list { display: flex; flex: 1; min-width: 0; gap: 4px; overflow-x: auto; }
 .session-tab-list button { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; min-height: 44px; max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.session-tab-list button.on { color: var(--accent); background: var(--bg-3); border-color: var(--accent); }
+.session-tab-list button.offline { color: var(--fg-faint); background: var(--bg-2); border-color: var(--line); cursor: not-allowed; }
+.session-tab-list button.on:not(.offline) { color: var(--accent); background: var(--bg-3); border-color: var(--accent); }
 
 /* Message controls stay at the top right, above the collapsible content. */
 .turn.user .who { display: flex; align-items: center; }

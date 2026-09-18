@@ -93,3 +93,66 @@ assert.match($('session-tabs').innerHTML, /<text x="14" y="13">2<\/text>/);
 state.apps[0].executionHosts = ['pc'];
 context.paintSessionTabs();
 assert.doesNotMatch($('session-tabs').innerHTML, /tab-computer/);
+
+state.machines.hosts[0].active = true;
+state.machines.hosts[1].active = false;
+state.sessions = [
+  { id: 'offline', appId: 'a', name: 'Offline', ownerNode: 'pc', createdAt: 1 },
+  { id: 'online', appId: 'a', name: 'Online', ownerNode: 'mac', createdAt: 2 },
+];
+state.session = state.sessions[0];
+context.paintSessionTabs();
+assert.deepEqual(tabIds(), ['online', 'offline']);
+assert.match($('session-tabs').innerHTML, /class="ghost on offline" disabled aria-label="Offline · computer offline"/);
+assert.equal(context.projectSession({ id: 'a' }).id, 'online');
+state.machines.hosts[1].active = true;
+context.paintSessionTabs();
+assert.deepEqual(tabIds(), ['offline', 'online']);
+assert.doesNotMatch($('session-tabs').innerHTML, /disabled/);
+
+let finishCreation;
+context.api = async () => {
+  calls.push('concurrent');
+  await new Promise(resolve => { finishCreation = resolve; });
+  return { id: 'single', appId: 'double-click' };
+};
+const before = calls.length;
+const first = context.openProject({ id: 'double-click' });
+await context.openProject({ id: 'double-click' });
+assert.equal(calls.length, before + 1);
+finishCreation();
+await first;
+assert.equal(state.sessions.filter(s => s.id === 'single').length, 1);
+
+// Exercise the create button itself while its request is still pending.
+for (const [id, value] of Object.entries({ 'n-dir': '/project', 'n-app': 'a', 'n-computer': 'mac',
+  'n-name': '', 'n-model': 'model', 'n-mode': 'agent', 'n-sys': '' })) $(id).value = value;
+state.home = '/home';
+const handlerStart = source.indexOf('  let submitting = false;');
+const handlerEnd = source.indexOf('\n}\n\nasync function browseSheet', handlerStart);
+vm.runInContext(source.slice(handlerStart, handlerEnd), context);
+const create = $('n-go').onclick;
+const beforeButton = calls.length;
+const pending = create();
+await create();
+assert.equal(calls.length, beforeButton + 1);
+assert.equal($('n-go').disabled, true);
+finishCreation();
+await pending;
+await create();
+assert.equal(calls.length, beforeButton + 1, 'a late second click after success cannot create again');
+console.log('PASS offline tab ordering, disabled state, reconnect and concurrent creation guards');
+
+const errors = [];
+const retryContext = vm.createContext({ $, state, draft: {}, nextTabName: () => 'Tab 5',
+  showBanner: message => errors.push(message), openSession: async () => {},
+  api: async () => { throw new Error('Computer unavailable'); },
+});
+$('n-go').disabled = false;
+vm.runInContext(source.slice(handlerStart, handlerEnd), retryContext);
+await $('n-go').onclick();
+assert.equal($('n-go').disabled, false, 'failed creation unlocks the button');
+assert.deepEqual(errors, ['Computer unavailable']);
+retryContext.api = async () => ({ id: 'retry', appId: 'a' });
+await $('n-go').onclick();
+assert.equal(state.sessions[0].id, 'retry', 'creation can be retried after a failure');
