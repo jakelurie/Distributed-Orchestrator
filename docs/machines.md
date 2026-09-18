@@ -11,9 +11,10 @@ a person is looking at the screen. Sleeping phones become disconnected after
 viewers; this app cannot enumerate devices hidden by Tailscale permissions or
 ones that disappeared before it first observed them.
 
-A new installation starts as a one-host system. Enable **Phone access** on both
-computers. On the new computer open **Machines** and select **request to join**
-next to your existing main. On the existing main refresh **Machines** and select
+A new installation starts as a one-host system. The existing main needs
+**Phone access** enabled so others can find it. On the new computer open
+**Machines** and select **request to join** next to your existing main; this
+sets up the new computer's Tailscale HTTPS address automatically if it has none. On the existing main refresh **Machines** and select
 **Approve host**. No code needs copying. The request expires after ten minutes;
 restarting the new host cancels it. Phones remain browser viewers.
 
@@ -103,8 +104,8 @@ in that config. The launcher never kills a process already using the port.
 For interactive configuration instead, run `npm run node:setup` followed by
 `npm run node:serve`. The wizard defaults to 8788.
 
-On the new host, open **Settings → Phone access · Tailscale** and set up HTTPS.
-In **Machines**, request to join the discovered main, then approve the request
+On the new host, open **Machines** and request to join the discovered main
+(this sets up its Tailscale HTTPS address if needed), then approve the request
 on the existing main. Approve Windows Firewall access on your private network if prompted.
 
 The existing Mac desktop launcher remains available. Native Windows process

@@ -2,7 +2,9 @@ import crypto from 'node:crypto';
 
 // Identity comes from the local Tailscale inventory plus a verified HTTPS
 // callback, never from caller-supplied identity headers or an arbitrary URL.
-export function hostPairing({ cluster, inventory, join, request = fetch, now = Date.now }) {
+// `publish` gives this host its Tailscale HTTPS address on demand, so joining
+// does not need a separate setup step first.
+export function hostPairing({ cluster, inventory, join, publish, request = fetch, now = Date.now }) {
   let pending = null;
   let joining = false;
   let message = '';
@@ -64,7 +66,10 @@ export function hostPairing({ cluster, inventory, join, request = fetch, now = D
     },
     async requestJoin(url) {
       if (cluster.shared() || joining) throw new Error('This host is already joined or joining.');
-      if (!cluster.self.url?.startsWith('https://')) throw new Error('Set up Phone access on this host first.');
+      if (!cluster.self.url?.startsWith('https://') && publish) await publish();
+      if (!cluster.self.url?.startsWith('https://')) {
+        throw new Error('This computer needs a Tailscale HTTPS address so the main can reach it. Open Settings → Phone access · Tailscale and tap “set up phone access”.');
+      }
       const peer = await inspect(url);
       if (peer.node === cluster.self.id || !peer.main) throw new Error('Choose the existing system’s current main host.');
       pending = { target: peer.node, url: peer.url, nonce: crypto.randomBytes(24).toString('base64url'), expires: now() + 600000 };

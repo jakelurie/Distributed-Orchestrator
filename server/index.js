@@ -759,7 +759,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && pathname === '/api/network/setup') {
       // JSON requests from our settings UI; reject cross-origin form posts.
       if (!req.headers['content-type']?.startsWith('application/json')) return json(res, 415, { error: 'JSON required' });
-      return json(res, 200, await setupPhoneAccess(PORT));
+      const n = await setupPhoneAccess(PORT);
+      if (n.phoneUrl) await cluster.setUrl(n.phoneUrl).catch(() => {});
+      return json(res, 200, n);
     }
 
     if (req.method === 'GET' && pathname === '/api/state') {
@@ -1667,7 +1669,13 @@ TOKEN = await resolveToken(USER_DATA);
 cluster = await createCluster(USER_DATA, { port: PORT, onChange: (replica) => {
   if (replica.role !== 'leader') for (const turn of running.values()) turn.controller.abort();
 } });
-pairing = hostPairing({ cluster, inventory, join: joinHost });
+pairing = hostPairing({ cluster, inventory, join: joinHost, publish: async () => {
+  // Reuses the Phone access routine: it never replaces an existing Serve route.
+  const n = await setupPhoneAccess(PORT);
+  if (n.phoneUrl) return cluster.setUrl(n.phoneUrl);
+  if (n.approvalUrl) throw new Error(`Tailscale must allow HTTPS for this computer first. Approve it at ${n.approvalUrl} and tap request to join again.`);
+  throw new Error(n.connected ? n.message : 'Tailscale is not connected on this computer. Sign in to Tailscale, then tap request to join again.');
+} });
 store.useCluster(cluster);
 workspaces = portableWorkspaces(cluster);
 clusterAssets = replicatedAssets(cluster, USER_DATA);

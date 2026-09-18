@@ -81,10 +81,28 @@ try {
   const down = hostPairing({ cluster: newcomer.cluster, inventory: async () => ({ devices, error: 'unavailable' }), request });
   await assert.rejects(down.requestJoin(main.cluster.self.url));
   assert.equal((await down.discover()).hosts.length, 0);
+  // A host without an HTTPS address publishes one when asked to join,
+  // instead of sending the user off to set up Phone access first.
+  devices.push({ dns: 'lazy.example.ts.net', active: true, name: 'Lazy', platform: 'linux' });
+  const bare = await createCluster(path.join(root, 'bare'));
+  clusters.push(bare);
+  let published = 0;
+  const lazy = hostPairing({ cluster: bare, now: () => time, request, inventory: async () => ({ devices }),
+    publish: async () => { published++; await bare.setUrl('https://lazy.example.ts.net'); } });
+  systems.set('https://lazy.example.ts.net', { cluster: bare, pairing: lazy });
+  await lazy.requestJoin(main.cluster.self.url);
+  assert.equal(published, 1);
+  assert.equal(lazy.status().pending.target, main.cluster.self.id);
+  const unpublished = await createCluster(path.join(root, 'stuck'));
+  clusters.push(unpublished);
+  const stuck = hostPairing({ cluster: unpublished, request, inventory: async () => ({ devices }),
+    publish: async () => { throw new Error('Tailscale must allow HTTPS'); } });
+  await assert.rejects(stuck.requestJoin(main.cluster.self.url), /allow HTTPS/);
   const ui = await fs.readFile('server/public/app.js', 'utf8');
   const sheet = ui.slice(ui.indexOf('async function machinesSheet()'), ui.indexOf('async function modelsSheet()'));
   assert.doesNotMatch(sheet, /cluster-token|cluster-invite|create join code/);
   assert.match(sheet, /Approve host/);
+  assert.match(sheet, /sets up this computer’s private Tailscale HTTPS address automatically/);
   console.log('PASS discovery, explicit approval, custom ports, host-bound credentials, expiry, cancellation, replay and address restrictions');
 } finally {
   for (const cluster of clusters) cluster.replica.stop();

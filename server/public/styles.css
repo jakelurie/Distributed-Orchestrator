@@ -671,6 +671,9 @@ button.primary.danger:active { background: #db5f78; }
    (the .s lines, .mono spans), not for sentences. */
 #sheet p.dim { font-family: inherit; font-size: 13px; color: var(--fg-dim); line-height: 1.45; margin: 6px 0 10px; }
 #sheet p.dim .mono { font-family: var(--mono); }
+#sheet ol.join-steps { font-family: inherit; font-size: 13px; color: var(--fg-dim); line-height: 1.45; margin: 6px 0 10px; padding-left: 20px; }
+#sheet ol.join-steps li { margin-bottom: 4px; }
+#sheet ol.join-steps b { color: var(--fg); font-weight: 600; }
 
 /* Harness-wide settings as a row list; each row opens its own sheet. */
 .rowlinks { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--bg-3); }

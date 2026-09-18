@@ -1361,7 +1361,7 @@ async function networkSheet() {
     <p class="dim">Mac: use the installed Tailscale app. Linux or Windows WSL2: connect Tailscale inside the environment running this server.</p>
     <div id="network-status" role="status">Checking connection…</div>
     <div class="actions"><button class="ghost" id="network-check">check again</button><button class="primary" id="network-setup" disabled>set up phone access</button></div>
-    <p class="dim">Setup publishes private HTTPS within your Tailscale network. Existing routes are preserved. If this server requires an access token, open its new address with that token on your phone.</p>${backToSettings}`);
+    <p class="dim">Setup publishes private HTTPS within your Tailscale network. Other Orchestrator hosts in Machines use the same address. Existing routes are preserved. If this server requires an access token, open its new address with that token on your phone.</p>${backToSettings}`);
   $('sub-back').onclick = settingsSheet;
   const box = $('network-status');
   const setup = $('network-setup');
@@ -1389,6 +1389,16 @@ async function networkSheet() {
   await refresh();
 }
 
+// Errors may carry a Tailscale approval link; make it tappable without innerHTML.
+function showLinked(box, text) {
+  box.replaceChildren();
+  for (const part of text.split(/(https:\/\/[^\s]+)/)) {
+    if (!part.startsWith('https://')) { box.append(document.createTextNode(part)); continue; }
+    const link = document.createElement('a'); link.href = part; link.textContent = part; link.target = '_blank'; link.rel = 'noopener';
+    link.style.overflowWrap = 'anywhere'; box.append(link);
+  }
+}
+
 async function machinesSheet() {
   openSheet(`<h2>Machines</h2>
     <div id="cluster-summary" role="status">Checking machines…</div>
@@ -1397,7 +1407,11 @@ async function machinesSheet() {
     <h3>Tailscale devices</h3><p class="dim">Network presence is separate from running this app. Devices are remembered after going offline; joining requires your approval.</p>
     <div id="tailnet-list">Checking Tailscale…</div>
     <h3>Add another host</h3>
-    <p class="dim">On the new computer, set up Phone access, then request to join your existing main below. On the main, refresh this list and approve the host. Approved hosts receive shared sessions, project files, and API credentials; subscription logins stay on each computer.</p>
+    <ol class="dim join-steps">
+      <li>On the <b>new</b> computer, tap <b>request to join</b> next to your existing main below. It sets up this computer’s private Tailscale HTTPS address automatically if needed.</li>
+      <li>On the <b>existing main</b>, open Machines, tap <b>refresh</b>, then <b>Approve host</b>.</li>
+    </ol>
+    <p class="dim">Approved hosts receive shared sessions, project files, and API credentials; subscription logins stay on each computer.</p>
     <div id="discovered-hosts">Looking for Orchestrator hosts…</div>
     <p id="pairing-status" class="dim" role="status"></p>
     <div id="cluster-join">
@@ -1440,7 +1454,7 @@ async function machinesSheet() {
       try {
         await call(route, body);
         if ($('machine-list') === list) await machinesSheet();
-      } catch (e) { if ($('machine-list') === list) $('machine-error').textContent = e.message; }
+      } catch (e) { if ($('machine-list') === list) showLinked($('machine-error'), e.message); }
       finally { button.disabled = false; }
     };
     $('cluster-connect').onclick = () => action('request-join', { url: $('cluster-url').value.trim() }, $('cluster-connect'));
@@ -1457,7 +1471,7 @@ async function machinesSheet() {
         const canRequest = data.mode === 'standalone' && n.main && !found.local.joining;
         return `<div class="item machine-item"><div class="grow"><div class="t">${esc(n.device || n.name)}</div><div class="s">${esc(n.url)}</div><div class="s">${n.joining ? 'joining' : approval ? 'requests access to this system' : 'Orchestrator detected'}</div></div>
           ${approval ? `<button class="primary" data-pair-approve="${esc(n.url)}">Approve host</button>` : canRequest ? `<button class="ghost" data-pair-request="${esc(n.url)}">request to join</button>` : ''}</div>`;
-      }).join('') || '<p class="dim">No unjoined hosts found. Install and open Orchestrator on the other computer and set up Phone access. Refresh to check again.</p>';
+      }).join('') || '<p class="dim">No other hosts found yet. The main must be running and have Phone access set up (it does if you already use it from your phone). Refresh to check again, or enter its address below.</p>';
       $('discovered-hosts').querySelectorAll('[data-pair-approve]').forEach(button => {
         button.onclick = () => action('approve-host', { url: button.dataset.pairApprove }, button);
       });
