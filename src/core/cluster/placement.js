@@ -179,7 +179,9 @@ export function appPlacement(cluster, dataDir, {
     /** One pass at a time; a request during a pass waits for it and then runs again. */
     reconcile() {
       const next = (pending || Promise.resolve()).catch(() => {}).then(reconcileOnce);
-      pending = next.finally(() => { if (pending === next) pending = null; });
+      // The caller handles next's failure; this settled copy only sequences passes.
+      const settled = next.catch(() => {}).finally(() => { if (pending === settled) pending = null; });
+      pending = settled;
       return next;
     },
     /** This host's working copy of an app, if it has one. */
