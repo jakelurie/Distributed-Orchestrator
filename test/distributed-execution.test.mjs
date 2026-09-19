@@ -159,6 +159,22 @@ try {
   }
   assert.ok(repaired.events.some(e => e.type === 'user' && e.text === 'continue after failure'));
   assert.equal((await a.call('/api/state')).projectQueues['turn-queue:__harness'].find(e => e.sessionId === repair.id).state, 'done');
+  const queuedRepair = await a.call('/api/sessions', 'POST', { appId: '__harness', name: 'already queued repair', mode: 'chat', model: 'model-b', ownerNode: b.status.self });
+  b.child.kill('SIGKILL'); await b.closed;
+  await changeQueue({ op: 'enqueue', entry: { id: 'failed-before-followup', key: 'turn-queue:__harness', sessionId: queuedRepair.id, owner: b.status.self, kind: 'integration', body: {} } });
+  await changeQueue({ id: 'failed-before-followup', owner: b.status.self, state: 'preparing' });
+  await changeQueue({ op: 'enqueue', allowQueue: true, entry: { id: 'queued-before-failure', key: 'turn-queue:__harness', sessionId: queuedRepair.id, owner: b.status.self, body: { text: 'recover queued work' } } });
+  await changeQueue({ id: 'failed-before-followup', owner: b.status.self, state: 'blocked', detail: 'push failed' });
+  await b.restart();
+  let queuedResult;
+  for (let i = 0; i < 100; i++) {
+    queuedResult = (await a.call('/api/state')).projectQueues['turn-queue:__harness'];
+    if (queuedResult.find(e => e.id === 'queued-before-failure')?.state === 'done') break;
+    await pause();
+  }
+  assert.equal(queuedResult.find(e => e.id === 'queued-before-failure').state, 'done', 'pump runs a follow-up queued before the preceding failure');
+  assert.equal(queuedResult.find(e => e.id === 'failed-before-followup').state, 'cancelled');
+  assert.ok((await a.call('/api/sessions/' + queuedRepair.id)).events.some(e => e.type === 'user' && e.text === 'recover queued work'));
   const resumable = await a.call('/api/sessions', 'POST', { appId: '__harness', name: 'durable follow-up', mode: 'chat', model: 'model-b', ownerNode: b.status.self });
   b.child.kill('SIGKILL'); await b.closed;
   const queueRequest = await fetch(a.status.hosts[0].url + '/api/cluster/turn-queue', {

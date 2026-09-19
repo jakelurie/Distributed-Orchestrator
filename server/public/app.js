@@ -752,7 +752,7 @@ async function projectQueueSheet() {
   const key = `turn-queue:${session.appId || session.id}`;
   const entries = state.projectQueues?.[key] || [];
   openSheet(`<h2>Project turn queue</h2>
-    <p class="dim">Turns prepare in parallel and publish in numbered order. Each turn merges and checks the latest code in its slot. Send a follow-up in a blocked tab to continue its saved work in the same publication slot, retry publication here, or explicitly skip it.</p>
+    <p class="dim">Finished tabs integrate independently, merging and testing the latest code. Failed or offline turns do not hold other tabs. Send a follow-up to continue saved work, or retry publication here.</p>
     ${entries.map(e => `<div class="item"><div class="grow"><div class="t">#${e.number} · ${esc(e.name)}</div><div class="s">${esc(e.state)} · ${esc(state.machines?.hosts?.find(h => h.id === e.owner)?.name || 'computer')}</div><div class="s">${esc(e.detail || '')}</div></div>
       ${e.state === 'blocked' ? `<button class="ghost" data-retry-turn="${esc(e.sessionId)}">retry</button>` : ''}
       ${['queued', 'blocked'].includes(e.state) ? `<button class="ghost" data-skip-turn="${esc(e.id)}" data-turn-session="${esc(e.sessionId)}">skip</button>` : ''}</div>`).join('') || '<p class="dim">No turns queued yet.</p>'}
@@ -770,7 +770,7 @@ async function projectQueueSheet() {
   });
   $('sheet').querySelectorAll('[data-skip-turn]').forEach(button => {
     button.onclick = async () => {
-      if (!confirm('Skip this turn’s publication slot? Its unfinished files stay on the original computer. Later turns may publish without it.')) return;
+      if (!confirm('Dismiss this failed or queued turn? Its unfinished files stay in its tab. Other tabs can already publish independently.')) return;
       button.disabled = true;
       try {
         await api(`/api/sessions/${button.dataset.turnSession}/skipturn`, { method: 'POST', body: JSON.stringify({ entryId: button.dataset.skipTurn }) });
@@ -926,7 +926,7 @@ function listen(tab, id) {
       return;
     }
 
-    if (p.kind === 'queue') setRunning(true, t.startedAt, `waiting for turn #${p.number}`, tab);
+    if (p.kind === 'queue') setRunning(true, t.startedAt, `integrating turn #${p.number}`, tab);
     if (p.kind === 'started') setRunning(true, p.startedAt, null, tab);
     if (p.kind === 'event') {
       clearLive(tab);

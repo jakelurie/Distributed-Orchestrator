@@ -1,6 +1,7 @@
-/** Durable project order. Preparation is parallel; publication is strictly FIFO. */
+/** Durable turn tracking. Git integration serializes writes, not turn numbers. */
 export const queueKey = session => `turn-queue:${session.appId || session.id}`;
 export const unfinished = entry => !['done', 'cancelled'].includes(entry.state);
+export const activeTurn = entry => unfinished(entry) && entry.state !== 'blocked';
 export function queueChange(previous, action) {
   const queue = structuredClone(previous || { next: 1, entries: [] });
   if (action.op === 'enqueue') {
@@ -9,8 +10,8 @@ export function queueChange(previous, action) {
     const blocked = pending.find(e => e.state === 'blocked');
     if (blocked && pending.every(e => e.state === 'blocked')) {
       if (blocked.owner !== action.entry.owner) throw new Error('Only the owning computer can resume this queue entry.');
-      // Continue the saved work in its original publication slot. A new slot
-      // would wait forever behind the very failure this message must repair.
+      // Retain the failed request's history when a new message resumes it.
+      // Turn numbers are identifiers, not publication reservations.
       blocked.attempts = [...(blocked.attempts || []), { id: blocked.id, detail: blocked.detail }];
       Object.assign(blocked, action.entry, { number: blocked.number, state: 'queued', detail: '', kind: action.entry.kind });
       return queue;
@@ -25,11 +26,10 @@ export function queueChange(previous, action) {
   if (entry.owner !== action.owner) throw new Error('Only the owning computer can update this queue entry.');
   if (action.op === 'claim') {
     if (entry.state !== 'ready') throw new Error('This turn is not ready to publish.');
-    if (queue.entries.find(unfinished)?.id !== entry.id) return queue;
     entry.state = 'publishing';
     return queue;
   }
-  if (action.state === 'preparing' && queue.entries.some(e => e.sessionId === entry.sessionId && e.number < entry.number && unfinished(e)))
+  if (action.state === 'preparing' && queue.entries.some(e => e.sessionId === entry.sessionId && e.number < entry.number && activeTurn(e)))
     throw new Error('An earlier turn in this tab still needs recovery.');
   const allowed = {
     queued: ['preparing', 'cancelled', 'blocked'], preparing: ['ready', 'blocked', 'done'],
@@ -37,6 +37,17 @@ export function queueChange(previous, action) {
   };
   if (entry.state === action.state) return queue;
   if (!allowed[entry.state]?.includes(action.state)) throw new Error(`Cannot change ${entry.state} to ${action.state}.`);
+  if (action.state === 'preparing') {
+    // A follow-up already queued when its predecessor failed must still run.
+    const blocked = queue.entries.filter(e => e.sessionId === entry.sessionId && e.number < entry.number && e.state === 'blocked');
+    if (blocked.some(e => e.owner !== action.owner)) throw new Error('Only the owning computer can resume this queue entry.');
+    if (blocked.length) entry.attempts = [...(entry.attempts || []), ...blocked.map(e => ({ id: e.id, detail: e.detail }))];
+    for (const previous of blocked) {
+      previous.state = 'cancelled';
+      previous.detail = `Continued by turn #${entry.number}. ${previous.detail || ''}`.slice(0, 1000);
+      delete previous.body;
+    }
+  }
   entry.state = action.state;
   entry.detail = String(action.detail || '').slice(0, 1000);
   if (!unfinished(entry)) delete entry.body;

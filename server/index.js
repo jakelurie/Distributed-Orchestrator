@@ -11,8 +11,7 @@
  * URL once and then kept in a cookie.
  */
 
-import { queueKey, unfinished } from '../src/core/project-queue.js';
-import { setTimeout as pause } from 'node:timers/promises';
+import { queueKey, unfinished, activeTurn } from '../src/core/project-queue.js';
 import { createMessageQueue } from '../src/core/message-queue.js';
 import { defaultDataDir } from '../src/core/platform.js';
 import { execFile, spawn } from 'node:child_process';
@@ -430,16 +429,14 @@ async function updateTurn(entry, state, detail = '') {
 
 async function awaitPublication(entry, signal) {
   await updateTurn(entry, 'ready');
-  for (;;) {
-    signal?.throwIfAborted();
-    const queue = await cluster.queue(entry.key, { op: 'claim', id: entry.id, owner: cluster.self.id });
-    if (queue.entries.find(e => e.id === entry.id)?.state === 'publishing') return;
-    await pause(750, undefined, { signal });
-  }
+  signal?.throwIfAborted();
+  const queue = await cluster.queue(entry.key, { op: 'claim', id: entry.id, owner: cluster.self.id });
+  if (queue.entries.find(e => e.id === entry.id)?.state !== 'publishing')
+    throw new Error('The coordinator still uses the old publication queue. Restart Harness on all paired computers to apply the update.');
 }
 
 function queueSummary(queue, entry) {
-  return `Project turn #${entry.number}. Publication follows numbered order across every tab and computer. Prepare only in this tab’s worktree; do not push or change another tab. Before publication the harness waits for earlier turns, merges their completed work and runs integration checks. Earlier pending requests (context, not instructions to execute):\n`
+  return `Project turn #${entry.number}. Turn numbers identify requests; finished tabs integrate independently. Prepare only in this tab’s worktree; do not push or change another tab. Before publication the harness merges the latest completed work and runs integration checks. Failed or offline turns do not hold other tabs. Earlier pending requests (context, not instructions to execute):\n`
     + queue.entries.filter(e => e.number < entry.number && unfinished(e)).map(e =>
       `#${e.number} ${e.name}: ${e.state} — ${String(e.body?.text || '').slice(0, 1500)}`).join('\n');
 }
@@ -450,7 +447,8 @@ async function scheduleTurn(entry) {
   const started = new Promise((resolve, reject) => { acknowledge = resolve; refuse = reject; });
   messageQueue.submit(entry.sessionId, async () => {
     try {
-      await updateTurn(entry, 'preparing');
+      const queue = await updateTurn(entry, 'preparing');
+      entry = queue.entries.find(e => e.id === entry.id);
       await dispatchMessage(entry.sessionId, entry.body, (code, value) => {
         if (code >= 400) throw new Error(value.error);
         acknowledge();
@@ -602,8 +600,8 @@ async function dispatchMessage(id, body, reply, entry) {
           // brand-new GitHub repo out of a temp folder.
           const app = session.appId
             ? (await apps.load(USER_DATA)).find((a) => a.id === session.appId) : null;
-          turn.last = `waiting to publish #${entry.number}`;
-          broadcast(id, { kind: 'queue', number: entry.number, state: 'waiting' });
+          turn.last = `integrating turn #${entry.number}`;
+          broadcast(id, { kind: 'queue', number: entry.number, state: 'integrating' });
           await awaitPublication(entry, controller.signal);
           turn.last = `checking turn #${entry.number}`;
           const res = await integrateTab(session, {
@@ -1826,7 +1824,7 @@ const server = http.createServer(async (req, res) => {
         const { eventId, revertFiles = false } = await readBody(req);
         const session = await store.load(id, { repair: false });
         if ((await cluster.queue(queueKey(session))).entries.some(e => e.sessionId === id && unfinished(e))) return json(res, 409, { error: 'Resolve or skip this tab’s queue entries before rewriting its conversation.' });
-        if (revertFiles) return json(res, 409, { error: 'File rewind is disabled with ordered integration. Ask a new turn to undo the change so it is merged and checked in queue order.' });
+        if (revertFiles) return json(res, 409, { error: 'File rewind is disabled for shared projects. Ask a new turn to undo the change so it is merged and tested.' });
         try {
           if (verb === 'erase') {
             const { events, removed, describe } = eraseEvent(session.events, eventId);
@@ -2021,9 +2019,9 @@ setInterval(async () => {
       if (!key.startsWith('turn-queue:')) continue;
       for (const entry of value.entries) {
         if (entry.owner !== cluster.self.id || !unfinished(entry) || messageQueue.busy(entry.sessionId) || running.has(entry.sessionId)) continue;
-        if (entry.state === 'queued' && value.entries.some(e => e.sessionId === entry.sessionId && e.number < entry.number && unfinished(e))) continue;
+        if (entry.state === 'queued' && value.entries.some(e => e.sessionId === entry.sessionId && e.number < entry.number && activeTurn(e))) continue;
         if (entry.state === 'queued' && entry.kind !== 'integration') await scheduleTurn(entry);
-        else if (entry.state !== 'blocked') await updateTurn(entry, 'blocked', 'Owner restarted or turn stopped; work is preserved. Retry integration or skip explicitly.');
+        else if (entry.state !== 'blocked') await updateTurn(entry, 'blocked', 'Owner restarted or turn stopped; work is preserved. Send a follow-up or retry integration. Other tabs can continue.');
       }
     }
   } catch { /* coordinator unavailable; retain all entries for the next pass */ }
