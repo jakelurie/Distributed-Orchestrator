@@ -41,7 +41,7 @@ import { setSecret } from '../src/core/secrets.js';
 import { transcribe, transcriptionKey } from '../src/core/transcription.js';
 import * as attachments from '../src/core/attachments.js';
 import * as git from '../src/core/git.js';
-import { prepareTab, integrateTab } from '../src/core/tab-workspaces.js';
+import { prepareTab, integrateTab, tabHasUnpublishedWork, syncHarnessCheckout } from '../src/core/tab-workspaces.js';
 import { configureGithub, createGithubAuth } from '../src/core/github-auth.js';
 import { loadNotify, saveNotify, send as sendNotify, summarise, notificationSetupError } from '../src/core/notify.js';
 import * as store from '../src/core/store.js';
@@ -66,6 +66,10 @@ const PUBLIC = path.join(__dirname, 'public');
 const PORT = Number(process.env.HARNESS_PORT ?? 8787);
 const instanceId = crypto.randomUUID();
 let restarting = false;
+const harnessDir = path.resolve(__dirname, '..');
+const loadedRevision = (await git.run(['rev-parse', 'HEAD'], harnessDir)).out;
+let harnessUpdate = { restartRequired: false };
+let checkingHarnessUpdate = false;
 
 // Share the desktop app's data directory so both frontends see one set of
 // sessions. This is Electron's app.getPath('userData') for productName Harness.
@@ -523,9 +527,10 @@ async function dispatchMessage(id, body, reply, entry) {
   let prepared = false;
   let turnFailed = false;
   let publicationFinished = false;
+  let publicationError = '';
   await Promise.resolve().then(async () => {
     if (session.mode !== 'chat' && !session.monitorFor) {
-      await prepareTab(session, { distributed: placementInfo.distributed });
+      await prepareTab(session, { distributed: placementInfo.distributed, recover: Boolean(entry.attempts?.length) });
       if (cluster.shared()) session.tabWorkspace.ownerNode = cluster.self.id;
       prepared = true;
       await store.save(session);
@@ -578,8 +583,16 @@ async function dispatchMessage(id, body, reply, entry) {
       // look like the turn itself failed.
       // On by default: only an explicit false turns it off, so sessions
       // created before this became the default still push.
-      const endedWithError = session.events.slice(sentAt).some((e) => e.type === 'note');
-      if (prepared && !turnFailed && !controller.signal.aborted && !endedWithError && (placementInfo.distributed || session.gitPush !== false)) {
+      const endedWithError = session.events.slice(sentAt).some((e) => e.type === 'note' && !String(e.text || '').startsWith('turn-end guard:'));
+      // An unchanged conversation needs neither checks nor a remote push,
+      // including when the model stopped with a note. Inspect saved commits too.
+      try {
+        if (!(await tabHasUnpublishedWork(session))) {
+          await updateTurn(entry, 'done', 'no changes');
+          publicationFinished = true;
+        }
+      } catch (e) { publicationError = e.message; }
+      if (!publicationFinished && prepared && !turnFailed && !controller.signal.aborted && !endedWithError && (placementInfo.distributed || session.gitPush !== false)) {
         try {
           const last = [...session.events].reverse().find((e) => e.type === 'assistant');
           // Auto-create a repo only for a session that belongs to an app —
@@ -628,7 +641,8 @@ async function dispatchMessage(id, body, reply, entry) {
             broadcast(id, { kind: 'event', event: session.events.at(-1) });
           }
         } catch (e) {
-          const event = noteEvent(`git: ${e?.message ?? e}`);
+          publicationError = e?.message ?? String(e);
+          const event = noteEvent(`git: ${publicationError}`);
           session.events.push(event);
           await store.save(session);
           broadcast(id, { kind: 'event', event });
@@ -642,7 +656,7 @@ async function dispatchMessage(id, body, reply, entry) {
             await updateTurn(entry, 'done', 'conversation completed');
           } catch (e) { await updateTurn(entry, 'blocked', e.message).catch(() => {}); }
         } else {
-          await updateTurn(entry, 'blocked', 'Work was not published. Resume integration or skip this entry to release later turns.').catch(() => {});
+          await updateTurn(entry, 'blocked', publicationError || 'Work was not published. Send a follow-up to continue, retry integration, or skip this entry.').catch(() => {});
         }
       }
 
@@ -954,6 +968,7 @@ const server = http.createServer(async (req, res) => {
       );
       return json(res, 200, {
         models,
+        harnessUpdate,
         default: cfg.default,
         projectQueues: Object.fromEntries(Object.entries(cluster.replica.state.values)
           .filter(([key]) => key.startsWith('turn-queue:'))
@@ -1934,11 +1949,12 @@ const server = http.createServer(async (req, res) => {
         try {
           const session = await store.load(id, { repair: false });
           const key = queueKey(session);
+          const entryId = crypto.randomUUID();
           const queue = await cluster.queue(key, { op: 'enqueue', allowQueue: verb === 'queue', entry: {
-            id: crypto.randomUUID(), key, sessionId: id, name: session.name,
+            id: entryId, key, sessionId: id, name: session.name,
             owner: cluster.self.id, body, createdAt: Date.now(),
           } });
-          const entry = queue.entries.at(-1);
+          const entry = queue.entries.find(e => e.id === entryId);
           const queued = messageQueue.busy(id) || running.has(id);
           await scheduleTurn(entry);
           return json(res, queued ? 202 : 200, { ok: true, queued, number: entry.number });
@@ -1986,6 +2002,16 @@ placement = appPlacement(cluster, USER_DATA, {
 });
 clusterAssets = replicatedAssets(cluster, USER_DATA);
 cluster.replica.start();
+// Each computer updates its own installed checkout; restart stays explicit.
+setInterval(async () => {
+  if (checkingHarnessUpdate || restarting || running.size || messageQueue.size) return;
+  checkingHarnessUpdate = true;
+  try {
+    const result = await syncHarnessCheckout(harnessDir, { busy: () => Boolean(restarting || running.size || messageQueue.size) });
+    harnessUpdate = { ...result, restartRequired: Boolean(loadedRevision && result.head !== loadedRevision) };
+  } catch (e) { harnessUpdate = { ...harnessUpdate, error: e.message }; }
+  finally { checkingHarnessUpdate = false; }
+}, 30_000).unref();
 let pumpingQueue = false;
 setInterval(async () => {
   if (pumpingQueue) return;

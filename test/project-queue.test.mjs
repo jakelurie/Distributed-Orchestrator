@@ -42,5 +42,16 @@ try {
   await assert.rejects(queue.change(key, { id: 'followup', owner: 'c', state: 'preparing' }), /earlier turn/);
   await change('c', 'cancelled');
   await queue.change(key, { id: 'followup', owner: 'c', state: 'preparing' });
+  await queue.change(key, { id: 'followup', owner: 'c', state: 'blocked', detail: 'remote rejected push' });
+  await add('later');
+  await assert.rejects(queue.change(key, { op: 'enqueue', entry: { id: 'wrong', sessionId: 'c', owner: 'other' } }), /owning computer/);
+  const recovered = await queue.change(key, { op: 'enqueue', entry: { id: 'repair', sessionId: 'c', owner: 'c', body: { text: 'fix it' } } });
+  const repair = recovered.entries.find(e => e.id === 'repair');
+  assert.equal(repair.number, 4, 'recovery retains its original slot ahead of later turns');
+  assert.equal(repair.state, 'queued');
+  assert.equal(repair.attempts[0].detail, 'remote rejected push');
+  await queue.change(key, { id: 'repair', owner: 'c', state: 'preparing' });
+  await queue.change(key, { id: 'repair', owner: 'c', state: 'done', detail: 'no changes' });
+  assert.equal((await queue.read(key)).entries.find(e => e.id === 'repair').body, undefined);
   console.log('PASS persistent numbered queue, concurrent allocation, FIFO publication, blocked recovery, skip and owner checks');
 } finally { await fs.rm(dir, { recursive: true, force: true }); }

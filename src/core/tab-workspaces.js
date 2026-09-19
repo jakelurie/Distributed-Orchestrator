@@ -4,12 +4,13 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
+import { githubEnv } from './github-auth.js';
 import { commitAndPush, createPrivateRepo, githubCommitUrl } from './git.js';
 
 const exec = promisify(execFile);
 const identity = ['-c', 'user.name=Harness', '-c', 'user.email=harness@localhost'];
 async function git(dir, ...args) {
-  const { stdout } = await exec('git', [...identity, ...args], { cwd: dir, timeout: 120_000, maxBuffer: 8e6 });
+  const { stdout } = await exec('git', [...identity, ...args], { cwd: dir, env: await githubEnv(), timeout: 120_000, maxBuffer: 8e6 });
   return stdout.trim();
 }
 async function clean(dir) { return !(await git(dir, 'status', '--porcelain')); }
@@ -33,7 +34,27 @@ async function locked(repo, action) {
   try { return await task; } finally { if (queues.get(repo.common) === task) queues.delete(repo.common); }
 }
 
-export async function prepareTab(session, { distributed = false } = {}) {
+/** Pull only an idle, clean primary checkout, under the integration lock. */
+export async function syncHarnessCheckout(dir, { busy = () => false } = {}) {
+  const repo = await repository(dir);
+  return locked(repo, async () => {
+    const head = await git(repo.root, 'rev-parse', 'HEAD');
+    if (busy()) return { head, skipped: 'busy' };
+    if (!await clean(repo.root)) return { head, skipped: 'local changes' };
+    const branch = await git(repo.root, 'symbolic-ref', '--short', 'HEAD');
+    const upstream = await git(repo.root, 'rev-parse', '--abbrev-ref', '@{u}');
+    await git(repo.root, 'fetch', '--quiet');
+    if (busy() || !await clean(repo.root)
+      || await git(repo.root, 'rev-parse', 'HEAD') !== head
+      || await git(repo.root, 'symbolic-ref', '--short', 'HEAD') !== branch)
+      return { head, skipped: 'checkout changed or busy' };
+    await git(repo.root, 'merge', '--ff-only', upstream);
+    const updated = await git(repo.root, 'rev-parse', 'HEAD');
+    return { head: updated, updated: updated !== head };
+  });
+}
+
+export async function prepareTab(session, { distributed = false, recover = false } = {}) {
   let repo;
   try { repo = await repository(session.projectDir); }
   catch {
@@ -41,6 +62,12 @@ export async function prepareTab(session, { distributed = false } = {}) {
     repo = await repository(session.projectDir);
   }
   return locked(repo, async () => {
+    const previous = session.tabWorkspace;
+    if (recover && previous?.root === repo.root && previous.common === repo.common) {
+      if (await git(previous.dir, 'symbolic-ref', '--short', 'HEAD') !== previous.branch)
+        throw new Error('Tab worktree is on an unexpected branch.');
+      return previous;
+    }
     const branch = await git(repo.root, 'symbolic-ref', '--short', 'HEAD');
     if (distributed) {
       if (!await clean(repo.root)) throw new Error('Commit the project’s local changes before syncing across computers.');
@@ -76,6 +103,14 @@ export async function prepareTab(session, { distributed = false } = {}) {
     session.tabWorkspace = { root: repo.root, common: repo.common, dir, cwd: path.join(dir, relative), branch: tabBranch, target: branch };
     return session.tabWorkspace;
   });
+}
+
+/** Includes commits saved by an unsuccessful integration, not only dirty files. */
+export async function tabHasUnpublishedWork(session) {
+  const ws = session.tabWorkspace;
+  if (!ws) return false;
+  if (!await clean(ws.dir)) return true;
+  return (await git(ws.dir, 'rev-list', '--count', `${ws.target}..HEAD`)) !== '0';
 }
 
 async function validate(dir, log, base, signal) {
@@ -166,6 +201,10 @@ async function integrateDistributed(repo, session, options) {
       throw new Error(`Changes from another computer conflict with this tab. Work is saved on ${ws.branch}; resolve the merge in this tab and retry integration.`);
     }
     const candidate = await git(ws.dir, 'rev-parse', 'HEAD');
+    if (candidate === remote) {
+      await git(repo.root, 'merge', '--ff-only', remote);
+      return { ok: true, skipped: 'no changes' };
+    }
     const log = path.join(repo.common, 'harness-tabs', `${path.basename(ws.dir)}-checks.log`);
     session.integrationLog = log;
     await options.onCheck?.(log);

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { prepareTab, integrateTab } from '../src/core/tab-workspaces.js';
+import { prepareTab, integrateTab, tabHasUnpublishedWork } from '../src/core/tab-workspaces.js';
 import { systemPromptFor } from '../src/core/agent.js';
 const exec = promisify(execFile);
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-tabs-'));
@@ -21,7 +21,9 @@ try {
   await prepareTab(small);
   assert.notEqual(large.tabWorkspace.dir, small.tabWorkspace.dir);
   assert.match(systemPromptFor(large), /isolated Git worktree/);
+  assert.equal(await tabHasUnpublishedWork(large), false);
   await write(large, 'large.txt', 'unfinished\n');
+  assert.equal(await tabHasUnpublishedWork(large), true);
   await write(small, 'small.txt', 'ready\n');
   assert.equal((await integrateTab(small)).integrated, true);
   assert.equal(await fs.readFile(path.join(root, 'small.txt'), 'utf8'), 'ready\n');
@@ -54,6 +56,7 @@ try {
   await write(failing, 'bad', 'fail\n');
   const before = await git('rev-parse', 'HEAD');
   await assert.rejects(integrateTab(failing), /Integration check failed/);
+  assert.equal(await tabHasUnpublishedWork(failing), true, 'committed but failed work is still pending');
   assert.equal(await git('rev-parse', 'HEAD'), before);
   assert.match(await fs.readFile(failing.integrationLog, 'utf8'), /node check.cjs/);
   await fs.unlink(path.join(failing.tabWorkspace.dir, 'bad'));

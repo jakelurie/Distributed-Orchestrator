@@ -16,6 +16,7 @@ assert.match(html, /#7 · Tab &lt;one>/);
 assert.match(html, /blocked · Desktop/);
 assert.match(html, /data-skip-turn="turn"/);
 assert.match(html, /conflict/);
+assert.match(html, /data-retry-turn="one"/);
 assert.doesNotMatch(source, /confirm\('Also put the project files back/);
 assert.match(source, /turn\.user\.turnNumber \?\? number/);
 console.log('PASS shared queue rendering, slot numbers, owner, blocked state and removal of file rewind');

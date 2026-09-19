@@ -6,6 +6,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { prepareTab, integrateTab } from '../src/core/tab-workspaces.js';
 import { executionHosts, assignmentError, sessionWriteError } from '../src/core/cluster/execution.js';
+import { configureGithub } from '../src/core/github-auth.js';
+import { setSecret } from '../src/core/secrets.js';
 const exec = promisify(execFile);
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'distributed-integration-'));
 const git = async (dir, ...args) => (await exec('git', ['-c', 'user.name=test', '-c', 'user.email=test@localhost', ...args], { cwd: dir })).stdout.trim();
@@ -30,8 +32,14 @@ try {
   await git(root, 'clone', remote, b);
   const sa = { id: 'a', projectDir: a }, sb = { id: 'b', projectDir: b };
   await Promise.all([prepareTab(sa, { distributed: true }), prepareTab(sb, { distributed: true })]);
+  assert.equal((await integrateTab(sa, { distributed: true, onCheck: () => { throw new Error('unchanged turns need no checks'); } })).skipped, 'no changes');
   await fs.writeFile(path.join(sa.tabWorkspace.dir, 'a.txt'), 'from a');
   await fs.writeFile(path.join(sb.tabWorkspace.dir, 'b.txt'), 'from b');
+  const credentials = path.join(root, 'credentials');
+  await fs.mkdir(credentials);
+  await setSecret(credentials, '__github', 'integration-test-token');
+  configureGithub(credentials);
+  await fs.writeFile(path.join(remote, 'hooks', 'pre-receive'), '#!/bin/sh\n[ "$GH_TOKEN" = integration-test-token ]\n', { mode: 0o755 });
   let checked = 0, resume, retries = 0;
   const barrier = new Promise(resolve => { resume = resolve; });
   const options = { distributed: true,
@@ -59,6 +67,7 @@ try {
   assert.equal(await git(remote, 'rev-parse', 'main'), before);
   await git(b, 'remote', 'set-url', 'origin', path.join(root, 'missing.git'));
   await assert.rejects(prepareTab({ id: 'offline', projectDir: b }, { distributed: true }));
+  assert.equal(await prepareTab(failed, { distributed: true, recover: true }), failed.tabWorkspace, 'saved work remains editable while remote is unavailable');
   assert.equal(await git(remote, 'rev-parse', 'main'), before);
   console.log('PASS separate computers merge simultaneous changes, preserve conflicts, block failing checks and refuse offline sync');
-} finally { await fs.rm(root, { recursive: true, force: true }); }
+} finally { configureGithub(null); await fs.rm(root, { recursive: true, force: true }); }

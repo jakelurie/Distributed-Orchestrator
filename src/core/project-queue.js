@@ -6,7 +6,15 @@ export function queueChange(previous, action) {
   if (action.op === 'enqueue') {
     if (queue.entries.some(e => e.id === action.entry.id)) return queue;
     const pending = queue.entries.filter(e => e.sessionId === action.entry.sessionId && unfinished(e));
-    if (pending.some(e => e.state === 'blocked')) throw new Error('Resolve or skip this tab’s blocked queue entry first.');
+    const blocked = pending.find(e => e.state === 'blocked');
+    if (blocked && pending.every(e => e.state === 'blocked')) {
+      if (blocked.owner !== action.entry.owner) throw new Error('Only the owning computer can resume this queue entry.');
+      // Continue the saved work in its original publication slot. A new slot
+      // would wait forever behind the very failure this message must repair.
+      blocked.attempts = [...(blocked.attempts || []), { id: blocked.id, detail: blocked.detail }];
+      Object.assign(blocked, action.entry, { number: blocked.number, state: 'queued', detail: '', kind: action.entry.kind });
+      return queue;
+    }
     if (pending.length && !action.allowQueue) throw new Error('A turn is already running. Use Queue next.');
     if (pending.some(e => e.state === 'queued')) throw new Error('This tab already has a queued message. Your draft has been kept.');
     queue.entries.push({ ...action.entry, number: queue.next++, state: 'queued' });
@@ -24,7 +32,7 @@ export function queueChange(previous, action) {
   if (action.state === 'preparing' && queue.entries.some(e => e.sessionId === entry.sessionId && e.number < entry.number && unfinished(e)))
     throw new Error('An earlier turn in this tab still needs recovery.');
   const allowed = {
-    queued: ['preparing', 'cancelled', 'blocked'], preparing: ['ready', 'blocked'],
+    queued: ['preparing', 'cancelled', 'blocked'], preparing: ['ready', 'blocked', 'done'],
     ready: ['blocked'], publishing: ['done', 'blocked'], blocked: ['ready', 'cancelled'],
   };
   if (entry.state === action.state) return queue;

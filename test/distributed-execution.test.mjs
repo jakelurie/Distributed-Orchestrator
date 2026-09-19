@@ -67,13 +67,13 @@ try {
   let sharedQueue;
   for (let i = 0; i < 80; i++) {
     sharedQueue = (await a.call('/api/state')).projectQueues['turn-queue:__harness'];
-    if (sharedQueue.find(e => e.sessionId === parallel.id)?.state === 'ready') break;
+    if (sharedQueue.find(e => e.sessionId === parallel.id)?.state === 'done') break;
     await pause();
   }
   assert.equal(sharedQueue.find(e => e.sessionId === s.id).number, 1);
   assert.equal(sharedQueue.find(e => e.sessionId === parallel.id).number, 2);
-  assert.equal(sharedQueue.find(e => e.sessionId === parallel.id).state, 'ready', 'later turn finishes preparation but waits for its publication slot');
-  assert.equal((await b.call('/api/state')).projectQueues['turn-queue:__harness'][1].state, 'ready');
+  assert.equal(sharedQueue.find(e => e.sessionId === parallel.id).state, 'done', 'an unchanged conversation finishes without waiting for publication');
+  assert.equal((await b.call('/api/state')).projectQueues['turn-queue:__harness'][1].state, 'done');
   release();
   let finished;
   for (let i = 0; i < 80; i++) {
@@ -137,6 +137,28 @@ try {
     await pause();
   }
   assert.equal((await a.request(`/api/sessions/${local.id}/machine`, 'POST', { ownerNode: b.status.self })).status, 409);
+  const repair = await a.call('/api/sessions', 'POST', { appId: '__harness', name: 'repair', mode: 'chat', model: 'model-b', ownerNode: b.status.self });
+  const changeQueue = async action => {
+    const response = await fetch(a.status.hosts[0].url + '/api/cluster/turn-queue', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-cluster-key': identity.secret },
+      body: JSON.stringify({ key: 'turn-queue:__harness', action }),
+    });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  await changeQueue({ op: 'enqueue', entry: { id: 'blocked-repair', key: 'turn-queue:__harness', sessionId: repair.id, owner: b.status.self, body: { text: 'previous' } } });
+  await changeQueue({ id: 'blocked-repair', owner: b.status.self, state: 'blocked', detail: 'remote rejected push' });
+  const repairSlot = (await a.call('/api/state')).projectQueues['turn-queue:__harness'].find(e => e.id === 'blocked-repair').number;
+  const accepted = await a.call(`/api/sessions/${repair.id}/send`, 'POST', { text: 'continue after failure' });
+  assert.equal(accepted.number, repairSlot);
+  let repaired;
+  for (let i = 0; i < 80; i++) {
+    repaired = await a.call(`/api/sessions/${repair.id}`);
+    if (repaired.events.some(e => e.type === 'assistant') && !repaired.turnHost) break;
+    await pause();
+  }
+  assert.ok(repaired.events.some(e => e.type === 'user' && e.text === 'continue after failure'));
+  assert.equal((await a.call('/api/state')).projectQueues['turn-queue:__harness'].find(e => e.sessionId === repair.id).state, 'done');
   const resumable = await a.call('/api/sessions', 'POST', { appId: '__harness', name: 'durable follow-up', mode: 'chat', model: 'model-b', ownerNode: b.status.self });
   b.child.kill('SIGKILL'); await b.closed;
   const queueRequest = await fetch(a.status.hosts[0].url + '/api/cluster/turn-queue', {

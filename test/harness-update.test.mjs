@@ -1,0 +1,37 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { syncHarnessCheckout } from '../src/core/tab-workspaces.js';
+
+const root = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-update-'));
+const git = (dir, ...args) => execFileSync('git', ['-c', 'user.name=test', '-c', 'user.email=test@localhost', ...args], { cwd: dir, stdio: 'pipe' }).toString().trim();
+try {
+  const remote = path.join(root, 'remote.git'), source = path.join(root, 'source'), installed = path.join(root, 'installed');
+  git(root, 'init', '--bare', '-b', 'main', remote);
+  git(root, 'clone', remote, source);
+  await fs.writeFile(path.join(source, 'app.txt'), 'one');
+  git(source, 'add', '.'); git(source, 'commit', '-m', 'initial'); git(source, 'push', 'origin', 'main');
+  git(root, 'clone', remote, installed);
+  const initial = git(installed, 'rev-parse', 'HEAD');
+  await fs.writeFile(path.join(source, 'app.txt'), 'two');
+  git(source, 'commit', '-am', 'update'); git(source, 'push');
+  assert.equal((await syncHarnessCheckout(installed, { busy: () => true })).skipped, 'busy');
+  assert.equal(git(installed, 'rev-parse', 'HEAD'), initial);
+  await fs.writeFile(path.join(installed, 'local.txt'), 'keep');
+  assert.equal((await syncHarnessCheckout(installed)).skipped, 'local changes');
+  await fs.unlink(path.join(installed, 'local.txt'));
+  const result = await syncHarnessCheckout(installed);
+  assert.equal(result.updated, true);
+  assert.equal(await fs.readFile(path.join(installed, 'app.txt'), 'utf8'), 'two');
+  assert.equal((await syncHarnessCheckout(installed)).updated, false);
+  await fs.writeFile(path.join(installed, 'local.txt'), 'local commit');
+  git(installed, 'add', '.'); git(installed, 'commit', '-m', 'local');
+  const local = git(installed, 'rev-parse', 'HEAD');
+  await fs.writeFile(path.join(source, 'app.txt'), 'three');
+  git(source, 'commit', '-am', 'remote'); git(source, 'push');
+  await assert.rejects(syncHarnessCheckout(installed));
+  assert.equal(git(installed, 'rev-parse', 'HEAD'), local, 'divergence never resets local work');
+  console.log('PASS idle clean harness updates fast-forward; busy, dirty and divergent copies are preserved');
+} finally { await fs.rm(root, { recursive: true, force: true }); }

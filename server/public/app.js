@@ -752,12 +752,22 @@ async function projectQueueSheet() {
   const key = `turn-queue:${session.appId || session.id}`;
   const entries = state.projectQueues?.[key] || [];
   openSheet(`<h2>Project turn queue</h2>
-    <p class="dim">Turns prepare in parallel and publish in numbered order. Each turn merges and checks the latest code in its slot. Blocked turns must be retried through Git or explicitly skipped.</p>
+    <p class="dim">Turns prepare in parallel and publish in numbered order. Each turn merges and checks the latest code in its slot. Send a follow-up in a blocked tab to continue its saved work in the same publication slot, retry publication here, or explicitly skip it.</p>
     ${entries.map(e => `<div class="item"><div class="grow"><div class="t">#${e.number} · ${esc(e.name)}</div><div class="s">${esc(e.state)} · ${esc(state.machines?.hosts?.find(h => h.id === e.owner)?.name || 'computer')}</div><div class="s">${esc(e.detail || '')}</div></div>
+      ${e.state === 'blocked' ? `<button class="ghost" data-retry-turn="${esc(e.sessionId)}">retry</button>` : ''}
       ${['queued', 'blocked'].includes(e.state) ? `<button class="ghost" data-skip-turn="${esc(e.id)}" data-turn-session="${esc(e.sessionId)}">skip</button>` : ''}</div>`).join('') || '<p class="dim">No turns queued yet.</p>'}
     <div class="actions"><button class="ghost" id="queue-refresh">refresh</button><button class="primary" id="queue-close">done</button></div>`);
   $('queue-close').onclick = closeSheet;
   $('queue-refresh').onclick = projectQueueSheet;
+  $('sheet').querySelectorAll('[data-retry-turn]').forEach(button => {
+    button.onclick = async () => {
+      button.disabled = true;
+      try {
+        await api(`/api/git/push?session=${encodeURIComponent(button.dataset.retryTurn)}`, { method: 'POST', body: JSON.stringify({ session: button.dataset.retryTurn }) });
+        await projectQueueSheet();
+      } catch (e) { showBanner(e.message); button.disabled = false; }
+    };
+  });
   $('sheet').querySelectorAll('[data-skip-turn]').forEach(button => {
     button.onclick = async () => {
       if (!confirm('Skip this turn’s publication slot? Its unfinished files stay on the original computer. Later turns may publish without it.')) return;
@@ -990,6 +1000,10 @@ async function refreshState() {
   // Assign field by field. A blanket Object.assign once let the server's
   // `running` (an array of busy session ids) land on top of the local boolean
   // of the same name - and [] is truthy, so send() silently refused forever.
+  if (s.harnessUpdate?.restartRequired && state.harnessUpdateRevision !== s.harnessUpdate.head) {
+    state.harnessUpdateRevision = s.harnessUpdate.head;
+    showBanner('Harness code was updated on this computer. Use Restart on the Harness app to apply it.');
+  }
   state.machines = s.machines;
   state.projectQueues = s.projectQueues || {};
   state.apps = s.apps ?? [];
