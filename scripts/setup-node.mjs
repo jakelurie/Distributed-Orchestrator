@@ -2,7 +2,6 @@ import { defaultDataDir } from '../src/core/platform.js';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import net from 'node:net';
 import { createInterface } from 'node:readline/promises';
 
@@ -17,8 +16,7 @@ try {
   const fallback = defaultDataDir();
   const dir = (await rl.question(`Data directory [${fallback}]: `)).trim() || fallback;
   if (!path.isAbsolute(dir) || /[\r\n"`]/.test(dir + name)) throw new Error('Use an absolute directory and a single-line machine name without quotes.');
-  const token = crypto.randomBytes(32).toString('hex');
-  const values = { HARNESS_PORT: port, HARNESS_DATA_DIR: dir, HARNESS_TOKEN: token, ORCHESTRATOR_NODE_NAME: name };
+  const values = { HARNESS_PORT: port, HARNESS_DATA_DIR: dir, ORCHESTRATOR_NODE_NAME: name };
   const body = Object.entries(values).map(([k, v]) => `${k}="${v}"`).join('\n') + '\n';
   await fs.writeFile('.orchestrator-node.env', body, { flag: 'wx', mode: 0o600 });
   console.log('Created .orchestrator-node.env. Existing files and data were not overwritten.');

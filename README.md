@@ -77,9 +77,8 @@ require a majority. See the recovery and browser-failover limits in the setup gu
 
 ## Using it from a phone
 
-`npm run serve` binds to your LAN and prints a URL. Set `HARNESS_TOKEN=auto` to
-require an access token that persists across restarts; leave it unset and the
-server is open to anyone on the network.
+`npm run serve` binds to your LAN and prints a local URL and a network URL. No
+access token is required: the server is open to anyone who can reach it.
 
 **The agent runs shell commands on the machine hosting it.** Treat the URL as a
 credential. To reach it away from home, put both devices on a private network —

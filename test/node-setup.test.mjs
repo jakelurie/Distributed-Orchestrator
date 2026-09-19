@@ -28,7 +28,7 @@ try {
   }
   assert.equal((await setup()).code, 0);
   const text = await fs.readFile(path.join(dir, '.orchestrator-node.env'), 'utf8');
-  assert.match(text, /HARNESS_TOKEN="[a-f0-9]{64}"/);
+  assert.doesNotMatch(text, /HARNESS_TOKEN/);
   assert.match(text, /ORCHESTRATOR_NODE_NAME="My PC"/);
   assert.equal((await fs.stat(path.join(dir, '.orchestrator-node.env'))).mode & 0o777, 0o600);
   assert.equal((await setup()).code, 1);

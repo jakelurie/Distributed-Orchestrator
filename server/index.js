@@ -2167,9 +2167,10 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
 }
 
 server.listen(PORT, '0.0.0.0', () => {
-  const host = `http://${lanAddress()}:${PORT}`;
-  console.log(`\n  harness is up for this network\n`);
-  console.log(`  ${host}/${TOKEN ? `?t=${TOKEN}` : ''}\n`);
+  const t = TOKEN ? `?t=${TOKEN}` : '';
+  console.log(`\n  harness is up\n`);
+  console.log(`  local:    http://localhost:${PORT}/${t}`);
+  console.log(`  network:  http://${lanAddress()}:${PORT}/${t}\n`);
   console.log(`  data: ${USER_DATA}`);
   console.log(TOKEN
     ? '  a token is required. bookmark the bare address; the cookie carries it.\n'
