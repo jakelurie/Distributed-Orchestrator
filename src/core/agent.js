@@ -269,7 +269,7 @@ async function closeOutTurn(opts, before) {
 
 async function runTurnInner({
   session, models, userText, attachments, onEvent, onDelta, save, signal, monitorsFile, activityCmd,
-  tailnetHost = null, queueContext = '',
+  tailnetHost = null, queueContext = '', machineHelp,
 }) {
   const append = async (event) => {
     session.events.push(event);
@@ -397,6 +397,7 @@ async function runTurnInner({
         // So an email says which session sent it: several may be running
         // unattended, and "it finished" is useless without knowing which.
         sessionId: session.id,
+        machineHelp,
       }, { signal, ms: spec.toolTimeoutMs ?? 120_000 });
       await append(
         toolResultEvent({ callId: call.id, name: call.name, ok: result.ok, output: result.output }),

@@ -31,7 +31,7 @@ export async function createCluster(dir, { port, request = fetch, onChange = () 
     const payload = JSON.stringify(body);
     // Elections must notice a switched-off host quickly; bulk catch-up and
     // snapshots get time proportional to their size (at least ~500 KB/s).
-    const timeout = ['admit', 'activate'].includes(route) ? 90000
+    const timeout = route === 'worker-help' ? 55000 : ['admit', 'activate'].includes(route) ? 90000
       : ['vote', 'prevote'].includes(body?.kind) ? 2500 : 5000 + Math.ceil(payload.length / 500_000) * 1000;
     const response = await request(new URL(`/api/cluster/${route}`, origin), {
       method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/json',
@@ -116,6 +116,11 @@ export async function createCluster(dir, { port, request = fetch, onChange = () 
       const leader = service.leader();
       if (!leader) throw new Error('Waiting for the coordinator.');
       return rpc(leader.url, 'model-secret', { alias, apiKey });
+    },
+    async hostHelp(id, request) {
+      const host = replica.members().find(n => n.id === id);
+      if (!host) throw new Error('Unknown computer');
+      return rpc(host.url, 'worker-help', request);
     },
     async hostModels(id) {
       const host = replica.members().find(n => n.id === id);

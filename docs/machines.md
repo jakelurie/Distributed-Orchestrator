@@ -336,3 +336,19 @@ is ordered, merged and checked against everyone else's changes. Numbering does
 not eliminate semantic conflicts or replace tests. The existing two-host
 partition limitation still applies; a reachable coordinator is required for
 shared queue mutations, and Git continues to reject non-fast-forward pushes.
+
+### Asking another computer for setup help
+
+Agents can use `machine_help` with a paired host ID, a `question`, and optionally
+`useClaude: true`. CLI agents can use the authenticated `POST /api/machine-help`
+endpoint with the same JSON fields (`host`, `question`, `useClaude`); the turn
+prompt supplies the local address. Host IDs come from `/api/cluster/status`.
+Requests go only to the named paired host and are not retried on another host.
+Both computers must restart onto a version supporting this route.
+
+The response reports that computer’s configured models and CLI installation
+checks. Optional Claude assistance runs there with tools disabled and interprets
+the diagnostic snapshot. It does not edit files, inspect arbitrary projects, or
+prove that a subscription is signed in or entitled to a particular model.
+Missing CLI installations and missing API keys disable models in the new-tab
+picker; installed CLIs still require working sign-in and model access.

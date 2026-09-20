@@ -122,6 +122,15 @@ const shellQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
 export const TOOLS = [
   {
+    name: 'machine_help',
+    description: 'Ask a paired computer for model installation/configuration diagnostics. Optionally ask its Claude CLI to explain the snapshot without tools. Does not edit files or verify service login.',
+    schema: { type: 'object', properties: { host: { type: 'string', description: 'Paired host ID from cluster status.' }, question: { type: 'string' }, useClaude: { type: 'boolean' } }, required: ['host'] },
+    async run(args, ctx) {
+      if (!ctx.machineHelp) throw new Error('Cross-machine diagnostics are unavailable in this runner.');
+      return JSON.stringify(await ctx.machineHelp(args));
+    },
+  },
+  {
     name: 'list_dir',
     description:
       'List the contents of a directory in the project. Use this before guessing at file paths.',

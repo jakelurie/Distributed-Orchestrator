@@ -46,6 +46,16 @@ try {
   assert.equal(reused.status, 401, 'join codes are one-use');
   await c.call('/api/cluster/join', 'POST', { url: a.origin, ownUrl: c.origin, token: 'cluster-test' });
   assert.equal((await b.call('/api/sessions/' + session.id)).name, 'shared');
+  const target = (await a.call('/api/cluster/status')).hosts.find(h => h.name === 'b');
+  const help = await a.call('/api/machine-help', 'POST', { host: target.id, question: 'Which models are configured?' });
+  assert.equal(help.machine.id, target.id);
+  assert.ok(Array.isArray(help.models));
+  const helpDenied = await fetch(b.origin + '/api/cluster/worker-help', { method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-harness-token': 'cluster-test' }, body: '{}' });
+  assert.equal(helpDenied.status, 403, 'worker diagnostics require cluster authentication');
+  const unknownHelp = await fetch(a.origin + '/api/machine-help', { method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-harness-token': 'cluster-test' }, body: JSON.stringify({ host: 'unknown' }) });
+  assert.ok(!unknownHelp.ok, 'unknown hosts are never substituted');
   const mainProcess = await a.call('/api/harness/status');
   const followerProcess = await b.call('/api/harness/status');
   assert.notEqual(followerProcess.instanceId, mainProcess.instanceId, 'restart status identifies the addressed host, not the leader');

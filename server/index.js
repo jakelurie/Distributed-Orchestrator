@@ -33,6 +33,7 @@ import { executionHosts, executionOwner, assignmentError, sessionWriteError, rec
 import { createCluster } from '../src/core/cluster/index.js';
 import { restartPeers } from '../src/core/cluster/restart.js';
 import { createNodes } from '../src/core/nodes.js';
+import { modelInventory, machineHelp } from '../src/core/machine-help.js';
 import { runTurn } from '../src/core/agent.js';
 import { loadConfig, patchModel, addModel } from '../src/core/config.js';
 import { resetClients } from '../src/core/providers/index.js';
@@ -502,6 +503,8 @@ async function dispatchMessage(id, body, reply, entry) {
 
   if (running.has(id)) return reply(409, { error: 'a turn is already running' });
   if (!cfg.models[session.model]) return reply(400, { error: 'Choose a model configured on this tab’s computer.' });
+  const inventory = await modelInventory(cfg);
+  if (!inventory.models[session.model]?.available) return reply(400, { error: inventory.models[session.model]?.availability || 'Model unavailable on this computer.' });
   session.queueTurn = { id: entry.id, number: entry.number, key: entry.key };
   const queueContext = queueSummary(await cluster.queue(entry.key), entry);
   const sentAt = session.events.length;
@@ -537,7 +540,9 @@ async function dispatchMessage(id, body, reply, entry) {
       session,
       models: cfg.models,
       userText: text,
-      queueContext,
+      queueContext: queueContext + `\n\nFor cross-machine setup diagnostics, GET http://127.0.0.1:${PORT}/api/cluster/status for host IDs, then POST JSON {host, question, useClaude} to http://127.0.0.1:${PORT}/api/machine-help using the same authentication as the activity command below. This returns installation/configuration checks; useClaude asks that computer’s Claude to interpret the snapshot without tools. It cannot inspect arbitrary files or edit another computer.`,
+      machineHelp: async ({ host, ...request }) => host === cluster.self.id
+        ? machineHelp(await loadConfig(USER_DATA), cluster.self, request) : cluster.hostHelp(host, request),
       attachments: Array.isArray(atts) ? atts : [],
       signal: controller.signal,
       save: async (s) => {
@@ -768,7 +773,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (pathname.startsWith('/api/cluster/')) {
       const route = pathname.slice('/api/cluster/'.length);
-      const internal = ['rpc', 'command', 'activate', 'read-session', 'worker-save', 'worker-models', 'model-secret', 'worker-stopped', 'turn-queue'];
+      const internal = ['rpc', 'command', 'activate', 'read-session', 'worker-save', 'worker-models', 'worker-help', 'model-secret', 'worker-stopped', 'turn-queue'];
       if (internal.includes(route) && !cluster.trusted(req)) return json(res, 403, { error: 'Cluster authentication required' });
       if (req.method === 'GET' && route === 'discover') return json(res, 200, await pairing.discover());
       if (req.method === 'GET' && route === 'status') return json(res, 200, cluster.status());
@@ -822,9 +827,10 @@ const server = http.createServer(async (req, res) => {
         resetClients();
         return json(res, 200, { ok: true });
       }
+      if (route === 'worker-help') return json(res, 200, await machineHelp(await loadConfig(USER_DATA), cluster.self, body));
       if (route === 'worker-models') {
         const cfg = await loadConfig(USER_DATA);
-        return json(res, 200, { models: Object.fromEntries(Object.entries(cfg.models).map(([id, m]) => [id, { ...m, apiKey: undefined }])), default: cfg.default });
+        return json(res, 200, await modelInventory(cfg));
       }
       if (route === 'request-join') return json(res, 200, await pairing.requestJoin(body.url));
       if (route === 'approve-host') return json(res, 200, await pairing.approve(body.url));
@@ -949,6 +955,14 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, n);
     }
 
+    if (req.method === 'POST' && pathname === '/api/machine-help') {
+      const { host, ...request } = await readBody(req);
+      const result = host === cluster.self.id
+        ? await machineHelp(await loadConfig(USER_DATA), cluster.self, request)
+        : await cluster.hostHelp(host, request);
+      return json(res, 200, result);
+    }
+
     if (req.method === 'GET' && pathname === '/api/execution-models') {
       const app = (await apps.load(USER_DATA)).find(a => a.id === url.searchParams.get('app'));
       const host = url.searchParams.get('host') || cluster.self.id;
@@ -956,7 +970,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 403, { error: 'This computer is not enabled for the project.' });
       if (host !== cluster.self.id) return json(res, 200, await cluster.hostModels(host));
       const cfg = await loadConfig(USER_DATA);
-      return json(res, 200, { models: Object.fromEntries(Object.entries(cfg.models).map(([id, m]) => [id, { ...m, apiKey: undefined }])), default: cfg.default });
+      return json(res, 200, await modelInventory(cfg));
     }
 
     if (req.method === 'GET' && pathname === '/api/state') {
@@ -991,7 +1005,7 @@ const server = http.createServer(async (req, res) => {
     // ---- model config, editable from the phone
     if (req.method === 'GET' && pathname === '/api/models/catalog') {
       const cfg = await loadConfig(USER_DATA);
-      return json(res, 200, { models: Object.fromEntries(Object.entries(cfg.models).map(([id, m]) => [id, { ...m, apiKey: undefined }])), default: cfg.default });
+      return json(res, 200, await modelInventory(cfg));
     }
     if (req.method === 'POST' && pathname === '/api/models/key') {
       const { alias, apiKey } = await readBody(req);
@@ -1714,8 +1728,9 @@ const server = http.createServer(async (req, res) => {
         const { hosts } = await sessionPlacement(session);
         const error = assignmentError(session, ownerNode, hosts);
         if (error) return json(res, 409, { error });
-        const inventory = ownerNode === cluster.self.id ? await loadConfig(USER_DATA) : await cluster.hostModels(ownerNode);
-        if (!inventory.models[session.model]) session.model = inventory.default;
+        const inventory = ownerNode === cluster.self.id ? await modelInventory(await loadConfig(USER_DATA)) : await cluster.hostModels(ownerNode);
+        if (!inventory.models[session.model]?.available) session.model = inventory.default;
+        if (!session.model) return json(res, 400, { error: 'No available models on this computer.' });
         // Assignment shares the same serialized commit path as worker writes.
         const assign = latest => {
           const changed = assignmentError(latest, ownerNode, hosts);
@@ -1732,7 +1747,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (req.method === 'GET' && id && verb === 'models') {
         const cfg = await loadConfig(USER_DATA);
-        return json(res, 200, { models: Object.fromEntries(Object.entries(cfg.models).map(([key, m]) => [key, { ...m, apiKey: undefined }])), default: cfg.default });
+        return json(res, 200, await modelInventory(cfg));
       }
       if (req.method === 'POST' && !id) {
         const { name, model, projectDir: askedDir, system, mode, appId, ownerNode: requestedOwner } = await readBody(req);
@@ -1758,8 +1773,9 @@ const server = http.createServer(async (req, res) => {
         // Typing a path that does not exist yet is a normal thing to do on a
         // phone; create it now rather than failing on the first tool call.
         if (projectDir && ownerNode === cluster.self.id) await fs.mkdir(projectDir, { recursive: true });
-        const inventory = ownerNode === cluster.self.id ? await loadConfig(USER_DATA) : await cluster.hostModels(ownerNode);
-        const selectedModel = inventory.models[model] ? model : inventory.default;
+        const inventory = ownerNode === cluster.self.id ? await modelInventory(await loadConfig(USER_DATA)) : await cluster.hostModels(ownerNode);
+        const selectedModel = inventory.models[model]?.available ? model : inventory.default;
+        if (!selectedModel) return json(res, 400, { error: 'No available models on this computer.' });
         const session = store.newSession({ name, model: selectedModel, projectDir, system, mode, appId: appId ?? null });
         session.ownerNode = ownerNode;
         if (editsHarness) session.editsHarness = true;

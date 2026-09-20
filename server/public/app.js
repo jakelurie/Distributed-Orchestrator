@@ -1138,9 +1138,9 @@ async function newSheet() {
     try {
       const inventory = await api(`/api/execution-models?app=${encodeURIComponent($('n-app').value)}&host=${encodeURIComponent($('n-computer').value)}`);
       if (request !== modelRequest || !$('n-computer')) return;
-      $('n-model').innerHTML = Object.values(inventory.models).map(m => `<option value="${esc(m.alias)}">${esc(m.label || m.alias)}${m.hasKey ? '' : ' — no key'}</option>`).join('');
-      $('n-model').value = inventory.models[draft.model] ? draft.model : inventory.default;
-      $('n-go').disabled = false;
+      $('n-model').innerHTML = Object.values(inventory.models).map(m => `<option value="${esc(m.alias)}" ${m.available === false ? 'disabled' : ''}>${esc(m.label || m.alias)}${m.available === false ? ' — ' + esc(m.availability) : m.hasKey ? '' : ' — no key'}</option>`).join('');
+      $('n-model').value = inventory.models[draft.model]?.available !== false && inventory.models[draft.model] ? draft.model : inventory.default;
+      $('n-go').disabled = !inventory.default;
     } catch (e) { if (request === modelRequest) showBanner(e.message); }
   };
   $('n-computer').onchange = loadComputerModels;
