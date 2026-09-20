@@ -671,12 +671,12 @@ async function openProject(app) {
   if (openingProjects.has(app.id)) return;
   openingProjects.add(app.id);
   try {
-    let session = projectSession(app);
+    const session = projectSession(app);
     if (!session) {
       if (state.sessions.some(s => s.appId === app.id)) return showBanner('This app’s tabs are on offline computers. Reconnect a computer to open its tabs.');
-      session = await api('/api/sessions', { method: 'POST',
-        body: JSON.stringify({ appId: app.id, name: nextTabName(app.id), model: state.default }) });
-      state.sessions.unshift(session);
+      draft = { appId: app.id };
+      await newSheet();
+      return;
     }
     await openSession(session.id);
   } catch (e) { showBanner(e.message, true); }

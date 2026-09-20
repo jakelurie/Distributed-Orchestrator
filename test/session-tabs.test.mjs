@@ -7,11 +7,11 @@ const $ = (id) => {
   if (!nodes.has(id)) nodes.set(id, { querySelectorAll: () => [] });
   return nodes.get(id);
 };
-const calls = [], opened = [];
+const calls = [], opened = [], sheets = [];
 const state = { sessions: [{ id: 'one', appId: 'a', name: 'One' }, { id: 'two', appId: 'a', name: 'Two' }, { id: 'other', appId: 'b', name: 'Other' }], default: 'model' };
 const context = { state, $, esc: String, sessionStorageKey: 'host', localStorage: { getItem: () => 'two' },
   openSession: async id => opened.push(id), api: async (url, opts) => { calls.push(JSON.parse(opts.body)); return { id: 'new', appId: 'empty' }; },
-  showBanner: assert.fail, sessionOptionsSheet() {}, newSheet() {}, draft: {},
+  showBanner: assert.fail, sessionOptionsSheet() {}, newSheet() { sheets.push({ ...context.draft }); }, draft: {},
 };
 vm.createContext(context);
 vm.runInContext(source.slice(source.indexOf('function nextTabName('), source.indexOf('function sessionOptionsSheet(')), context);
@@ -21,9 +21,14 @@ state.session = state.sessions[0];
 await context.openProject({ id: 'a' });
 assert.equal(opened.at(-1), 'one');
 await context.openProject({ id: 'empty', name: 'Empty' });
-assert.deepEqual(calls[0], { appId: 'empty', name: 'Tab 1', model: 'model' });
+assert.deepEqual(sheets.at(-1), { appId: 'empty' });
+assert.equal(calls.length, 0, 'opening an empty app never creates a default session');
+assert.equal(opened.at(-1), 'one', 'opening the form does not open a new session');
+context.draft = { appId: 'other', ownerNode: 'pc', model: 'old-model' };
 await context.openProject({ id: 'empty', name: 'Empty' });
-assert.equal(calls.length, 1);
+assert.deepEqual(sheets.at(-1), { appId: 'empty' }, 'a fresh form does not inherit another draft’s computer or model');
+assert.equal(calls.length, 0);
+assert.equal(state.sessions.length, 3, 'canceling and reopening leaves the session list unchanged');
 context.paintSessionTabs();
 assert.match($('session-tabs').innerHTML, /One/);
 assert.match($('session-tabs').innerHTML, /Two/);
@@ -66,7 +71,7 @@ assert.doesNotMatch(card, /app-sessions|data-new-in/);
 assert.doesNotMatch(source, /session-fork|data-fork|forkSheet|Fork onto another model/);
 assert.match(source, /id="session-edit"/);
 assert.match(source, /id="session-delete"/);
-console.log('PASS app chat selection, empty app creation, scoped tabs and new-session app selection');
+console.log('PASS app chat selection, empty app session form, scoped tabs and new-session app selection');
 
 state.sessions = [
   { appId: 'a', name: 'Tab 1' },
@@ -110,21 +115,26 @@ context.paintSessionTabs();
 assert.deepEqual(tabIds(), ['offline', 'online']);
 assert.doesNotMatch($('session-tabs').innerHTML, /disabled/);
 
+let finishSheet;
+context.newSheet = async () => {
+  sheets.push({ ...context.draft });
+  await new Promise(resolve => { finishSheet = resolve; });
+};
+const before = sheets.length;
+const first = context.openProject({ id: 'double-click' });
+await context.openProject({ id: 'double-click' });
+assert.equal(sheets.length, before + 1);
+finishSheet();
+await first;
+assert.equal(calls.length, 0, 'double-clicking an empty app only opens the form');
+
+// Exercise the create button itself while its request is still pending.
 let finishCreation;
 context.api = async () => {
   calls.push('concurrent');
   await new Promise(resolve => { finishCreation = resolve; });
-  return { id: 'single', appId: 'double-click' };
+  return { id: 'single', appId: 'a' };
 };
-const before = calls.length;
-const first = context.openProject({ id: 'double-click' });
-await context.openProject({ id: 'double-click' });
-assert.equal(calls.length, before + 1);
-finishCreation();
-await first;
-assert.equal(state.sessions.filter(s => s.id === 'single').length, 1);
-
-// Exercise the create button itself while its request is still pending.
 for (const [id, value] of Object.entries({ 'n-dir': '/project', 'n-app': 'a', 'n-computer': 'mac',
   'n-name': '', 'n-model': 'model', 'n-mode': 'agent', 'n-sys': '' })) $(id).value = value;
 state.home = '/home';
