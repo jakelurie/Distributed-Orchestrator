@@ -51,6 +51,7 @@ import * as codexCli from '../src/core/providers/codex-cli.js';
 import { refuseAsProjectDir } from '../src/core/harness-guard.js';
 import { loadEmailConfig, saveEmailConfig } from '../src/core/email-config.js';
 import * as apps from '../src/core/apps.js';
+import { viewerAddress } from '../src/core/cluster/viewers.js';
 import { createNetworkGate } from '../src/core/network-gate.js';
 import { networkStatus, setupPhoneAccess } from '../src/core/tailscale.js';
 import { createBeacons, wedgeMessage, stallMsFor } from '../src/core/beacon.js';
@@ -814,7 +815,7 @@ const server = http.createServer(async (req, res) => {
       if (route === 'invite') return json(res, 200, cluster.invite());
       if (route === 'rpc') return json(res, 200, await cluster.replica.receive(body));
       if (route === 'command') { await cluster.replica.propose(body); return json(res, 200, { ok: true }); }
-      if (route === 'viewer') return json(res, 200, await cluster.viewer(body, req.headers['user-agent'] || ''));
+      if (route === 'viewer') return json(res, 200, await cluster.viewer(body, req.headers['user-agent'] || '', viewerAddress(req)));
       if (route === 'name') {
         if (!cluster.replica.members().some((n) => n.id === body.id)) return json(res, 400, { error: 'Unknown host' });
         const name = typeof body.name === 'string' ? body.name.trim() : '';

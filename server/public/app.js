@@ -1507,7 +1507,7 @@ async function machinesSheet() {
   openSheet(`<h2>Machines</h2>
     <div id="cluster-summary" role="status">Checking machines…</div>
     <h3>Orchestrator hosts</h3><p class="dim">Preferred main is used at the next election; it does not interrupt a healthy main.</p><div id="machine-list"></div>
-    <h3>Phones &amp; browser viewers</h3><div id="viewer-list"></div>
+    <h3>Tailscale viewers</h3><div id="viewer-list"></div>
     <h3>Tailscale devices</h3><p class="dim">Network presence is separate from running this app. Devices are remembered after going offline; joining requires your approval.</p>
     <div id="tailnet-list">Checking Tailscale…</div>
     <h3>Add another host</h3>
@@ -1562,7 +1562,7 @@ async function machinesSheet() {
         } catch (e) { showBanner(e.message); }
       };
     }; });
-    $('viewer-list').innerHTML = data.viewers.map((v) => `<div class="item machine-item"><div class="grow"><div class="t">${esc(v.name)}</div><div class="s">${v.active ? 'connected' : 'disconnected'} · last activity ${esc(seen(v.lastSeen))}</div><div class="s">First seen ${esc(seen(v.firstSeen))}</div></div></div>`).join('') || '<p class="dim">No browser heartbeat received yet. This view updates when you refresh.</p>';
+    $('viewer-list').innerHTML = data.viewers.filter(v => v.active).map((v) => `<div class="item machine-item"><div class="grow"><div class="t">${esc(v.name)}</div><div class="s">Connected via Tailscale</div></div></div>`).join('') || '<p class="dim">No Tailscale viewers connected.</p>';
     $('cluster-join').hidden = data.hosts.filter((n) => n.member).length > 1;
     for (const issue of data.placementIssues || []) {
       const message = document.createElement('p');

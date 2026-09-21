@@ -47,8 +47,13 @@ function blankState(initial) {
 function applyCommand(state, c) {
   if (c.type === 'session') {
     if (c.value === null) delete state.sessions[c.id]; else state.sessions[c.id] = c.value;
-  } else if (c.type === 'viewer') state.viewers[c.value.id] = c.value;
-  else if (c.type === 'preferred') state.preferred = c.id;
+  } else if (c.type === 'viewer' || c.type === 'viewer-v2') {
+    if (c.version === 2) {
+      for (const [id, viewer] of Object.entries(state.viewers))
+        if (viewer.version !== 2 || c.at - viewer.lastSeen >= 45000) delete state.viewers[id];
+    }
+    if (c.value) state.viewers[c.value.id] = c.value;
+  } else if (c.type === 'preferred') state.preferred = c.id;
   else if (c.type === 'configuration') for (const node of c.members) state.history[node.id] = node;
   else if (c.type === 'value') { if (c.value === null) delete state.values[c.id]; else state.values[c.id] = c.value; }
 }

@@ -78,7 +78,7 @@ try {
   assert.ok(survivor, 'a surviving majority elects a coordinator');
   assert.equal((await survivor.call('/api/sessions/' + session.id)).name, 'replicated rename');
   assert.equal((await survivor.call('/api/cluster/status')).hosts.length, 3);
-  assert.equal((await survivor.call('/api/cluster/status')).viewers.length, 1);
+  assert.equal((await survivor.call('/api/cluster/status')).viewers.length, 0, 'localhost is not a viewer');
   const unavailable = await fetch(survivor.origin + '/api/sessions/' + session.id, { method: 'PATCH',
     headers: { 'Content-Type': 'application/json', 'x-harness-token': 'cluster-test' }, body: JSON.stringify({ name: 'after crash' }) });
   assert.equal(unavailable.status, 503, 'an offline owner is never silently replaced for a mutation');

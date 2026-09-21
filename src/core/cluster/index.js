@@ -160,7 +160,7 @@ export async function createCluster(dir, { port, request = fetch, onChange = () 
           lastSeen: n.id === self.id ? now : seen(n.id) || null,
           member: members.some((m) => m.id === n.id),
         })),
-        viewers: Object.values(replica.state.viewers).map((v) => ({ ...v, active: now - v.lastSeen < 45000 })),
+        viewers: Object.values(replica.state.viewers).filter(v => v.version === 2 && now - v.lastSeen < 45000).map((v) => ({ ...v, active: now - v.lastSeen < 45000 })),
       };
     },
     async command(command) {
@@ -169,14 +169,16 @@ export async function createCluster(dir, { port, request = fetch, onChange = () 
       if (!leader) throw new Error('Choosing a coordinator. Retry after the machines reconnect.');
       await rpc(leader.url, 'command', command);
     },
-    async viewer(body, userAgent) {
-      if (!/^[a-zA-Z0-9-]{16,80}$/.test(body.id || '')) throw new Error('Invalid viewer identity');
-      const old = replica.state.viewers[body.id];
+    async viewer(body, userAgent, address = '') {
+      // Browser storage IDs multiply across hosts and reinstalls. A tailnet
+      // address identifies the same device across browsers and paired hosts.
       const now = Date.now();
-      const value = { id: body.id, name: String(body.name || old?.name || (/iPhone|Android.*Mobile/i.test(userAgent) ? 'Phone browser' : 'Computer browser')).slice(0, 100),
+      const value = address ? { id: crypto.createHash('sha256').update(address).digest('hex'),
+        name: /iPhone|Android.*Mobile/i.test(userAgent) ? 'Phone' : /iPad|Tablet/i.test(userAgent) ? 'Tablet' : 'Computer',
         kind: /iPhone|Android.*Mobile/i.test(userAgent) ? 'phone' : /iPad|Tablet/i.test(userAgent) ? 'tablet' : 'browser',
-        firstSeen: old?.firstSeen || now, lastSeen: now, hostId: self.id };
-      await service.command({ type: 'viewer', value });
+        version: 2, lastSeen: now, hostId: self.id } : null;
+      if (value || Object.values(replica.state.viewers).some(v => v.version !== 2 || now - v.lastSeen >= 45000))
+        await service.command({ type: 'viewer-v2', value, version: 2, at: now });
       return { ...service.status(), ticket: service.ticket() };
     },
     async join({ url, token, ownUrl }, sessions = [], values = {}) {

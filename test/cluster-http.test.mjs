@@ -40,7 +40,7 @@ try {
   await a.replica.replicate();
   assert.equal(c.status().mode, 'majority consensus');
   assert.equal(c.status().quorum, 2);
-  await b.viewer({ id: 'viewer-test-123456789' }, 'iPhone'); await a.replica.replicate();
+  await b.viewer({ id: 'viewer-test-123456789' }, 'iPhone', '100.90.80.70'); await a.replica.replicate();
   assert.equal(c.status().viewers.length, 1);
   assert.equal(c.status().viewers[0].kind, 'phone');
   console.log('PASS real HTTP onboarding one → two → three, cross-host viewers, and tickets');
