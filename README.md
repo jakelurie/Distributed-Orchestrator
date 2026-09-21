@@ -56,6 +56,11 @@ npm start          # native launcher
 npm test           # the suite
 ```
 
+Tailscale must be connected on the host before using Harness. If it is stopped,
+the browser displays a blocking connection error and checks again automatically.
+Connect Tailscale to resume without restarting Harness. Normal API requests are
+also rejected while disconnected.
+
 On first run a `models.json` is written to your OS application-support
 directory (`~/Library/Application Support/harness` on macOS). Copy
 `models.json.example` over it as a starting point and edit, or configure
@@ -142,9 +147,12 @@ A session is confined to its project directory. It can be granted other folders
 as **read-only**, for one project that consumes another's output.
 
 Coding tabs use separate Git worktrees. With **check & integrate after each turn**
-enabled, finished tabs enter a per-project queue. The harness commits only that
-tab, merges the current project branch into it, runs checks, and fast-forwards the
-shared project only if checks pass. Small tasks can land while other tabs keep
+enabled, each finished tab attempts integration independently. The harness commits
+that tab, fetches and merges the latest local and remote changes, runs checks, and
+pushes without force. If another tab pushes first, it fetches, merges, and tests
+again, up to three attempts. There is no project turn queue or reserved turn slot.
+The local checkout is updated after a successful push; projects without a remote
+can integrate locally. Local Git operations still use a repository lock. Small tasks can land while other tabs keep
 working. Conflicts, failed checks, cancellation, and uncommitted shared edits do
 not publish the tab. Its files and branch remain available for correction.
 
@@ -167,8 +175,8 @@ after confirming no harness process is integrating the project.
 
 Tabs can operate on their current cluster host, but their Git worktrees cannot
 yet migrate between hosts. Reconnect the original host to resume such a tab.
-Independent external editors and Git commands do not participate in the harness
-queue; keep the shared checkout idle during integration. Changes to the running
+Independent external editors and Git commands do not use the harness’s
+repository lock; keep the shared checkout idle during integration. Changes to the running
 harness still require a restart after integration.
 
 ## Layout

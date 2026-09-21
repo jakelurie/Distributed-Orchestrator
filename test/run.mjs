@@ -9,7 +9,7 @@ let failed = 0;
 
 for (const file of readdirSync(dir).filter((f) => f.endsWith('.test.mjs')).sort()) {
   console.log(`\n\x1b[1m${file}\x1b[0m`);
-  const res = spawnSync(process.execPath, [path.join(dir, file)], { stdio: 'inherit' });
+  const res = spawnSync(process.execPath, [path.join(dir, file)], { stdio: 'inherit', env: { ...process.env, ORCHESTRATOR_TAILSCALE_BIN: path.join(dir, 'fixtures/tailscale-connected.mjs'), ORCHESTRATOR_TAILSCALE_SOCKET: '' } });
   if (res.status !== 0) failed += 1;
 }
 

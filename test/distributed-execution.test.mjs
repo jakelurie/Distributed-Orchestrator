@@ -15,7 +15,7 @@ const mock = http.createServer(async (req, res) => {
   const body = JSON.parse(Buffer.concat(chunks));
   res.writeHead(200, { 'Content-Type': 'text/event-stream' });
   res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: body.model }, finish_reason: null }] })}\n\n`);
-  if (body.messages.some(m => m.content === 'wait')) await new Promise(r => { release = r; });
+  if (body.messages.at(-1)?.content === 'wait') await new Promise(r => { release = r; });
   res.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
 });
 await new Promise(r => mock.listen(0, '127.0.0.1', r));
@@ -64,16 +64,15 @@ try {
   assert.equal((await a.request(`/api/sessions/${s.id}/machine`, 'POST', { ownerNode: a.status.self })).status, 409);
   const parallel = await a.call('/api/sessions', 'POST', { appId: '__harness', name: 'parallel', mode: 'chat', model: 'model-a', ownerNode: a.status.self });
   await b.call(`/api/sessions/${parallel.id}/send`, 'POST', { text: 'hello' });
-  let sharedQueue;
+  let parallelResult;
   for (let i = 0; i < 80; i++) {
-    sharedQueue = (await a.call('/api/state')).projectQueues['turn-queue:__harness'];
-    if (sharedQueue.find(e => e.sessionId === parallel.id)?.state === 'done') break;
+    parallelResult = await a.call(`/api/sessions/${parallel.id}`);
+    if (!parallelResult.turnHost && parallelResult.events.some(e => e.type === 'assistant')) break;
     await pause();
   }
-  assert.equal(sharedQueue.find(e => e.sessionId === s.id).number, 1);
-  assert.equal(sharedQueue.find(e => e.sessionId === parallel.id).number, 2);
-  assert.equal(sharedQueue.find(e => e.sessionId === parallel.id).state, 'done', 'an unchanged conversation finishes without waiting for publication');
-  assert.equal((await b.call('/api/state')).projectQueues['turn-queue:__harness'][1].state, 'done');
+  assert.ok(parallelResult.events.some(e => e.type === 'assistant'));
+  assert.ok((await a.call('/api/state')).running.includes(s.id), 'another tab completes while the first is busy');
+  assert.equal((await a.call('/api/state')).projectQueues, undefined);
   release();
   let finished;
   for (let i = 0; i < 80; i++) {
@@ -85,13 +84,6 @@ try {
   assert.equal(finished.ownerNode, b.status.self);
   assert.ok(finished.events.some(e => e.type === 'assistant' && e.text === 'model-b'));
   assert.equal((await a.request(`/api/sessions/${s.id}/rewind`, 'POST', { eventId: finished.events[0].id, revertFiles: true })).status, 409, 'file rewind cannot bypass publication order');
-  for (let i = 0; i < 80; i++) {
-    sharedQueue = (await a.call('/api/state')).projectQueues['turn-queue:__harness'];
-    if (sharedQueue.every(e => e.state === 'done')) break;
-    await pause();
-  }
-  assert.ok(sharedQueue.every(e => e.state === 'done'));
-  assert.equal(finished.events.find(e => e.type === 'user').turnNumber, 1);
   const stale = structuredClone(finished);
   const moved = await a.call(`/api/sessions/${s.id}/machine`, 'POST', { ownerNode: a.status.self });
   assert.equal(moved.ownerNode, a.status.self);
@@ -137,66 +129,21 @@ try {
     await pause();
   }
   assert.equal((await a.request(`/api/sessions/${local.id}/machine`, 'POST', { ownerNode: b.status.self })).status, 409);
-  const repair = await a.call('/api/sessions', 'POST', { appId: '__harness', name: 'repair', mode: 'chat', model: 'model-b', ownerNode: b.status.self });
-  const changeQueue = async action => {
-    const response = await fetch(a.status.hosts[0].url + '/api/cluster/turn-queue', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-cluster-key': identity.secret },
-      body: JSON.stringify({ key: 'turn-queue:__harness', action }),
-    });
-    assert.equal(response.status, 200);
-    return response.json();
-  };
-  await changeQueue({ op: 'enqueue', entry: { id: 'blocked-repair', key: 'turn-queue:__harness', sessionId: repair.id, owner: b.status.self, body: { text: 'previous' } } });
-  await changeQueue({ id: 'blocked-repair', owner: b.status.self, state: 'blocked', detail: 'remote rejected push' });
-  const repairSlot = (await a.call('/api/state')).projectQueues['turn-queue:__harness'].find(e => e.id === 'blocked-repair').number;
-  const accepted = await a.call(`/api/sessions/${repair.id}/send`, 'POST', { text: 'continue after failure' });
-  assert.equal(accepted.number, repairSlot);
-  let repaired;
-  for (let i = 0; i < 80; i++) {
-    repaired = await a.call(`/api/sessions/${repair.id}`);
-    if (repaired.events.some(e => e.type === 'assistant') && !repaired.turnHost) break;
-    await pause();
-  }
-  assert.ok(repaired.events.some(e => e.type === 'user' && e.text === 'continue after failure'));
-  assert.equal((await a.call('/api/state')).projectQueues['turn-queue:__harness'].find(e => e.sessionId === repair.id).state, 'done');
-  const queuedRepair = await a.call('/api/sessions', 'POST', { appId: '__harness', name: 'already queued repair', mode: 'chat', model: 'model-b', ownerNode: b.status.self });
-  b.child.kill('SIGKILL'); await b.closed;
-  await changeQueue({ op: 'enqueue', entry: { id: 'failed-before-followup', key: 'turn-queue:__harness', sessionId: queuedRepair.id, owner: b.status.self, kind: 'integration', body: {} } });
-  await changeQueue({ id: 'failed-before-followup', owner: b.status.self, state: 'preparing' });
-  await changeQueue({ op: 'enqueue', allowQueue: true, entry: { id: 'queued-before-failure', key: 'turn-queue:__harness', sessionId: queuedRepair.id, owner: b.status.self, body: { text: 'recover queued work' } } });
-  await changeQueue({ id: 'failed-before-followup', owner: b.status.self, state: 'blocked', detail: 'push failed' });
-  await b.restart();
-  let queuedResult;
-  for (let i = 0; i < 100; i++) {
-    queuedResult = (await a.call('/api/state')).projectQueues['turn-queue:__harness'];
-    if (queuedResult.find(e => e.id === 'queued-before-failure')?.state === 'done') break;
-    await pause();
-  }
-  assert.equal(queuedResult.find(e => e.id === 'queued-before-failure').state, 'done', 'pump runs a follow-up queued before the preceding failure');
-  assert.equal(queuedResult.find(e => e.id === 'failed-before-followup').state, 'cancelled');
-  assert.ok((await a.call('/api/sessions/' + queuedRepair.id)).events.some(e => e.type === 'user' && e.text === 'recover queued work'));
-  const resumable = await a.call('/api/sessions', 'POST', { appId: '__harness', name: 'durable follow-up', mode: 'chat', model: 'model-b', ownerNode: b.status.self });
-  b.child.kill('SIGKILL'); await b.closed;
-  const queueRequest = await fetch(a.status.hosts[0].url + '/api/cluster/turn-queue', {
+  // Legacy durable queue values cannot block new turns or replay old requests.
+  const legacy = await fetch(a.status.hosts[0].url + '/api/cluster/command', {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'x-cluster-key': identity.secret },
-    body: JSON.stringify({ key: 'turn-queue:__harness', action: { op: 'enqueue', entry: {
-      id: 'durable-followup', key: 'turn-queue:__harness', sessionId: resumable.id,
-      name: resumable.name, owner: b.status.self, body: { text: 'after restart' },
-    } } }),
+    body: JSON.stringify({ type: 'value', id: 'turn-queue:__harness', value: { next: 2, entries: [
+      { id: 'old', sessionId: s.id, owner: a.status.self, state: 'blocked', number: 1 },
+    ] } }),
   });
-  assert.equal(queueRequest.status, 200);
-  await b.restart();
-  let resumed;
-  for (let i = 0; i < 100; i++) {
-    try { resumed = await a.call('/api/sessions/' + resumable.id); }
-    catch { await pause(); continue; }
-
-    if (resumed.events.some(e => e.type === 'assistant') && !resumed.turnHost) break;
+  assert.equal(legacy.status, 200);
+  await a.call(`/api/sessions/${s.id}/send`, 'POST', { text: 'continue without a queue' });
+  for (let i = 0; i < 80; i++) {
+    const value = await a.call(`/api/sessions/${s.id}`);
+    if (!value.turnHost && value.events.some(e => e.text === 'continue without a queue')
+      && !(await a.call('/api/state')).running.includes(s.id)) break;
     await pause();
   }
-  assert.equal(resumed.events.filter(e => e.type === 'user' && e.text === 'after restart').length, 1);
-  assert.ok(resumed.events.some(e => e.type === 'assistant' && e.text === 'model-b'));
-  assert.equal((await a.call('/api/state')).projectQueues['turn-queue:__harness'].find(e => e.id === 'durable-followup').state, 'done');
   await a.call(`/api/sessions/${s.id}`, 'DELETE');
   console.log('PASS follower-owned turns, local model inventories, SSE proxy, busy assignment guard, single-host eligibility and commands from another computer');
 } finally {

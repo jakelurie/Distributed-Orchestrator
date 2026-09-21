@@ -35,6 +35,7 @@ const down = await configurePhoneAccess(8787, async (args) => {
   assert.equal(args[0], 'status'); return { stdout: '{"BackendState":"NeedsLogin"}' };
 });
 assert.equal(down.connected, false);
+assert.equal((await networkStatus(8787, async () => ({ stdout: JSON.stringify({ BackendState: 'Running', Self: { Online: false } }) }))).connected, false, 'a running daemon that reports this host offline is not connected');
 assert.match(down.message, /sign in/);
 assert.match((await networkStatus(8787, async () => { throw Error('missing'); })).message, /Install/);
 serving = {};

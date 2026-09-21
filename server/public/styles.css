@@ -771,3 +771,7 @@ button.primary.danger:active { background: #db5f78; }
 .turn-commit { display: inline-flex; align-items: center; min-height: 44px; padding: 0 6px; color: var(--accent); white-space: nowrap; }
 
 .machine-address { display: flex; align-items: center; min-height: 44px; color: var(--accent); overflow-wrap: anywhere; word-break: break-word; }
+
+#network-gate { position: fixed; inset: 0; z-index: 10000; background: var(--bg); color: var(--fg); padding: max(24px, env(safe-area-inset-top)) 24px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; }
+#network-gate[hidden] { display: none; }
+#network-gate p { max-width: 36rem; color: var(--fg-dim); overflow-wrap: anywhere; }

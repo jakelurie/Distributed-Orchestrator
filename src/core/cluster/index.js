@@ -6,7 +6,6 @@ import http from 'node:http';
 import https from 'node:https';
 import { Replica, atomic, quorum } from './raft.js';
 import { sessionWriteError } from './execution.js';
-import { projectQueue } from '../project-queue.js';
 import { numberedMachines } from './machines.js';
 
 const sameSecret = (a, b) => {
@@ -59,21 +58,8 @@ export async function createCluster(dir, { port, request = fetch, onChange = () 
     });
   }
   const sessionWrites = new Map();
-  const turns = projectQueue({
-    read: async key => structuredClone(replica.state.values[key] || { next: 1, entries: [] }),
-    write: (key, value) => replica.propose({ type: 'value', id: key, value }),
-  });
   const service = {
     replica, self,
-    async queue(key, action) {
-      if (replica.role !== 'leader') {
-        const leader = service.leader();
-        if (!leader) throw new Error('Waiting for the coordinator.');
-        return rpc(leader.url, 'turn-queue', { key, action });
-      }
-      if (!replica.writable()) throw new Error('Coordinator lost quorum.');
-      return action ? turns.change(key, action) : turns.read(key);
-    },
     async readSession(id, metadata = false) {
       if (replica.role === 'leader') {
         if (!replica.writable()) throw new Error('Coordinator lost quorum.');

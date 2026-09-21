@@ -45,7 +45,7 @@ export async function networkStatus(port, run = tailscale) {
   const result = { localUrl: `http://127.0.0.1:${port}`, phoneUrl: '', connected: false, ready: false };
   try {
     const state = JSON.parse((await run(['status', '--json'])).stdout);
-    result.connected = state.BackendState === 'Running';
+    result.connected = state.BackendState === 'Running' && state.Self?.Online !== false;
     if (!result.connected) return { ...result, message: 'Open Tailscale on this host and sign in or connect. Then check again.' };
   } catch {
     return { ...result, message: 'Tailscale unavailable. Install and open Tailscale on this host, then check again. Custom installations can set ORCHESTRATOR_TAILSCALE_BIN and ORCHESTRATOR_TAILSCALE_SOCKET.' };

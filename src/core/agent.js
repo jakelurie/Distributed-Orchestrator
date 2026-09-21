@@ -269,7 +269,7 @@ async function closeOutTurn(opts, before) {
 
 async function runTurnInner({
   session, models, userText, attachments, onEvent, onDelta, save, signal, monitorsFile, activityCmd,
-  tailnetHost = null, queueContext = '', machineHelp,
+  tailnetHost = null, executionContext = '', machineHelp,
 }) {
   const append = async (event) => {
     session.events.push(event);
@@ -280,7 +280,6 @@ async function runTurnInner({
 
   if (userText?.trim() || attachments?.length) {
     const event = userEvent(userText?.trim() ?? '', attachments ?? []);
-    if (session.queueTurn) event.turnNumber = session.queueTurn.number;
     await append(event);
   }
 
@@ -328,7 +327,7 @@ async function runTurnInner({
         client: clientFor(spec),
         spec,
         events,
-        system: systemPromptFor(session, monitorsFile, activityCmd, tailnetHost) + (queueContext ? `\n\n${queueContext}` : ''),
+        system: systemPromptFor(session, monitorsFile, activityCmd, tailnetHost) + (executionContext ? `\n\n${executionContext}` : ''),
         onText: (text) => onDelta?.({ kind: 'text', text }),
         onThinking: (text) => onDelta?.({ kind: 'thinking', text }),
         onToolStart: (call) => onDelta?.({ kind: 'tool_start', call }),

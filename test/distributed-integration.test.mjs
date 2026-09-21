@@ -42,7 +42,7 @@ try {
   await fs.writeFile(path.join(remote, 'hooks', 'pre-receive'), '#!/bin/sh\n[ "$GH_TOKEN" = integration-test-token ]\n', { mode: 0o755 });
   let checked = 0, resume, retries = 0;
   const barrier = new Promise(resolve => { resume = resolve; });
-  const options = { distributed: true,
+  const options = { push: true,
     onCheck: async () => { if (++checked === 2) resume(); await barrier; },
     onWaiting: () => { retries++; },
   };
@@ -51,6 +51,13 @@ try {
   assert.ok(results.every(r => r.pushed));
   assert.equal(await git(remote, 'show', 'main:a.txt'), 'from a');
   assert.equal(await git(remote, 'show', 'main:b.txt'), 'from b');
+  const gated = { id: 'gated', projectDir: a };
+  await prepareTab(gated, { distributed: true });
+  await fs.writeFile(path.join(gated.tabWorkspace.dir, 'gated.txt'), 'saved during disconnect');
+  const beforeGate = await git(remote, 'rev-parse', 'main');
+  await assert.rejects(integrateTab(gated, { push: true, beforePublish: () => { throw Error('Turn on Tailscale'); } }), /Turn on Tailscale/);
+  assert.equal(await git(remote, 'rev-parse', 'main'), beforeGate, 'disconnect before publication leaves the remote unchanged');
+  assert.equal(await fs.readFile(path.join(gated.tabWorkspace.dir, 'gated.txt'), 'utf8'), 'saved during disconnect');
   const ca = { id: 'ca', projectDir: a }, cb = { id: 'cb', projectDir: b };
   await Promise.all([prepareTab(ca, { distributed: true }), prepareTab(cb, { distributed: true })]);
   await fs.writeFile(path.join(ca.tabWorkspace.dir, 'shared.txt'), 'from a\n');
