@@ -757,14 +757,9 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET' && route === 'status') return json(res, 200, cluster.status());
       if (req.method === 'GET' && route === 'devices') {
         const observed = await inventory();
-        await cluster.command({ type: 'value', id: 'devices:' + cluster.self.id, value: observed.devices });
-        const devices = new Map();
-        for (const [id, entries] of Object.entries(cluster.replica.state.values)) {
-          if (!id.startsWith('devices:')) continue;
-          for (const item of entries) if (!devices.has(item.id) || (devices.get(item.id).lastSeen || 0) < (item.lastSeen || 0)) devices.set(item.id, item);
-        }
-        for (const item of observed.devices) devices.set(item.id, item);
-        return json(res, 200, { devices: [...devices.values()], error: observed.error });
+        // This host's current Tailscale snapshot is authoritative. Merging
+        // remembered snapshots from other hosts resurrects removed devices.
+        return json(res, 200, observed);
       }
       if (req.method !== 'POST') return json(res, 405, { error: 'POST required' });
       if (!req.headers['content-type']?.startsWith('application/json')) return json(res, 415, { error: 'JSON required' });

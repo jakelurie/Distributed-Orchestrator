@@ -1508,7 +1508,7 @@ async function machinesSheet() {
     <div id="cluster-summary" role="status">Checking machines…</div>
     <h3>Orchestrator hosts</h3><p class="dim">Preferred main is used at the next election; it does not interrupt a healthy main.</p><div id="machine-list"></div>
     <h3>Tailscale viewers</h3><div id="viewer-list"></div>
-    <h3>Tailscale devices</h3><p class="dim">Network presence is separate from running this app. Devices are remembered after going offline; joining requires your approval.</p>
+    <h3>Tailscale devices</h3><p class="dim">Network presence is separate from running this app. Only current Tailscale devices are listed; joining requires your approval.</p>
     <div id="tailnet-list">Checking Tailscale…</div>
     <h3>Add another host</h3>
     <ol class="dim join-steps">
@@ -1602,7 +1602,7 @@ async function machinesSheet() {
     }).catch(e => { if ($('machine-list') === list) $('pairing-status').textContent = e.message; });
     const inventory = await call('devices');
     if ($('machine-list') !== list) return;
-    $('tailnet-list').innerHTML = inventory.devices.map((n) => `<div class="item machine-item"><div class="grow"><div class="t">${esc(n.name)}</div><div class="s">${n.active ? 'online on Tailscale' : 'offline on Tailscale'} · ${esc(n.platform || 'device')} · ${esc(seen(n.lastSeen))}</div></div></div>`).join('');
+    $('tailnet-list').innerHTML = inventory.devices.map((n) => `<div class="item machine-item"><div class="grow"><div class="t">${esc(n.name)}</div><div class="s">${n.active ? 'online on Tailscale' : 'offline on Tailscale'} · ${esc(n.platform || 'device')}</div></div></div>`).join('') || '<p class="dim">No Tailscale devices available.</p>';
     if (inventory.error) $('tailnet-list').append(document.createTextNode(inventory.error));
   } catch (e) { if ($('machine-list') === list) $('machine-error').textContent = e.message; }
 }

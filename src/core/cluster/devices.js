@@ -1,4 +1,3 @@
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import { tailscale } from '../tailscale.js';
 import { atomic } from './raft.js';
@@ -11,23 +10,24 @@ export function deviceInventory(dir, run = tailscale) {
     if (pending) return pending;
     if (cached && Date.now() - checked < 30000) return cached;
     pending = (async () => {
-      const old = await fs.readFile(file, 'utf8').then(JSON.parse).catch((e) => { if (e.code === 'ENOENT') return {}; throw e; });
+      const devices = new Map();
       let error = '';
-      for (const value of Object.values(old)) value.active = false;
       try {
         const status = JSON.parse((await run(['status', '--json'])).stdout);
         for (const peer of [status.Self, ...Object.values(status.Peer || {})].filter(Boolean)) {
           const id = peer.ID || peer.PublicKey;
-          if (!id) continue;
-          const previous = old[id];
-          old[id] = { id, name: peer.HostName || peer.DNSName, dns: peer.DNSName?.replace(/\.$/, ''),
+          const name = (peer.HostName || peer.DNSName || '').trim();
+          if (!id || !name) continue;
+          const lastSeen = Date.parse(peer.LastSeen);
+          devices.set(id, { id, name, dns: peer.DNSName?.replace(/\.$/, ''),
             addresses: peer.TailscaleIPs || [], platform: peer.OS, active: Boolean(peer.Online),
-            firstSeen: previous?.firstSeen || Date.now(), lastSeen: peer.Online ? Date.now() : Date.parse(peer.LastSeen) || previous?.lastSeen || null,
-            local: peer === status.Self };
+            lastSeen: peer.Online ? Date.now() : lastSeen > 0 ? lastSeen : null,
+            local: peer === status.Self });
         }
-      } catch { error = 'Tailscale inventory unavailable; showing previously seen devices.'; }
-      await atomic(file, old);
-      checked = Date.now(); cached = { devices: Object.values(old), error }; return cached;
+        // Replace the old accumulated history with the current tailnet snapshot.
+        await atomic(file, Object.fromEntries(devices));
+      } catch { error = 'Tailscale inventory unavailable. Reconnect Tailscale and refresh.'; }
+      checked = Date.now(); cached = { devices: [...devices.values()], error }; return cached;
     })().finally(() => { pending = null; });
     return pending;
   };
