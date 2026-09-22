@@ -20,6 +20,11 @@ try {
   await fs.writeFile(path.join(root, 'server/index.js'), code);
   child = await launch('server/index.js');
   assert.equal(matchesServer(process.execPath + ' server/index.js', root, root), true);
+  // Windows reports a quoted command line and no working directory.
+  const server = path.join(root, 'server/index.js');
+  assert.equal(matchesServer(`"C:\\Program Files\\nodejs\\node.exe" "${server}"`, null, root), true);
+  assert.equal(matchesServer([process.execPath, server], null, root), true);
+  assert.equal(matchesServer(`"C:\\Program Files\\nodejs\\node.exe" "${path.join(root, 'other.js')}"`, null, root), false);
   await stopServer(root, child.port);
   await child.done;
   assert.notEqual(child.p.exitCode === null && child.p.signalCode === null, true);

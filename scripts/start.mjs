@@ -48,16 +48,15 @@ try {
   const serving = () => fetch(`http://localhost:${port}/`, { signal: AbortSignal.timeout(1000) }).then(() => true, () => false);
   server.once('exit', async (code) => {
     process.exitCode = code || 0;
-    if (code || process.platform === 'win32') return;
+    if (code) return;
     for (let i = 0; i < 60 && !await serving(); i++) await new Promise((resolve) => setTimeout(resolve, 500));
     if (!await serving()) return;
     console.log('Server restarted. Keep this window open while this host runs.');
     while (await serving()) await new Promise((resolve) => setTimeout(resolve, 5000));
   });
-  if (process.platform !== 'win32') {
-    for (const sig of ['SIGHUP', 'SIGINT', 'SIGTERM']) {
-      process.once(sig, () => { stopServer(root, port).catch((e) => console.error(e.message)).finally(() => process.exit(0)); });
-    }
+  // Closing a Windows console window arrives as SIGHUP, with a few seconds to finish.
+  for (const sig of ['SIGHUP', 'SIGINT', 'SIGTERM']) {
+    process.once(sig, () => { stopServer(root, port).catch((e) => console.error(e.message)).finally(() => process.exit(0)); });
   }
   let opened = false;
   for (let i = 0; i < 60; i++) {
@@ -67,8 +66,7 @@ try {
       const url = new URL(`http://localhost:${port}/`);
       const response = await fetch(url, { signal: AbortSignal.timeout(1000) });
       if (!response.ok) continue;
-      const command = process.platform === 'win32' ? ['rundll32.exe', ['url.dll,FileProtocolHandler', url.href]]
-        : process.platform === 'darwin' ? ['open', [url.href]] : ['xdg-open', [url.href]];
+      const command = process.platform === 'win32' ? ['rundll32.exe', ['url.dll,FileProtocolHandler', url.href]] : ['open', [url.href]];
       if (!process.argv.includes('--no-browser')) {
         const browser = spawn(command[0], command[1], { stdio: 'ignore' });
         browser.on('error', () => console.error('Open the local URL printed by the server in your browser.'));

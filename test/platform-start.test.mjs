@@ -5,9 +5,8 @@ import { tailscaleCommand } from '../src/core/tailscale.js';
 assert.equal(defaultDataDir('win32', 'C:\\Users\\Test', {}), 'C:\\Users\\Test\\AppData\\Local\\DistributedOrchestrator');
 assert.equal(defaultDataDir('win32', 'C:\\Users\\Test', { LOCALAPPDATA: 'D:\\Data' }), 'D:\\Data\\DistributedOrchestrator');
 assert.equal(defaultDataDir('darwin', '/Users/test', {}), '/Users/test/Library/Application Support/harness');
-assert.equal(defaultDataDir('linux', '/home/test', {}), '/home/test/.local/share/distributed-orchestrator');
 assert.deepEqual(shellCommand('npm start', 'win32', {}), ['cmd.exe', ['/d', '/s', '/c', 'npm start']]);
-assert.deepEqual(shellCommand('npm start', 'linux', {}), ['/bin/sh', ['-lc', 'npm start']]);
+assert.deepEqual(shellCommand('npm start', 'darwin', {}), ['/bin/sh', ['-lc', 'npm start']]);
 const list = await windowsListeners(async (bin, args) => {
   assert.equal(bin, 'powershell.exe');
   assert.ok(args.at(-1).includes('Get-NetTCPConnection'));
@@ -20,10 +19,10 @@ const client = await tailscaleCommand({ ProgramFiles: 'D:\\Programs' }, 'win32',
   return { stdout: '{"BackendState":"Running"}' };
 });
 assert.equal(client[0], 'D:\\Programs\\Tailscale\\tailscale.exe');
-for (const file of ['start_windows.cmd', 'start_mac.command', 'start_linux.sh', 'start_ubuntu.sh']) {
+for (const file of ['start_windows.cmd', 'start_mac.command']) {
   const text = await fs.readFile(file, 'utf8');
   assert.doesNotMatch(text, /wsl.exe/);
-  assert.match(text, /start\.mjs|start_linux\.sh/);
+  assert.match(text, /start\.mjs/);
 }
 console.log('PASS native platform paths, command selection, Windows listeners, Tailscale discovery and launch entry points');
 

@@ -11,6 +11,7 @@ let blocker;
 try {
   for (const folder of ['scripts', 'src/core', 'server', '.launcher', 'node_modules/cross-spawn']) await fs.mkdir(path.join(dir, folder), { recursive: true });
   await fs.copyFile('scripts/start.mjs', path.join(dir, 'scripts/start.mjs'));
+  await fs.copyFile('scripts/stop-server.mjs', path.join(dir, 'scripts/stop-server.mjs'));
   await fs.copyFile('src/core/platform.js', path.join(dir, 'src/core/platform.js'));
   await fs.writeFile(path.join(dir, 'package.json'), '{"type":"module"}');
   await fs.writeFile(path.join(dir, 'package-lock.json'), '{}');

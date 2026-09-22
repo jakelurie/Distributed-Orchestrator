@@ -93,7 +93,7 @@ than exposing it publicly.
 Open **Settings → Phone access · Tailscale** to check the host's connection and
 set up its private HTTPS address. Install Tailscale on your phone and sign into
 the same network, then use the displayed phone link. Setup preserves existing
-Serve routes and keeps the local address available. Standard Mac and Linux
+Serve routes and keeps the local address available. Standard Mac and Windows
 installations work without the former custom daemon. See [machine onboarding](docs/machines.md).
 
 ## Providers
@@ -200,9 +200,8 @@ On macOS double-click **Launch Distributed Orchestrator.app** in this folder.
 It opens only the small native window, without Terminal. Keep the app in this
 folder so it can locate the server. After cloning, run `npm start` once to build
 it (or `python3 scripts/build-launcher.py`). The generated bundle is not committed.
-For a fresh clone on any OS, install Node.js 22+, Git, and Tailscale, then use
-**start_windows.cmd**, **start_mac.command**, **start_linux.sh**, or
-**start_ubuntu.sh** in the repository root. These entry points install dependencies,
+For a fresh clone on Mac or Windows, install Node.js 22+, Git, and Tailscale, then use
+**start_mac.command** or **start_windows.cmd** in the repository root. These entry points install dependencies,
 start the server, and open your browser. Keep their terminal window open.
 Windows runs natively without WSL. See [machine onboarding](docs/machines.md)
 for joining your existing system. The Mac Cocoa launcher requires Apple Command
