@@ -7,6 +7,7 @@ import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { defaultDataDir } from '../src/core/platform.js';
+import { stopServer } from './stop-server.mjs';
 
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 process.chdir(root);
@@ -42,7 +43,22 @@ try {
   await new Promise((resolve) => probe.close(resolve));
   const server = spawn(process.execPath, [path.join(root, 'server/index.js')], { stdio: 'inherit', env: process.env });
   server.once('error', (e) => { console.error(e.message); process.exitCode = 1; });
-  server.once('exit', (code) => { process.exitCode = code || 0; });
+  // An in-app restart hands the port to a detached server this window no longer owns.
+  // Stay open while it serves, and stop it when the window closes (as the Mac app does on quit).
+  const serving = () => fetch(`http://localhost:${port}/`, { signal: AbortSignal.timeout(1000) }).then(() => true, () => false);
+  server.once('exit', async (code) => {
+    process.exitCode = code || 0;
+    if (code || process.platform === 'win32') return;
+    for (let i = 0; i < 60 && !await serving(); i++) await new Promise((resolve) => setTimeout(resolve, 500));
+    if (!await serving()) return;
+    console.log('Server restarted. Keep this window open while this host runs.');
+    while (await serving()) await new Promise((resolve) => setTimeout(resolve, 5000));
+  });
+  if (process.platform !== 'win32') {
+    for (const sig of ['SIGHUP', 'SIGINT', 'SIGTERM']) {
+      process.once(sig, () => { stopServer(root, port).catch((e) => console.error(e.message)).finally(() => process.exit(0)); });
+    }
+  }
   let opened = false;
   for (let i = 0; i < 60; i++) {
     if (server.exitCode !== null) break;
