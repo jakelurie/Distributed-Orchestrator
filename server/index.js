@@ -32,6 +32,7 @@ import { executionHosts, executionOwner, assignmentError, sessionWriteError, rec
 import { createCluster } from '../src/core/cluster/index.js';
 import { restartPeers } from '../src/core/cluster/restart.js';
 import { createNodes } from '../src/core/nodes.js';
+import { createAISources } from '../src/core/ai-sources.js';
 import { modelInventory, machineHelp } from '../src/core/machine-help.js';
 import { runTurn } from '../src/core/agent.js';
 import { loadConfig, patchModel, addModel } from '../src/core/config.js';
@@ -83,6 +84,7 @@ configureGithub(USER_DATA);
 const github = createGithubAuth(USER_DATA);
 const nodes = createNodes(USER_DATA);
 const inventory = deviceInventory(USER_DATA);
+const aiSources = createAISources(USER_DATA);
 
 let cluster = null;
 let pairing = null;
@@ -426,6 +428,23 @@ async function sessionPlacement(session) {
   return { app, hosts, distributed: cluster.shared() && Boolean(app) && hosts.length > 1 };
 }
 
+async function sourceAction(body) {
+  await requireConnection();
+  const { action, ...args } = body;
+  if (action === 'catalog') return { ...await aiSources.catalog(), machine: cluster.self };
+  if (action === 'discover') return aiSources.discover(args.kind);
+  if (action === 'add') return aiSources.add(args);
+  if (action === 'remove') {
+    if ([...live.values()].some(s => s.model === args.alias)) throw new Error('Wait for sessions using this source to finish.');
+    return aiSources.remove(args.alias);
+  }
+  if (action === 'helper-setting') return aiSources.delegateSetting(args.alias, args.enabled);
+  if (action === 'local') return aiSources.localAction(args.operation, args.model);
+  if (action === 'helper') return aiSources.helper(args);
+  if (action === 'running') return aiSources.running();
+  throw new Error('Unknown AI source action.');
+}
+
 async function requireConnection() {
   const network = await connectionStatus();
   if (!network.connected) throw new Error(network.error);
@@ -493,9 +512,11 @@ async function dispatchMessage(id, body, reply) {
 
   if (running.has(id)) return reply(409, { error: 'a turn is already running' });
   if (!cfg.models[session.model]) return reply(400, { error: 'Choose a model configured on this tab’s computer.' });
+  if (cfg.models[session.model]?.supportsTools === false && session.mode !== 'chat') return reply(400, { error: 'This local model supports chat only. Use a chat session or choose a model with tool support.' });
   const inventory = await modelInventory(cfg);
   if (!inventory.models[session.model]?.available) return reply(400, { error: inventory.models[session.model]?.availability || 'Model unavailable on this computer.' });
   delete session.queueTurn;
+  if (cfg.models[session.model]?.sourceKind === 'ollama') await aiSources.ensureRunning();
   const sentAt = session.events.length;
   const controller = new AbortController();
   const turn = { controller, startedAt: Date.now(), last: null, executionEpoch: session.executionEpoch || 0 };
@@ -528,7 +549,9 @@ async function dispatchMessage(id, body, reply) {
       session,
       models: cfg.models,
       userText: text,
-      executionContext: `\n\nFor cross-machine setup diagnostics, GET http://127.0.0.1:${PORT}/api/cluster/status for host IDs, then POST JSON {host, question, useClaude} to http://127.0.0.1:${PORT}/api/machine-help using the same authentication as the activity command below. This returns installation/configuration checks; useClaude asks that computer’s Claude to interpret the snapshot without tools. It cannot inspect arbitrary files or edit another computer.`,
+      executionContext: `\n\nFor optional local GPU helpers, POST JSON {host, action:"catalog"} to /api/cluster/sources to find models with allowDelegate enabled, then POST {host, action:"helper", alias, prompt} to the same authenticated endpoint. Supply only task-relevant text; helpers have no tools. Use the localhost origin and authentication described below. For cross-machine setup diagnostics, GET http://127.0.0.1:${PORT}/api/cluster/status for host IDs, then POST JSON {host, question, useClaude} to http://127.0.0.1:${PORT}/api/machine-help using the same authentication as the activity command below. This returns installation/configuration checks; useClaude asks that computer’s Claude to interpret the snapshot without tools. It cannot inspect arbitrary files or edit another computer.`,
+      localModel: async ({ host = cluster.self.id, ...args }) => host === cluster.self.id
+        ? sourceAction({ action: 'helper', ...args }) : cluster.hostSources(host, { action: 'helper', ...args }),
       machineHelp: async ({ host, ...request }) => host === cluster.self.id
         ? machineHelp(await loadConfig(USER_DATA), cluster.self, request) : cluster.hostHelp(host, request),
       attachments: Array.isArray(atts) ? atts : [],
@@ -751,7 +774,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (pathname.startsWith('/api/cluster/')) {
       const route = pathname.slice('/api/cluster/'.length);
-      const internal = ['rpc', 'command', 'activate', 'read-session', 'worker-save', 'worker-models', 'worker-help', 'model-secret', 'worker-stopped'];
+      const internal = ['rpc', 'command', 'activate', 'read-session', 'worker-save', 'worker-models', 'worker-help', 'model-secret', 'worker-stopped', 'worker-sources'];
       if (internal.includes(route) && !cluster.trusted(req)) return json(res, 403, { error: 'Cluster authentication required' });
       if (req.method === 'GET' && route === 'discover') return json(res, 200, await pairing.discover());
       if (req.method === 'GET' && route === 'status') return json(res, 200, cluster.status());
@@ -798,6 +821,14 @@ const server = http.createServer(async (req, res) => {
         await snapshotSettings();
         resetClients();
         return json(res, 200, { ok: true });
+      }
+      if (route === 'sources' || route === 'worker-sources') {
+        try {
+          const { host = cluster.self.id, ...request } = body;
+          const result = route === 'worker-sources' || host === cluster.self.id
+            ? await sourceAction(request) : await cluster.hostSources(host, request);
+          return json(res, 200, result);
+        } catch (e) { return json(res, 400, { error: e.message }); }
       }
       if (route === 'worker-help') return json(res, 200, await machineHelp(await loadConfig(USER_DATA), cluster.self, body));
       if (route === 'worker-models') {
@@ -2077,6 +2108,7 @@ setInterval(() => { checkForStalls().catch(() => {}); }, 30_000).unref();
  */
 let shuttingDown = false;
 async function shutdown(signal) {
+  aiSources.close();
   if (shuttingDown) return;
   shuttingDown = true;
   cluster?.replica.stop();

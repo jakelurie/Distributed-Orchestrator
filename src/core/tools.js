@@ -122,6 +122,15 @@ const shellQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
 export const TOOLS = [
   {
+    name: 'local_model',
+    description: 'Send a bounded text task to an explicitly enabled local GPU helper on a paired computer. No tools or file access. Use machine source catalog to find its alias. Review its answer.',
+    schema: { type: 'object', properties: { host: { type: 'string' }, alias: { type: 'string' }, prompt: { type: 'string', maxLength: 24000 } }, required: ['host', 'alias', 'prompt'] },
+    async run(args, ctx) {
+      if (!ctx.localModel) throw new Error('Local helpers are unavailable in this runner.');
+      return JSON.stringify(await ctx.localModel(args));
+    },
+  },
+  {
     name: 'machine_help',
     description: 'Ask a paired computer for model installation/configuration diagnostics. Optionally ask its Claude CLI to explain the snapshot without tools. Does not edit files or verify service login.',
     schema: { type: 'object', properties: { host: { type: 'string', description: 'Paired host ID from cluster status.' }, question: { type: 'string' }, useClaude: { type: 'boolean' } }, required: ['host'] },

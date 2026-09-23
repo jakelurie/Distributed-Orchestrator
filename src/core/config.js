@@ -2,58 +2,17 @@ import crypto from 'node:crypto';
 /**
  * Model registry. Adding a model is a config edit, never a code edit.
  *
- * Lives at <userData>/models.json and is seeded on first run. The app exposes a
- * "Edit models.json" action so you never have to hunt for the file.
+ * Lives at <userData>/models.json. First run starts empty; onboarding adds
+ * sources explicitly on the selected host.
  */
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+import { atomic } from './cluster/raft.js';
 import { loadSecrets } from './secrets.js';
 
-export const DEFAULT_MODELS = {
-  default: 'opus',
-  models: {
-    opus: {
-      provider: 'anthropic',
-      model: 'claude-opus-5',
-      label: 'Claude Opus 5',
-      priceIn: 5,
-      priceOut: 25,
-      effort: 'high',
-      maxTokens: 32000,
-    },
-    sonnet: {
-      provider: 'anthropic',
-      model: 'claude-sonnet-5',
-      label: 'Claude Sonnet 5',
-      priceIn: 2,
-      priceOut: 10,
-      maxTokens: 32000,
-    },
-    astra: {
-      provider: 'openai',
-      model: 'astra-1',
-      label: 'Astra',
-      _comment: 'PLACEHOLDER - set baseUrl and model to the real Astra endpoint.',
-      baseUrl: 'https://api.astra.example.com/v1',
-      apiKeyEnv: 'ASTRA_API_KEY',
-      maxTokens: 8192,
-    },
-    gpt: {
-      provider: 'openai',
-      model: 'gpt-5',
-      label: 'GPT-5',
-      apiKeyEnv: 'OPENAI_API_KEY',
-    },
-    local: {
-      provider: 'openai',
-      model: 'qwen3:32b',
-      label: 'Qwen3 32B (local)',
-      baseUrl: 'http://localhost:11434/v1',
-    },
-  },
-};
+export const DEFAULT_MODELS = { default: null, models: {} };
 
 /** Where each provider looks for a key when models.json does not say. */
 const DEFAULT_KEY_ENV = {
@@ -117,11 +76,26 @@ export async function loadConfig(userDataDir) {
 
   const aliases = Object.keys(models);
   if (!aliases.length) {
-    return { models, default: null, path: file, error: 'models.json defines no models' };
+    return { models, default: null, path: file, error: null };
   }
 
   const def = models[raw.default] ? raw.default : aliases[0];
   return { models, default: def, path: file, error: null };
+}
+
+const writes = new Map();
+export async function updateConfig(dir, change) {
+  const previous = writes.get(dir) || Promise.resolve();
+  const pending = previous.catch(() => {}).then(async () => {
+    const file = await ensureConfig(dir);
+    const raw = JSON.parse(await fs.readFile(file, 'utf8'));
+    const result = await change(raw);
+    await atomic(file, raw);
+    return result;
+  });
+  writes.set(dir, pending);
+  try { return await pending; }
+  finally { if (writes.get(dir) === pending) writes.delete(dir); }
 }
 
 /**
@@ -129,20 +103,17 @@ export async function loadConfig(userDataDir) {
  * Used by the web UI, where there is no text editor to hand.
  */
 export async function patchModel(userDataDir, alias, patch) {
-  const file = await ensureConfig(userDataDir);
-  const raw = JSON.parse(await fs.readFile(file, 'utf8'));
-  raw.models ??= {};
-  if (!raw.models[alias]) throw new Error(`no model "${alias}" in models.json`);
+  return updateConfig(userDataDir, raw => {
+    raw.models ??= {};
+    if (!raw.models[alias]) throw new Error(`no model "${alias}" in models.json`);
 
-  for (const [k, v] of Object.entries(patch)) {
-    if (v === null || v === '') delete raw.models[alias][k];
-    else raw.models[alias][k] = v;
-  }
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === null || v === '') delete raw.models[alias][k];
+      else raw.models[alias][k] = v;
+    }
 
-  const tmp = `${file}.tmp`;
-  await fs.writeFile(tmp, `${JSON.stringify(raw, null, 2)}\n`, 'utf8');
-  await fs.rename(tmp, file);
-  return raw.models[alias];
+    return raw.models[alias];
+  });
 }
 
 /** Add a source without replacing an existing model or changing the default. */
@@ -157,16 +128,13 @@ export async function addModel(userDataDir, { label, provider, model, baseUrl, a
       throw new Error('Use an HTTP or HTTPS endpoint without credentials in the URL.');
     }
   }
-  const file = await ensureConfig(userDataDir);
-  const raw = JSON.parse(await fs.readFile(file, 'utf8'));
-  raw.models ??= {};
-  const alias = 'source-' + crypto.randomUUID();
-  raw.models[alias] = { label: label.trim(), provider, model: model.trim(),
-    ...(apiKeyOptional === true && provider === 'openai' ? { apiKeyOptional: true } : {}),
-    ...(baseUrl ? { baseUrl } : {}), ...(apiKeyEnv ? { apiKeyEnv } : {}) };
-  if (!raw.default) raw.default = alias;
-  const tmp = file + '.tmp';
-  await fs.writeFile(tmp, JSON.stringify(raw, null, 2) + '\n', 'utf8');
-  await fs.rename(tmp, file);
-  return alias;
+  return updateConfig(userDataDir, raw => {
+    raw.models ??= {};
+    const alias = 'source-' + crypto.randomUUID();
+    raw.models[alias] = { label: label.trim(), provider, model: model.trim(),
+      ...(apiKeyOptional === true && provider === 'openai' ? { apiKeyOptional: true } : {}),
+      ...(baseUrl ? { baseUrl } : {}), ...(apiKeyEnv ? { apiKeyEnv } : {}) };
+    if (!raw.default) raw.default = alias;
+    return alias;
+  });
 }

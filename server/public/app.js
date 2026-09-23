@@ -7,7 +7,7 @@ const nodeApi = (url) => executionNode && url.startsWith('/api/') && !url.starts
   ? `/api/nodes/${encodeURIComponent(executionNode)}${url}` : url;
 const fetch = (url, options) => nativeFetch(typeof url === 'string' ? nodeApi(url) : url, {
   ...options, headers: { ...options?.headers,
-    ...(typeof state !== 'undefined' && state.session?.id ? { 'x-harness-session': state.session.id } : {}),
+    ...(!url.startsWith('/api/models') && typeof state !== 'undefined' && state.session?.id ? { 'x-harness-session': state.session.id } : {}),
   },
 });
 const sessionStorageKey = `lastSession${executionNode ? ':' + executionNode : ''}`;
@@ -1607,24 +1607,98 @@ async function machinesSheet() {
   } catch (e) { if ($('machine-list') === list) $('machine-error').textContent = e.message; }
 }
 
+const sourceAttr = value => esc(value).replace(/"/g, '&quot;');
+let sourceHost = '';
+const sourcesCall = async (action, args = {}) => {
+  const response = await nativeFetch('/api/cluster/sources', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ host: sourceHost || undefined, action, ...args }) });
+  const value = await response.json();
+  if (!response.ok) throw new Error(value.error || 'Source request failed.');
+  return value;
+};
+
 async function modelsSheet() {
-  await refreshState();
-  const rows = Object.values(state.models).map((m) => `
-    <div class="item" data-model="${esc(m.alias)}">
-      <div class="grow"><div class="t">${esc(m.label ?? m.alias)}</div>
-      <div class="s">${esc(m.provider)} · ${esc(m.model)}</div></div>
-      <span class="pill ${m.hasKey ? 'ready' : 'missing'}">${m.hasKey ? (m.keySource ?? 'ready') : 'no key'}</span>
-    </div>`).join('');
-  openSheet(`<h2>AI sources</h2>
-    <p class="dim">Connect your own subscription login or API account. Each source adds a model to the session picker. Existing connections stay as they are when you add another.</p>
-    ${rows}<div class="actions"><button class="primary" id="source-add">add AI source</button></div>${backToSettings}`);
-  $('sub-back').onclick = settingsSheet;
-  $('source-add').onclick = sourceSheet;
-  $('sheet').querySelectorAll('[data-model]').forEach((el) => {
-    el.onclick = () => modelSheet(el.dataset.model);
-  });
+  try {
+    const machines = await nativeFetch('/api/cluster/status').then(r => r.json());
+    sourceHost ||= machines.self;
+    const catalog = await sourcesCall('catalog');
+    openSheet(`<h2>AI sources</h2>
+      <label>Computer</label><select id="sources-host">${machines.hosts.filter(h => h.member).map(h => `<option value="${sourceAttr(h.id)}" ${h.id === sourceHost ? 'selected' : ''}>${esc(h.name)}</option>`).join('')}</select>
+      <p class="dim">Sources and logins belong to this computer. New computers start empty. Connect a source, discover its models, then choose which to add.</p>
+      <button class="rowlink" id="source-claude">Set up Claude Code <span>›</span></button>
+      <button class="rowlink" id="source-codex">Set up Codex <span>›</span></button>
+      <button class="rowlink" id="source-local">Set up local models · Ollama <span>›</span></button>
+      ${Object.values(catalog.models).map(m => `<div class="item machine-item"><div class="grow"><div class="t">${esc(m.label || m.model)}</div><div class="s">${esc(m.provider)} · ${esc(m.model)}</div></div>
+        ${m.sourceKind === 'ollama' ? `<button class="ghost" data-local-load="${sourceAttr(m.model)}">load</button><button class="ghost" data-local-unload="${sourceAttr(m.model)}">unload</button><button class="ghost" data-helper="${sourceAttr(m.alias)}" data-enabled="${!m.allowDelegate}">helper ${m.allowDelegate ? 'on' : 'off'}</button>` : ''}
+        ${sourceHost === machines.self ? `<button class="ghost" data-source-edit="${sourceAttr(m.alias)}">edit</button>` : ''}
+        <button class="ghost" data-source-remove="${sourceAttr(m.alias)}">remove</button></div>`).join('') || '<p class="dim">No sources added on this computer.</p>'}
+      ${catalog.runtime ? `<p class="dim">Local runtime: ${catalog.runtime.unavailable ? 'stopped or unavailable' : catalog.runtime.models?.length ? catalog.runtime.models.map(m => esc(m.name) + ' · GPU ' + Math.round((m.size_vram || 0) / 1073741824 * 10) / 10 + ' GiB').join(', ') : 'running · no models loaded'}</p>` : ''}
+      <p class="dim" id="sources-status">${catalog.jobs.map(j => esc(`${j.action} ${j.model || ''}: ${j.state}${j.error ? ' — ' + j.error : ''}`)).join('<br>')}</p>
+      <div class="actions"><button class="ghost" id="sources-refresh">refresh</button><button class="ghost" id="source-add">advanced API source</button></div>${backToSettings}`);
+    $('sources-host').onchange = () => { sourceHost = $('sources-host').value; modelsSheet(); };
+    $('sub-back').onclick = settingsSheet;
+    $('sources-refresh').onclick = modelsSheet;
+    $('source-claude').onclick = () => onboardSource('claude-cli');
+    $('source-codex').onclick = () => onboardSource('codex-cli');
+    $('source-local').onclick = () => onboardSource('ollama');
+    $('source-add').onclick = () => {
+      if (sourceHost !== machines.self) return showBanner('Open Harness on the selected computer to add an advanced API endpoint.');
+      sourceSheet();
+    };
+    const perform = async (action, args) => {
+      try { await sourcesCall(action, args); await modelsSheet(); } catch (e) { showBanner(e.message); }
+    };
+    $('sheet').querySelectorAll('[data-source-edit]').forEach(b => { b.onclick = () => modelSheet(b.dataset.sourceEdit, catalog.models[b.dataset.sourceEdit]); });
+    $('sheet').querySelectorAll('[data-source-remove]').forEach(b => { b.onclick = () => {
+      if (confirm('Remove this source from this computer? Existing sessions will need another model.')) perform('remove', { alias: b.dataset.sourceRemove });
+    }; });
+    $('sheet').querySelectorAll('[data-helper]').forEach(b => { b.onclick = () => perform('helper-setting', { alias: b.dataset.helper, enabled: b.dataset.enabled === 'true' }); });
+    for (const operation of ['load', 'unload']) $('sheet').querySelectorAll('[data-local-' + operation + ']').forEach(b => {
+      b.onclick = () => perform('local', { operation, model: b.dataset[operation === 'load' ? 'localLoad' : 'localUnload'] });
+    });
+  } catch (e) { showBanner(e.message); }
 }
 
+function onboardSource(kind) {
+  const local = kind === 'ollama';
+  const name = local ? 'Local models · Ollama' : kind === 'claude-cli' ? 'Claude Code' : 'Codex';
+  const install = local ? 'https://ollama.com/download' : kind === 'claude-cli' ? 'https://code.claude.com/docs/en/setup' : 'https://developers.openai.com/codex/cli/';
+  openSheet(`<h2>${name}</h2><p class="dim">Complete installation and sign-in on the selected computer, then discover models here.</p>
+    <a class="rowlink" href="${install}" target="_blank" rel="noopener">Installation instructions <span>↗</span></a>
+    ${local ? '<p class="dim">Ollama uses the GPU when supported. Model fit depends on weights and context size. Downloads can be large.</p><label>Ollama model name to download</label><input id="local-model-name" placeholder="Exact model:tag" /><div class="actions"><button class="ghost" id="local-start">start Ollama</button><button class="ghost" id="local-pull">download model</button></div>' : `<p class="dim">In a terminal on that computer, run <code>${kind === 'claude-cli' ? 'claude auth login' : 'codex login'}</code>. Your login stays in the CLI.</p>`}
+    <div class="actions"><button class="primary" id="source-discover">check login &amp; discover models</button></div>
+    <div id="source-discovered"></div>
+    ${local ? '<label><input type="checkbox" id="source-delegate" /> Allow paired agents to use these models as text helpers</label>' : ''}
+    <p class="dim" id="onboard-status" role="status"></p>
+    <div class="actions"><button class="ghost" id="onboard-back">back</button><button class="primary" id="onboard-add" disabled>add selected models</button></div>`);
+  $('onboard-back').onclick = modelsSheet;
+  const status = $('onboard-status');
+  if (local) for (const operation of ['start', 'pull']) $('local-' + operation).onclick = async () => {
+    try {
+      const job = await sourcesCall('local', { operation, model: $('local-model-name').value.trim() || undefined });
+      status.textContent = `${job.action} started. Return to AI sources and refresh to check completion.`;
+    } catch (e) { status.textContent = e.message; }
+  };
+  $('source-discover').onclick = async () => {
+    const button = $('source-discover'); button.disabled = true; status.textContent = 'Checking source…';
+    try {
+      const result = await sourcesCall('discover', { kind });
+      if ($('onboard-status') !== status) return;
+      $('source-discovered').innerHTML = result.models.map(m => `<label class="item"><input type="checkbox" data-discovered-model="${sourceAttr(m.model)}" /><span>${esc(m.label)}${m.tools === false ? ' · chat only' : ''}</span></label>`).join('');
+      status.textContent = result.message;
+      $('onboard-add').disabled = !result.models.length;
+    } catch (e) { status.textContent = e.message; }
+    finally { button.disabled = false; }
+  };
+  $('onboard-add').onclick = async () => {
+    const button = $('onboard-add'); button.disabled = true;
+    try {
+      const models = [...$('sheet').querySelectorAll('[data-discovered-model]:checked')].map(e => e.dataset.discoveredModel);
+      await sourcesCall('add', { kind, models, allowDelegate: local && $('source-delegate').checked });
+      await modelsSheet();
+    } catch (e) { status.textContent = e.message; button.disabled = false; }
+  };
+}
 
 function sourceSheet() {
   const choices = [
@@ -2040,8 +2114,7 @@ async function setProjectDir(dir) {
   paintHeader();
 }
 
-function modelSheet(alias) {
-  const m = state.models[alias];
+function modelSheet(alias, m = state.models[alias]) {
   if (['claude-cli', 'codex-cli'].includes(m.provider)) {
     openSheet(`<h2>${esc(m.label ?? alias)}</h2>
       <p class="dim">Uses the ${m.provider === 'claude-cli' ? 'Claude Code' : 'Codex'} login on the computer hosting Distributed Orchestrator. No API key is needed here. Sign in on that computer before using this source.</p>

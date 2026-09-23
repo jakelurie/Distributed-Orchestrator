@@ -62,9 +62,9 @@ Connect Tailscale to resume without restarting Harness. Normal API requests are
 also rejected while disconnected.
 
 On first run a `models.json` is written to your OS application-support
-directory (`~/Library/Application Support/harness` on macOS). Copy
-`models.json.example` over it as a starting point and edit, or configure
-everything from the app's settings screen.
+directory (`~/Library/Application Support/harness` on macOS), with no models.
+Open **Settings → AI sources**, select the computer, and add its sources.
+Existing configurations are preserved on upgrade.
 
 **Keys are never stored in this repo.** They live in `secrets.json` next to
 `models.json`, mode 0600, or come from environment variables. Add them through
@@ -97,6 +97,34 @@ Serve routes and keeps the local address available. Standard Mac and Linux
 installations work without the former custom daemon. See [machine onboarding](docs/machines.md).
 
 ## Providers
+
+**AI sources are configured per computer.** Select the host in Settings → AI
+sources, then use **Set up Claude Code**, **Set up Codex**, or **Set up local
+models · Ollama**. Install and sign in on that computer using the linked provider
+instructions. Check login and discover models in Harness, select models, and add
+them. Discovery does not run an inference task or add models automatically.
+Refresh discovery to see models available after a CLI or account update.
+
+Codex discovery uses [App Server account and model methods](https://developers.openai.com/codex/app-server/).
+Claude discovery uses the Agent SDK's supported-model query against the installed
+Claude Code CLI. A reported model is not a guarantee of quota or account access
+for every request.
+
+For local GPU models, install Ollama on the host first. Harness can start its
+loopback runtime, download an exact model tag, discover installed text models,
+load/unload them, and show loaded GPU memory. Downloads run in the background;
+refresh AI sources to see their status. Models without tool support are limited
+to chat sessions. Model weights and endpoints stay on their computer. Existing
+OpenAI-compatible servers remain available through advanced API setup on their
+host.
+
+Enable **helper** on a local model to let paired agents send it text tasks through
+the authenticated cluster. Helpers have no tools or file access, accept at most
+24,000 input characters, and generate at most 2,048 tokens. Requests time out
+after three minutes and are not replayed on another host. Agents should review
+helper responses. GPU capacity and speed depend on model size, context, and other
+GPU workloads; Harness does not assume every model fits a particular card.
+
 
 ### Voice dictation from a phone
 

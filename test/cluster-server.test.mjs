@@ -12,6 +12,7 @@ async function start(name) {
   const portCheck = net.createServer(); await new Promise((r) => portCheck.listen(0, '127.0.0.1', r));
   const port = portCheck.address().port; await new Promise((r) => portCheck.close(r));
   const dir = path.join(root, name); await fs.mkdir(dir);
+  await fs.writeFile(path.join(dir, 'models.json'), JSON.stringify({ default: 'opus', models: { opus: { provider: 'openai', model: 'test', baseUrl: 'http://127.0.0.1:1/v1' } } }));
   const origin = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, ['server/index.js'], { env: { ...process.env,
     HARNESS_PORT: String(port), HARNESS_TOKEN: 'cluster-test', HARNESS_DATA_DIR: dir,
@@ -47,6 +48,13 @@ try {
   await c.call('/api/cluster/join', 'POST', { url: a.origin, ownUrl: c.origin, token: 'cluster-test' });
   assert.equal((await b.call('/api/sessions/' + session.id)).name, 'shared');
   const target = (await a.call('/api/cluster/status')).hosts.find(h => h.name === 'b');
+  const sources = await a.call('/api/cluster/sources', 'POST', { host: target.id, action: 'catalog' });
+  assert.equal(sources.machine.id, target.id, 'source settings target the selected machine');
+  assert.ok(!JSON.stringify(sources).includes('apiKey":'));
+  const sourceDenied = await fetch(b.origin + '/api/cluster/worker-sources', { method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-harness-token': 'cluster-test' }, body: '{"action":"catalog"}' });
+  assert.equal(sourceDenied.status, 403);
+  await assert.rejects(a.call('/api/cluster/sources', 'POST', { host: 'missing', action: 'catalog' }));
   const help = await a.call('/api/machine-help', 'POST', { host: target.id, question: 'Which models are configured?' });
   assert.equal(help.machine.id, target.id);
   assert.ok(Array.isArray(help.models));

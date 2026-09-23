@@ -18,6 +18,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import { loginPath } from '../tools.js';
 import { renderForPrompt } from '../transcript.js';
 
 export const kind = 'codex-cli';
@@ -27,8 +28,8 @@ export function makeClient(spec) {
 }
 
 /** Codex inherits a parent agent's environment; strip it so it runs clean. */
-function childEnv() {
-  const env = { ...process.env };
+async function childEnv() {
+  const env = { ...process.env, PATH: await loginPath() };
   for (const k of Object.keys(env)) {
     if (k.startsWith('CLAUDE_CODE_') || k === 'CLAUDECODE' || k === 'CLAUDE_PID' || k === 'CLAUDE_EFFORT') {
       delete env[k];
@@ -191,7 +192,7 @@ export async function complete({
   ];
 
   const started = Date.now();
-  const child = spawn(client.bin, args, { cwd, env: childEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(client.bin, args, { cwd, env: await childEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
 
   const abort = () => child.kill('SIGTERM');
   signal?.addEventListener('abort', abort, { once: true });

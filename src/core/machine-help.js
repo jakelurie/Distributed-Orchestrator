@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { childEnv, complete, makeClient } from './providers/claude-cli.js';
+import { loginPath } from './tools.js';
 import { userEvent } from './transcript.js';
 
 export async function executableAvailable(bin, env = process.env) {
@@ -21,9 +22,10 @@ export async function executableAvailable(bin, env = process.env) {
 /** Installation is checked on the executor; credentials and service health are not inferred. */
 export async function modelInventory(config, probe = executableAvailable) {
   const models = {};
+  const env = childEnv({ ...process.env, PATH: await loginPath() });
   for (const [id, spec] of Object.entries(config.models)) {
     const bin = spec.provider === 'codex-cli' ? 'codex' : spec.provider === 'claude-cli' ? 'claude' : null;
-    const installed = bin ? await probe(spec.bin || bin, bin === 'claude' ? childEnv() : process.env) : null;
+    const installed = bin ? await probe(spec.bin || bin, env) : null;
     const available = installed === false ? false : Boolean(spec.hasKey);
     models[id] = { ...spec, apiKey: undefined, available,
       availability: installed === false ? `${bin} is not installed on this computer`
