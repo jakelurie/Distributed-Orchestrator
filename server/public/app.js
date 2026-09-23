@@ -1290,6 +1290,20 @@ async function githubSheet() {
   } catch (e) { fail(e); }
 }
 
+function modelVersionDetails(m, events = []) {
+  const last = events.findLast(e => e.type === 'assistant' && e.model === m.alias);
+  const parts = [];
+  if (last?.servedModel) parts.push(`Last reply used: ${last.servedModel}`);
+  if (m.provider === 'claude-cli') {
+    if (/^(opus|sonnet|haiku|default|best|fable|opusplan)(\[1m\])?$/i.test(m.model || '')) {
+      parts.push('Automatic model alias');
+      if (!last?.servedModel) parts.push('version unconfirmed — shown after a reply');
+    }
+    if (/\[1m\]$/i.test(m.model || '')) parts.push('1 million token context');
+  }
+  return parts.join(' · ');
+}
+
 async function sessionSettingsSheet() {
   try { await refreshState(); } catch (e) { if (executionNode) return machinesSheet(); throw e; }
   const session = cur().session;
@@ -1307,7 +1321,8 @@ async function sessionSettingsSheet() {
       <div id="s-models">${Object.values(state.models).map((m) => `
         <div class="item${m.alias === session.model ? ' on' : ''}" data-switch="${esc(m.alias)}">
           <div class="grow"><div class="t">${esc(m.label ?? m.alias)}</div>
-          <div class="s">${esc(m.provider)} · ${esc(m.model)}</div></div>
+          <div class="s">${esc(m.provider)} · ${esc(m.model)}</div>
+          <div class="s" style="white-space:normal;overflow-wrap:anywhere">${esc(modelVersionDetails(m, session.events))}</div></div>
           ${m.alias === session.model
             ? '<span class="pill ready">in use</span>'
             : `<span class="pill ${m.hasKey ? '' : 'missing'}">${m.hasKey ? 'switch' : 'no key'}</span>`}
@@ -1642,7 +1657,7 @@ async function modelsSheet() {
       <button class="rowlink" id="source-claude">${sourceLabel('claude-cli', 'Claude Code')} <span>›</span></button>
       <button class="rowlink" id="source-codex">${sourceLabel('codex-cli', 'Codex')} <span>›</span></button>
       <button class="rowlink" id="source-local">${Object.values(catalog.models).some(m => m.sourceKind === 'ollama') ? 'Manage' : 'Set up'} local models · Ollama <span>›</span></button>
-      ${Object.values(catalog.models).map(m => `<div class="item machine-item"><div class="grow"><div class="t">${esc(m.label || m.model)}</div><div class="s">${esc(m.provider)} · ${esc(m.model)}</div></div>
+      ${Object.values(catalog.models).map(m => `<div class="item machine-item"><div class="grow"><div class="t">${esc(m.label || m.model)}</div><div class="s">${esc(m.provider)} · ${esc(m.model)}</div><div class="s">${esc(modelVersionDetails(m))}</div></div>
         ${m.sourceKind === 'ollama' ? `<button class="ghost" data-local-load="${sourceAttr(m.model)}">load</button><button class="ghost" data-local-unload="${sourceAttr(m.model)}">unload</button><button class="ghost" data-helper="${sourceAttr(m.alias)}" data-enabled="${!m.allowDelegate}">helper ${m.allowDelegate ? 'on' : 'off'}</button>` : ''}
         ${sourceHost === machines.self ? `<button class="ghost" data-source-edit="${sourceAttr(m.alias)}">edit</button>` : ''}
         <button class="ghost" data-source-remove="${sourceAttr(m.alias)}">remove</button></div>`).join('') || '<p class="dim">No sources added on this computer.</p>'}
@@ -2138,6 +2153,7 @@ function modelSheet(alias, m = state.models[alias]) {
     openSheet(`<h2>${esc(m.label ?? alias)}</h2>
       <p class="dim">Uses the ${m.provider === 'claude-cli' ? 'Claude Code' : 'Codex'} login on the computer hosting Distributed Orchestrator. No API key is needed here. Sign in on that computer before using this source.</p>
       <label>Model ID</label><input id="subscription-model" spellcheck="false" />
+      ${m.provider === 'claude-cli' ? '<p class="dim">Aliases such as opus follow the version selected by your installed Claude Code and provider settings. [1m] means a million-token context window. Replies show the actual model ID when reported. To pin a version, enter its full model ID.</p>' : ''}
       <p id="subscription-error" class="dim" role="status"></p>
       <div class="actions"><button class="ghost" id="subscription-back">back</button><button class="primary" id="subscription-save">save</button></div>`);
     $('subscription-model').value = m.model ?? '';

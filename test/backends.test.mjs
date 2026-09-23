@@ -72,7 +72,7 @@ cat > /dev/null
 echo '{"type":"system","subtype":"init","model":"claude-opus-5"}'
 echo '{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"plan"},{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"echo hi > out.txt"}}],"usage":{"input_tokens":5,"output_tokens":7,"cache_read_input_tokens":100}}}'
 echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","content":"","is_error":false}]}}'
-echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Wrote out.txt."}],"usage":{"input_tokens":9,"output_tokens":4}}}'
+echo '{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"Wrote out.txt."}],"usage":{"input_tokens":9,"output_tokens":4}}}'
 echo '{"type":"result","subtype":"success","result":"Wrote out.txt.","num_turns":2,"total_cost_usd":0.012,"usage":{"input_tokens":9,"output_tokens":4,"cache_read_input_tokens":100}}'
 `, { mode: 0o755 });
 
@@ -92,6 +92,8 @@ check('its tool call is recorded', sessionC.events[1].toolCalls?.[0]?.name === '
 check('its tool result is recorded as already run', sessionC.events[2].ok === true && sessionC.events[2].name === 'Bash');
 check('the harness did NOT re-run the tool', (await fs.readdir(projC)).length === 0, JSON.stringify(await fs.readdir(projC)));
 check('final text captured', sessionC.events[3].text === 'Wrote out.txt.');
+check('initial model version survives streamed steps', sessionC.events[1].servedModel === 'claude-opus-5');
+check('reply model takes precedence over initial model', sessionC.events[3].servedModel === 'claude-opus-5-5');
 check('thinking streamed to the UI', deltas.includes('thinking'));
 check('usage carried through', sessionC.events[1].usage.cached === 100);
 
