@@ -127,11 +127,11 @@ This is a new implementation with automated crash/partition/rejoin tests, not a
 claim of production-grade consensus verification. Keep backups. Remote power
 on/off is not implemented.
 
-## Mac, Linux, Windows
+## Mac and Windows
 
 Install Node.js 22+, Git, and the native Tailscale app on the new computer.
 Windows uses Git for Windows and the normal Windows Tailscale application.
-No WSL or Ubuntu installation is required. For GitHub authorization install
+No WSL installation is required. For GitHub authorization install
 GitHub CLI as well. Install the desired model CLIs separately on execution hosts.
 
 Clone this repository, then run the entry point in its root:
@@ -140,8 +140,6 @@ Clone this repository, then run the entry point in its root:
 | --- | --- |
 | Windows | Double-click `start_windows.cmd` |
 | macOS | Double-click `start_mac.command` |
-| Linux | `sh start_linux.sh` |
-| Ubuntu | `sh start_ubuntu.sh` |
 
 The launcher installs npm dependencies on first use, creates a private
 `.orchestrator-node.env` without overwriting existing settings, starts the server,
@@ -157,7 +155,7 @@ on the existing main. Approve Windows Firewall access on your private network if
 
 The existing Mac desktop launcher remains available. Native Windows process
 status uses PowerShell instead of lsof; Windows apps must listen on their assigned
-PORT to be detected reliably. Linux requires Bash and lsof for process discovery.
+PORT to be detected reliably.
 Platform-specific project commands still need to be appropriate for that OS.
 
 ## Private network and pairing
@@ -165,8 +163,7 @@ Platform-specific project commands still need to be appropriate for that OS.
 Install Tailscale and sign into your own tailnet on each execution host.
 Give nodes distinct names. Use the standard installed client on the host.
 Mac detection tries the Mac app and CLI. Windows tries PATH and the standard
-Program Files installation. Linux uses `tailscale` on
-PATH. A custom installation can explicitly set `ORCHESTRATOR_TAILSCALE_BIN`
+Program Files installation. A custom installation can explicitly set `ORCHESTRATOR_TAILSCALE_BIN`
 and/or `ORCHESTRATOR_TAILSCALE_SOCKET`; there is no automatic dependency on the
 old `.tailscale-harness` daemon. Users keeping that daemon must explicitly set
 its socket. Changing clients can change the hostname; update phone bookmarks.
@@ -204,33 +201,6 @@ The token authorizes code execution. Store it only in the private setup file or
 Machines form. Tokens and cookies from the phone are not forwarded to peers;
 the gateway uses that peer's saved token. Disconnect removes this gateway's
 access record; rotate the peer's token to revoke every holder of it.
-
-## Keep a new Linux node running
-
-For Linux with systemd enabled, create a user service, substituting your
-checkout and the absolute path printed by `command -v node`:
-
-```ini
-[Unit]
-Description=Distributed Orchestrator
-After=network-online.target
-
-[Service]
-WorkingDirectory=/home/YOU/Distributed-Orchestrator
-ExecStart=/ABSOLUTE/PATH/TO/node --env-file=.orchestrator-node.env server/index.js
-Restart=on-failure
-RestartSec=5
-Environment=PATH=/YOUR/NODE/BIN:/usr/local/bin:/usr/bin:/bin
-
-[Install]
-WantedBy=default.target
-```
-
-Save it as `~/.config/systemd/user/distributed-orchestrator.service`, then run
-`systemctl --user daemon-reload` and
-`systemctl --user enable --now distributed-orchestrator`. Linux users can enable
-lingering to keep user services running when logged out.
-Read logs with `journalctl --user -u distributed-orchestrator -f`.
 
 ## GPU and other AI sources
 

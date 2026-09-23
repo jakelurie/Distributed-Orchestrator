@@ -6,7 +6,6 @@ const fail = async () => { throw new Error('no daemon'); };
 assert.deepEqual(await tailscaleCommand({}, 'darwin', fail), ['/Applications/Tailscale.app/Contents/MacOS/Tailscale']);
 assert.deepEqual(await tailscaleCommand({ ORCHESTRATOR_TAILSCALE_SOCKET: '/explicit' }, 'darwin', fail), ['tailscale', '--socket', '/explicit']);
 assert.deepEqual(await tailscaleCommand({ ORCHESTRATOR_TAILSCALE_SOCKET: '' }, 'darwin', fail), ['tailscale']);
-assert.deepEqual(await tailscaleCommand({}, 'linux', fail), ['tailscale']);
 assert.deepEqual(await tailscaleCommand({}, 'win32', fail), ['tailscale.exe']);
 assert.deepEqual(await tailscaleCommand({}, 'darwin', async () => ({ stdout: '{"BackendState":"Running"}' })), ['/Applications/Tailscale.app/Contents/MacOS/Tailscale']);
 assert.match(notificationSetupError({ enabled: true, kind: 'sms' }), /Settings → Notifications/);

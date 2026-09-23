@@ -3,8 +3,16 @@ import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { killTree } from '../src/core/platform.js';
+
+const powershell = (command) => execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command],
+  { encoding: 'utf8', timeout: 10000, windowsHide: true }).trim();
 
 export function listeners(port) {
+  if (process.platform === 'win32') {
+    return [...new Set(powershell(`@(Get-NetTCPConnection -State Listen -LocalPort ${Number(port)} -ErrorAction SilentlyContinue).OwningProcess`)
+      .split(/\s+/).filter(Boolean))];
+  }
   try {
     return [...new Set(execFileSync('lsof', ['-nP', '-a', '-iTCP:' + port, '-sTCP:LISTEN', '-t'],
       { encoding: 'utf8', timeout: 3000 }).trim().split(/\s+/).filter(Boolean))];
@@ -14,12 +22,28 @@ export function listeners(port) {
   }
 }
 
+// The command line (and working directory where the OS exposes it) of a listener.
+function describe(pid) {
+  if (process.platform === 'win32') {
+    return { command: powershell(`(Get-CimInstance Win32_Process -Filter "ProcessId=${Number(pid)}").CommandLine`), cwd: null };
+  }
+  const command = execFileSync('ps', ['-p', pid, '-o', 'command='], { encoding: 'utf8', timeout: 3000 });
+  const fields = execFileSync('lsof', ['-a', '-p', pid, '-d', 'cwd', '-Fn'], { encoding: 'utf8', timeout: 3000 });
+  return { command, cwd: fields.split('\n').find((line) => line.startsWith('n'))?.slice(1) };
+}
+
+// command is an argv array or a command line; Windows quotes paths containing spaces.
 export function matchesServer(command, cwd, root) {
-  const parts = command.trim().split(/\s+/);
-  if (!/^node(?:js)?$/.test(path.basename(parts[0] || ''))) return false;
+  const parts = Array.isArray(command) ? command
+    : [...command.trim().matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2]);
+  if (!/^node(?:js)?(?:\.exe)?$/i.test(path.win32.basename(parts[0] || ''))) return false;
   try {
-    return parts.slice(1).some((arg) => !arg.startsWith('-') &&
-      realpathSync(path.resolve(cwd, arg)) === realpathSync(path.join(root, 'server/index.js')));
+    const server = realpathSync(path.join(root, 'server/index.js'));
+    const same = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+    return parts.slice(1).some((arg) => {
+      if (arg.startsWith('-')) return false;
+      try { return same(realpathSync(path.resolve(cwd || root, arg)), server); } catch { return false; }
+    });
   } catch { return false; }
 }
 
@@ -27,12 +51,15 @@ export async function stopServer(root, port) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid server port');
   const pids = listeners(port);
   for (const pid of pids) {
-    const command = execFileSync('ps', ['-p', pid, '-o', 'command='], { encoding: 'utf8', timeout: 3000 });
-    const fields = execFileSync('lsof', ['-a', '-p', pid, '-d', 'cwd', '-Fn'], { encoding: 'utf8', timeout: 3000 });
-    const cwd = fields.split('\n').find((line) => line.startsWith('n'))?.slice(1);
-    if (!cwd || !matchesServer(command, cwd, root)) throw new Error('Port belongs to another program; it was not stopped.');
+    let info;
+    try { info = describe(pid); } catch { continue; } // exited meanwhile
+    if ((!info.cwd && process.platform !== 'win32') || !matchesServer(info.command, info.cwd, root)) {
+      throw new Error('Port belongs to another program; it was not stopped.');
+    }
   }
   for (const pid of pids) {
+    // Windows has no SIGTERM; end the tree so agent CLIs the server started go too.
+    if (process.platform === 'win32') { try { await killTree(Number(pid)); } catch { /* already gone */ } continue; }
     try { process.kill(Number(pid), 'SIGTERM'); } catch (e) { if (e.code !== 'ESRCH') throw e; }
   }
   // Include a quiet period to detect a service manager immediately restarting it.

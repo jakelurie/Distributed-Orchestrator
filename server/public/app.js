@@ -1453,7 +1453,7 @@ async function networkSheet() {
   openSheet(`<h2>Phone access</h2>
     <p class="dim">Install Tailscale on this host and your phone, then sign into the same network. The host must stay awake and running.</p>
     <p><a href="https://tailscale.com/download" target="_blank" rel="noopener">Get Tailscale</a></p>
-    <p class="dim">Mac: use the installed Tailscale app. Linux or Windows WSL2: connect Tailscale inside the environment running this server.</p>
+    <p class="dim">Mac and Windows: use the installed Tailscale app.</p>
     <div id="network-status" role="status">Checking connection…</div>
     <div class="actions"><button class="ghost" id="network-check">check again</button><button class="primary" id="network-setup" disabled>set up phone access</button></div>
     <p class="dim">Setup publishes private HTTPS within your Tailscale network. Other Orchestrator hosts in Machines use the same address. Existing routes are preserved. If this server requires an access token, open its new address with that token on your phone.</p>${backToSettings}`);

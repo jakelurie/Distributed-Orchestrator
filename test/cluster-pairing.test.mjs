@@ -83,7 +83,7 @@ try {
   assert.equal((await down.discover()).hosts.length, 0);
   // A host without an HTTPS address publishes one when asked to join,
   // instead of sending the user off to set up Phone access first.
-  devices.push({ dns: 'lazy.example.ts.net', active: true, name: 'Lazy', platform: 'linux' });
+  devices.push({ dns: 'lazy.example.ts.net', active: true, name: 'Lazy', platform: 'windows' });
   const bare = await createCluster(path.join(root, 'bare'));
   clusters.push(bare);
   let published = 0;
