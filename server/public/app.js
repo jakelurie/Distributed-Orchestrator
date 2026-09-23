@@ -1609,6 +1609,7 @@ async function machinesSheet() {
 
 const sourceAttr = value => esc(value).replace(/"/g, '&quot;');
 let sourceHost = '';
+let sourceViewRequest = 0;
 const sourcesCall = async (action, args = {}) => {
   const response = await nativeFetch('/api/cluster/sources', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ host: sourceHost || undefined, action, ...args }) });
@@ -1618,16 +1619,29 @@ const sourcesCall = async (action, args = {}) => {
 };
 
 async function modelsSheet() {
+  const request = ++sourceViewRequest;
+  const loading = () => {
+    openSheet('<h2>AI sources</h2><p class="dim">Loading sources for the selected computer…</p>' + backToSettings);
+    $('sub-back').onclick = settingsSheet;
+  };
+  loading();
   try {
     const machines = await nativeFetch('/api/cluster/status').then(r => r.json());
+    if (request !== sourceViewRequest) return;
     sourceHost ||= machines.self;
-    const catalog = await sourcesCall('catalog');
+    const host = sourceHost;
+    const catalog = await sourcesCall('catalog', { host });
+    if (request !== sourceViewRequest || host !== sourceHost) return;
+    if (catalog.machine?.id !== host) throw new Error('Source response came from another computer. Refresh to retry.');
+    const configured = provider => Object.values(catalog.models).some(m => m.provider === provider);
+    const sourceLabel = (provider, name) => (configured(provider) ? 'Manage ' : 'Set up ') + name;
+
     openSheet(`<h2>AI sources</h2>
       <label>Computer</label><select id="sources-host">${machines.hosts.filter(h => h.member).map(h => `<option value="${sourceAttr(h.id)}" ${h.id === sourceHost ? 'selected' : ''}>${esc(h.name)}</option>`).join('')}</select>
-      <p class="dim">Sources and logins belong to this computer. New computers start empty. Connect a source, discover its models, then choose which to add.</p>
-      <button class="rowlink" id="source-claude">Set up Claude Code <span>›</span></button>
-      <button class="rowlink" id="source-codex">Set up Codex <span>›</span></button>
-      <button class="rowlink" id="source-local">Set up local models · Ollama <span>›</span></button>
+      <p class="dim"><b>${esc(catalog.machine.name)}</b> — sources configured on this computer only. New computers start empty. Connect a source, discover its models, then choose which to add.</p>
+      <button class="rowlink" id="source-claude">${sourceLabel('claude-cli', 'Claude Code')} <span>›</span></button>
+      <button class="rowlink" id="source-codex">${sourceLabel('codex-cli', 'Codex')} <span>›</span></button>
+      <button class="rowlink" id="source-local">${Object.values(catalog.models).some(m => m.sourceKind === 'ollama') ? 'Manage' : 'Set up'} local models · Ollama <span>›</span></button>
       ${Object.values(catalog.models).map(m => `<div class="item machine-item"><div class="grow"><div class="t">${esc(m.label || m.model)}</div><div class="s">${esc(m.provider)} · ${esc(m.model)}</div></div>
         ${m.sourceKind === 'ollama' ? `<button class="ghost" data-local-load="${sourceAttr(m.model)}">load</button><button class="ghost" data-local-unload="${sourceAttr(m.model)}">unload</button><button class="ghost" data-helper="${sourceAttr(m.alias)}" data-enabled="${!m.allowDelegate}">helper ${m.allowDelegate ? 'on' : 'off'}</button>` : ''}
         ${sourceHost === machines.self ? `<button class="ghost" data-source-edit="${sourceAttr(m.alias)}">edit</button>` : ''}
@@ -1656,7 +1670,12 @@ async function modelsSheet() {
     for (const operation of ['load', 'unload']) $('sheet').querySelectorAll('[data-local-' + operation + ']').forEach(b => {
       b.onclick = () => perform('local', { operation, model: b.dataset[operation === 'load' ? 'localLoad' : 'localUnload'] });
     });
-  } catch (e) { showBanner(e.message); }
+  } catch (e) {
+    if (request !== sourceViewRequest) return;
+    openSheet('<h2>AI sources</h2><p class="dim">' + esc(e.message) + '</p><button class="ghost" id="sources-refresh">retry</button>' + backToSettings);
+    $('sources-refresh').onclick = modelsSheet;
+    $('sub-back').onclick = settingsSheet;
+  }
 }
 
 function onboardSource(kind) {
