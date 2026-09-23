@@ -183,12 +183,8 @@ export async function complete({
     // The harness already decides what a session may touch; Codex's own
     // sandbox would refuse writes the user has asked for.
     ...(spec.sandbox === false ? ['--dangerously-bypass-approvals-and-sandbox'] : []),
-    // The prompt argument is the agent's instructions; piped stdin is appended
-    // as a <stdin> block. So the harness's system prompt goes here and the
-    // transcript goes down the pipe. Without this the session ran on Codex's
-    // own defaults and never received any of the harness's instructions —
-    // including the one telling it to finish with a clear outcome.
-    ...(system ? [system] : []),
+    // Read the entire prompt from stdin; Windows command arguments are bounded.
+    '-',
   ];
 
   const started = Date.now();
@@ -204,10 +200,12 @@ export async function complete({
   // window overshot it and the turn was refused outright, so the character
   // ceiling is applied directly and wins over any token-derived figure.
   const CODEX_MAX_CHARS = 1_048_576;
-  const headroom = spec.maxInputChars ?? CODEX_MAX_CHARS - 16_384;
+  const prefix = system ? system + '\n\nConversation:\n' : '';
+  const headroom = Math.max(1, Math.min(spec.maxInputChars ?? CODEX_MAX_CHARS - 16_384, CODEX_MAX_CHARS - 16_384) - prefix.length);
   const fromTokens = spec.contextTokens ? Math.floor(spec.contextTokens * 0.9 * 3.5) : Infinity;
 
-  child.stdin.end(renderForPrompt(events, {
+  child.stdin.on('error', () => {}); // Early CLI exits are reported through close/stderr.
+  child.stdin.end(prefix + renderForPrompt(events, {
     budgetChars: Math.min(headroom, fromTokens),
   }));
 
