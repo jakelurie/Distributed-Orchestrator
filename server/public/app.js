@@ -1209,6 +1209,7 @@ async function settingsSheet() {
       <button class="rowlink" id="h-models"><span>AI sources</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-voice"><span>Voice setup</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-notify"><span>Notifications</span><span class="chev">›</span></button>
+      <button class="rowlink" id="h-version"><span id="h-version-label">Harness version · check machines</span><span class="chev">›</span></button>
     </div>
     <div class="actions"><button class="primary" id="s-close">done</button></div>`);
 
@@ -1220,6 +1221,37 @@ async function settingsSheet() {
   $('h-notify').onclick = notifySheet;
 
   $('s-close').onclick = closeSheet;
+  $('h-version').onclick = harnessVersionSheet;
+  const label = $('h-version-label');
+  try {
+    const result = await api('/api/harness/versions');
+    if ($('h-version-label') !== label) return;
+    const committed = result.version?.committedAt ? new Date(result.version.committedAt).toLocaleString() : 'time unknown';
+    label.textContent = `Harness ${(result.version?.revision || 'unknown').slice(0, 8)} · ${committed} · ${result.aligned ? 'machines match' : 'check machines'}`;
+  } catch { label.textContent = 'Harness version · unable to check'; }
+}
+
+async function harnessVersionSheet() {
+  openSheet('<h2>Harness version</h2><p class="dim">Checking paired machines…</p>');
+  try {
+    const result = await api('/api/harness/versions');
+    const stamp = value => value ? new Date(value).toLocaleString() : 'unknown';
+    openSheet(`<h2>Harness version</h2>
+      <p class="dim">${result.aligned ? 'All paired machines run the same commit.' : 'Some machines need attention. Different commits may be ahead or behind.'}</p>
+      ${result.hosts.map(host => `<div class="item machine-item"><div class="grow">
+        <div class="t">${esc(host.name || host.id)}</div>
+        <div class="s">${esc(host.state)}</div>
+        <div class="s">Running ${(esc(host.version?.revision || 'unknown')).slice(0, 12)} · committed ${esc(stamp(host.version?.committedAt))}</div>
+        <div class="s">Started ${esc(stamp(host.version?.startedAt))}</div>
+        ${host.update?.head && host.update.head !== host.version?.revision ? `<div class="s">Downloaded ${esc(host.update.head.slice(0, 12))}</div>` : ''}
+        ${host.update?.error ? `<div class="s">${esc(host.update.error)}</div>` : ''}
+      </div></div>`).join('')}
+      <p class="dim">Checked ${esc(stamp(result.checkedAt))}. Idle machines check GitHub every 30 seconds. Restart applies downloaded changes. Unreachable machines cannot be verified.</p>
+      <div class="actions"><button class="ghost" id="version-back">back</button><button class="ghost" id="version-refresh">refresh</button><button class="primary" id="version-restart">restart machines</button></div>`);
+    $('version-back').onclick = settingsSheet;
+    $('version-refresh').onclick = harnessVersionSheet;
+    $('version-restart').onclick = event => restartOrchestrator(event.currentTarget);
+  } catch (e) { showBanner(e.message, true); closeSheet(); }
 }
 
 async function githubSheet() {
