@@ -24,5 +24,10 @@ process.stdin.on('end', () => {
   assert.equal(captured.args.at(-1), '-');
   assert.ok(captured.input.startsWith(system));
   assert.match(captured.input, /Test this machine/);
-  console.log('PASS large Codex instructions travel through stdin, not Windows command arguments');
+  assert.ok(captured.args.includes('--dangerously-bypass-approvals-and-sandbox'), 'Codex sandbox is off by default');
+  await complete({ client: { bin }, spec: { model: 'test', sandbox: true }, system: '',
+    events: [{ type: 'user', text: 'x' }], cwd: dir });
+  const sandboxed = JSON.parse(await fs.readFile(path.join(dir, 'captured.json')));
+  assert.ok(!sandboxed.args.includes('--dangerously-bypass-approvals-and-sandbox'), 'sandbox: true keeps it');
+  console.log('PASS large Codex instructions travel through stdin, not Windows command arguments; sandbox off unless asked');
 } finally { await fs.rm(dir, { recursive: true, force: true }); }
