@@ -2,6 +2,8 @@
 
 A control plane for AI work across apps, workspaces, and sessions.
 
+<!-- Mock update: worktree editing verified on 2026-09-23. -->
+
 Run a project against swappable models — Claude, GPT, or a local one — and
 switch between them mid-session with the conversation intact. Drive it from a
 browser on your computer or phone.
