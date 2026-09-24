@@ -181,8 +181,10 @@ export async function complete({
     ...(spec.model ? ['--model', spec.model] : []),
     ...(spec.reasoningEffort ? ['-c', `model_reasoning_effort="${spec.reasoningEffort}"`] : []),
     // The harness already decides what a session may touch; Codex's own
-    // sandbox would refuse writes the user has asked for.
-    ...(spec.sandbox === false ? ['--dangerously-bypass-approvals-and-sandbox'] : []),
+    // sandbox would refuse writes the user has asked for, and `exec` cannot
+    // prompt to escalate. Off by default, as `claude-cli` bypasses its
+    // permissions by default; `"sandbox": true` in models.json keeps it.
+    ...(spec.sandbox === true ? [] : ['--dangerously-bypass-approvals-and-sandbox']),
     // Read the entire prompt from stdin; Windows command arguments are bounded.
     '-',
   ];
