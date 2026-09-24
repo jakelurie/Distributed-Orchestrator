@@ -31,6 +31,7 @@ import { hostPairing } from '../src/core/cluster/pairing.js';
 import { executionHosts, executionOwner, assignmentError, sessionWriteError, recoverStoppedTurn } from '../src/core/cluster/execution.js';
 import { createCluster } from '../src/core/cluster/index.js';
 import { restartPeers } from '../src/core/cluster/restart.js';
+import { harnessVersions } from '../src/core/harness-version.js';
 import { createNodes } from '../src/core/nodes.js';
 import { createAISources } from '../src/core/ai-sources.js';
 import { modelInventory, machineHelp } from '../src/core/machine-help.js';
@@ -71,6 +72,12 @@ const instanceId = crypto.randomUUID();
 let restarting = false;
 const harnessDir = path.resolve(__dirname, '..');
 const loadedRevision = (await git.run(['rev-parse', 'HEAD'], harnessDir)).out;
+const loadedVersion = {
+  revision: loadedRevision,
+  committedAt: (await git.run(['show', '-s', '--format=%cI', 'HEAD'], harnessDir)).out,
+  startedAt: new Date().toISOString(),
+  dirty: Boolean((await git.run(['status', '--porcelain'], harnessDir)).out),
+};
 let harnessUpdate = { restartRequired: false };
 let checkingHarnessUpdate = false;
 
@@ -1306,7 +1313,11 @@ const server = http.createServer(async (req, res) => {
     // broken: new endpoints 404, new UI never appears.
     if (req.method === 'GET' && pathname === '/api/harness/status') {
       return json(res, 200, { instanceId, restartId: process.env.ORCHESTRATOR_RESTART_ID || null,
-        node: cluster.self.id, pid: process.pid, busy: Boolean(running.size || messageQueue.size), restarting });
+        node: cluster.self.id, pid: process.pid, busy: Boolean(running.size || messageQueue.size), restarting,
+        version: loadedVersion, update: harnessUpdate });
+    }
+    if (req.method === 'GET' && pathname === '/api/harness/versions') {
+      return json(res, 200, await harnessVersions(cluster, { node: cluster.self.id, version: loadedVersion, update: harnessUpdate }));
     }
     if (req.method === 'POST' && pathname === '/api/harness/restart') {
       if (restarting) return json(res, 409, { error: 'A restart is already in progress.' });
@@ -1974,7 +1985,7 @@ setInterval(async () => {
   checkingHarnessUpdate = true;
   try {
     const result = await syncHarnessCheckout(harnessDir, { busy: () => Boolean(restarting || running.size || messageQueue.size) });
-    harnessUpdate = { ...result, restartRequired: Boolean(loadedRevision && result.head !== loadedRevision) };
+    harnessUpdate = { ...result, checkedAt: new Date().toISOString(), restartRequired: Boolean(loadedRevision && result.head !== loadedRevision) };
   } catch (e) { harnessUpdate = { ...harnessUpdate, error: e.message }; }
   finally { checkingHarnessUpdate = false; }
 }, 30_000).unref();

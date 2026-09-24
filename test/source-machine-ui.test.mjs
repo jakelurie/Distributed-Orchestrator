@@ -17,6 +17,7 @@ const context = { $, esc: String, backToSettings: '', settingsSheet() {}, source
   },
 };
 vm.createContext(context);
+vm.runInContext(source.slice(source.indexOf('function modelVersionDetails('), source.indexOf('async function sessionSettingsSheet()')), context);
 vm.runInContext(source.slice(source.indexOf('const sourceAttr ='), source.indexOf('function onboardSource(')), context);
 const catalog = (host, models) => ({ machine: { id: host, name: host }, models, jobs: [] });
 const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };

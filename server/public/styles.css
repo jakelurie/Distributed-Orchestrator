@@ -688,6 +688,8 @@ button.primary.danger:active { background: #db5f78; }
 .rowlink:last-child { border-bottom: none; }
 .rowlink:active { background: var(--line); }
 .rowlink .chev { color: var(--fg-faint); font-size: 20px; line-height: 1; }
+#h-version { gap: 12px; padding-top: 10px; padding-bottom: 10px; }
+#h-version-label { min-width: 0; overflow-wrap: anywhere; color: var(--fg-dim); font-size: 12px; }
 
 /* Apps & sessions, one list. An app expands to the sessions inside it. */
 .app-block { margin-bottom: 10px; }

@@ -96,7 +96,8 @@ export async function complete({
     if (d.type === 'system' && d.model) reply.servedModel = d.model;
 
     if (d.type === 'assistant' && d.message) {
-      const step = { kind: 'assistant', text: '', thinking: '', toolCalls: [], usage: {} };
+      if (d.message.model) reply.servedModel = d.message.model;
+      const step = { kind: 'assistant', servedModel: reply.servedModel, text: '', thinking: '', toolCalls: [], usage: {} };
       for (const b of d.message.content ?? []) {
         if (b.type === 'text') { step.text += b.text; reply.text += b.text; onText?.(b.text); }
         else if (b.type === 'thinking') { step.thinking += b.thinking ?? ''; onThinking?.(b.thinking ?? ''); }
@@ -170,7 +171,7 @@ export async function complete({
       // The CLI's own summary is authoritative when no text block carried it.
       if (!reply.text && typeof d.result === 'string') {
         reply.text = d.result;
-        const step = { kind: 'assistant', text: d.result, thinking: '', toolCalls: [], usage: {} };
+        const step = { kind: 'assistant', servedModel: reply.servedModel, text: d.result, thinking: '', toolCalls: [], usage: {} };
         reply.steps.push(step);
         onStep?.(step);
       }
