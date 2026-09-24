@@ -39,18 +39,20 @@ export async function syncHarnessCheckout(dir, { busy = () => false } = {}) {
   const repo = await repository(dir);
   return locked(repo, async () => {
     const head = await git(repo.root, 'rev-parse', 'HEAD');
-    if (busy()) return { head, skipped: 'busy' };
-    if (!await clean(repo.root)) return { head, skipped: 'local changes' };
     const branch = await git(repo.root, 'symbolic-ref', '--short', 'HEAD');
     const upstream = await git(repo.root, 'rev-parse', '--abbrev-ref', '@{u}');
     await git(repo.root, 'fetch', '--quiet');
+    const latest = await git(repo.root, 'rev-parse', upstream);
+    const available = Number(await git(repo.root, 'rev-list', '--count', `${head}..${latest}`)) > 0;
+    if (busy()) return { head, latest, available, skipped: 'busy' };
+    if (!await clean(repo.root)) return { head, latest, available, skipped: 'local changes' };
     if (busy() || !await clean(repo.root)
       || await git(repo.root, 'rev-parse', 'HEAD') !== head
       || await git(repo.root, 'symbolic-ref', '--short', 'HEAD') !== branch)
-      return { head, skipped: 'checkout changed or busy' };
+      return { head, latest, available, skipped: 'checkout changed or busy' };
     await git(repo.root, 'merge', '--ff-only', upstream);
     const updated = await git(repo.root, 'rev-parse', 'HEAD');
-    return { head: updated, updated: updated !== head };
+    return { head: updated, latest, available: false, updated: updated !== head };
   });
 }
 

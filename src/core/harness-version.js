@@ -16,11 +16,12 @@ export async function harnessVersions(cluster, local, { request = fetch } = {}) 
       const update = status.update || {};
       const state = !version?.revision ? 'Version unavailable — update this machine'
         : update.restartRequired ? 'Restart needed'
+        : update.available ? `Update available${update.skipped ? `: ${update.skipped}` : ''}`
         : version.dirty ? 'Local edits at startup'
         : version.revision !== local.version.revision ? 'Different commit — check updates'
         : update.error ? 'Update check failed'
         : update.skipped ? `Update check paused: ${update.skipped}` : 'Same running commit';
-      return { id: host.id, name: host.name, version, update, state };
+      return { id: host.id, name: host.name, version, update, state, busy: Boolean(status.busy), restarting: Boolean(status.restarting) };
     } catch { return { id: host.id, name: host.name, state: 'Unreachable — version unverified' }; }
   }));
   return { version: local.version, hosts, checkedAt: new Date().toISOString(),

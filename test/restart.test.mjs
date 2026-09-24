@@ -14,10 +14,10 @@ const binding = source.slice(source.indexOf("$('sheet').querySelectorAll('[data-
 let click, invoked = 0;
 vm.runInNewContext(binding, {
   $: () => ({ querySelectorAll: () => [{ set onclick(fn) { click = fn; } }] }),
-  restartOrchestrator: async () => { invoked++; },
+  harnessVersionSheet: async () => { invoked++; },
 });
 await click({ stopPropagation() {} });
-assert.equal(invoked, 1, 'the first tap actually requests a restart');
+assert.equal(invoked, 1, 'the first tap opens the machine selector');
 const expected = { instanceId: 'old', restartId: 'ticket', node: 'host' };
 for (const scenario of ['success', 'timeout', 'refused', 'legacy']) {
   let now = 0, polls = 0, reloaded = false, closed = false;
@@ -95,11 +95,13 @@ try {
   peerClosed = once(peer, 'exit');
   const peerOriginal = await waitFor(() => true, peerOrigin);
   await call('/api/cluster/join', 'POST', peerOrigin, { url: origin, ownUrl: peerOrigin, token: 'restart-test' });
-  const requested = await call('/api/harness/restart', 'POST');
-  peerReplacement = await waitFor(status => status.instanceId !== peerOriginal.instanceId, peerOrigin);
+  const peerRequested = await call('/api/harness/restart?host=' + peerOriginal.node, 'POST');
+  peerReplacement = await waitFor(status => status.restartId === peerRequested.restartId, peerOrigin);
+  assert.equal((await call('/api/harness/status')).instanceId, original.instanceId, 'restarting a peer leaves this machine running');
   assert.equal(peerReplacement.node, peerOriginal.node);
   assert.notEqual(peerReplacement.pid, peerOriginal.pid);
   await peerClosed;
+  const requested = await call('/api/harness/restart', 'POST');
   assert.equal(requested.instanceId, original.instanceId);
   replacement = await waitFor(status => status.restartId === requested.restartId);
   assert.notEqual(replacement.pid, original.pid);

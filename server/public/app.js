@@ -962,9 +962,16 @@ async function refreshState() {
   // Assign field by field. A blanket Object.assign once let the server's
   // `running` (an array of busy session ids) land on top of the local boolean
   // of the same name - and [] is truthy, so send() silently refused forever.
-  if (s.harnessUpdate?.restartRequired && state.harnessUpdateRevision !== s.harnessUpdate.head) {
-    state.harnessUpdateRevision = s.harnessUpdate.head;
-    showBanner('Harness code was updated on this computer. Use Restart on the Harness app to apply it.');
+  if (!state.harnessCheckedAt || Date.now() - state.harnessCheckedAt > 30_000) {
+    state.harnessCheckedAt = Date.now();
+    api('/api/harness/versions').then(result => {
+      const pending = result.hosts.filter(host => host.update?.restartRequired || host.update?.available);
+      const key = pending.map(host => host.id + ':' + host.update.head + ':' + host.update.latest + ':' + host.update.restartRequired).join(',');
+      if (key && key !== state.harnessUpdateRevision) {
+        showBanner(pending.map(host => `${host.name || host.id}: ${host.state}`).join('; ') + '. Open Restart on the Harness app.');
+      }
+      state.harnessUpdateRevision = key;
+    }).catch(() => {});
   }
   state.machines = s.machines;
   state.apps = s.apps ?? [];
@@ -1209,7 +1216,7 @@ async function settingsSheet() {
       <button class="rowlink" id="h-models"><span>AI sources</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-voice"><span>Voice setup</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-notify"><span>Notifications</span><span class="chev">›</span></button>
-      <button class="rowlink" id="h-version"><span id="h-version-label">Harness version · check machines</span><span class="chev">›</span></button>
+      <button class="rowlink" id="h-version"><span id="h-version-label">Restart and updates</span><span class="chev">›</span></button>
     </div>
     <div class="actions"><button class="primary" id="s-close">done</button></div>`);
 
@@ -1222,35 +1229,31 @@ async function settingsSheet() {
 
   $('s-close').onclick = closeSheet;
   $('h-version').onclick = harnessVersionSheet;
-  const label = $('h-version-label');
-  try {
-    const result = await api('/api/harness/versions');
-    if ($('h-version-label') !== label) return;
-    const committed = result.version?.committedAt ? new Date(result.version.committedAt).toLocaleString() : 'time unknown';
-    label.textContent = `Harness ${(result.version?.revision || 'unknown').slice(0, 8)} · ${committed} · ${result.aligned ? 'machines match' : 'check machines'}`;
-  } catch { label.textContent = 'Harness version · unable to check'; }
 }
 
 async function harnessVersionSheet() {
-  openSheet('<h2>Harness version</h2><p class="dim">Checking paired machines…</p>');
+  openSheet('<h2>Restart Harness</h2><p class="dim">Checking paired machines…</p>');
   try {
     const result = await api('/api/harness/versions');
     const stamp = value => value ? new Date(value).toLocaleString() : 'unknown';
-    openSheet(`<h2>Harness version</h2>
+    openSheet(`<h2>Restart Harness</h2>
       <p class="dim">${result.aligned ? 'All paired machines run the same commit.' : 'Some machines need attention. Different commits may be ahead or behind.'}</p>
       ${result.hosts.map(host => `<div class="item machine-item"><div class="grow">
         <div class="t">${esc(host.name || host.id)}</div>
         <div class="s">${esc(host.state)}</div>
-        <div class="s">Running ${(esc(host.version?.revision || 'unknown')).slice(0, 12)} · committed ${esc(stamp(host.version?.committedAt))}</div>
+        <div class="s">Active commit ${(esc(host.version?.revision || 'unknown')).slice(0, 12)} · committed ${esc(stamp(host.version?.committedAt))}</div>
         <div class="s">Started ${esc(stamp(host.version?.startedAt))}</div>
         ${host.update?.head && host.update.head !== host.version?.revision ? `<div class="s">Downloaded ${esc(host.update.head.slice(0, 12))}</div>` : ''}
+        ${host.update?.latest ? `<div class="s">Latest commit ${esc(host.update.latest.slice(0, 12))}</div>` : ''}
         ${host.update?.error ? `<div class="s">${esc(host.update.error)}</div>` : ''}
-      </div></div>`).join('')}
-      <p class="dim">Checked ${esc(stamp(result.checkedAt))}. Idle machines check GitHub every 30 seconds. Restart applies downloaded changes. Unreachable machines cannot be verified.</p>
-      <div class="actions"><button class="ghost" id="version-back">back</button><button class="ghost" id="version-refresh">refresh</button><button class="primary" id="version-restart">restart machines</button></div>`);
+      </div><button class="ghost" data-restart-host="${esc(host.id)}" ${!host.version || host.busy || host.restarting ? 'disabled' : ''}>${host.busy ? 'busy' : host.restarting ? 'restarting' : 'restart'}</button></div>`).join('')}
+      <p class="dim">Checked ${esc(stamp(result.checkedAt))}. Machines check GitHub every 30 seconds and download updates when idle. Restart applies downloaded changes. Unreachable machines cannot be verified.</p>
+      <div class="actions"><button class="ghost" id="version-back">back</button><button class="ghost" id="version-refresh">refresh</button></div>`);
     $('version-back').onclick = settingsSheet;
     $('version-refresh').onclick = harnessVersionSheet;
-    $('version-restart').onclick = event => restartOrchestrator(event.currentTarget);
+    $('sheet').querySelectorAll('[data-restart-host]').forEach(button => {
+      button.onclick = () => restartOrchestrator(button, button.dataset.restartHost);
+    });
   } catch (e) { showBanner(e.message, true); closeSheet(); }
 }
 
@@ -2413,21 +2416,24 @@ async function showPeerSessions() {
   } catch { if ($('peer-sessions') === box) box.textContent = 'Could not load connected machines.'; }
 }
 
-async function restartOrchestrator(button) {
+async function restartOrchestrator(button, host) {
+  const query = host ? `?host=${encodeURIComponent(host)}` : '';
   button.disabled = true;
   closeSheet(); // Feedback must be visible, including a refused restart.
-  showBanner('Restarting paired computers one at a time, then this computer…');
+  showBanner('Restarting the selected machine...');
   try {
-    const expected = await api('/api/harness/restart', { method: 'POST' });
+    const local = host ? await api('/api/harness/status') : null;
+    const expected = await api('/api/harness/restart' + query, { method: 'POST' });
     if (!expected.restartId) throw new Error('The old server accepted the restart but cannot verify it. Wait a few seconds, then refresh to load the updated restart control.');
     showBanner('Restarting — waiting for the replacement server…');
     const deadline = Date.now() + 45_000;
     while (Date.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve, 700));
       try {
-        const current = await api('/api/harness/status', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
+        const current = await api('/api/harness/status' + query, { cache: 'no-store', signal: AbortSignal.timeout(3000) });
         if (current.restartId === expected.restartId && current.instanceId !== expected.instanceId && current.node === expected.node) {
-          location.reload();
+          if (host && host !== local.node) { showBanner('Machine restarted successfully.'); await harnessVersionSheet(); }
+          else location.reload();
           return;
         }
       } catch { /* The listener is unavailable during a normal restart. */ }
@@ -2479,7 +2485,7 @@ function renderAppsSheet(d) {
       : `<span class="pill ${a.reachable ? 'ready' : a.running ? 'warm' : ''}">${label}</span>`;
     const actions = a.builtin
       ? `<div class="app-actions">
-          <button class="x" data-harness-restart="1" title="Restart Harness on all paired computers to apply code changes">⟳</button>
+          <button class="x" data-harness-restart="1" title="Restart Harness: choose a machine">⟳</button>
         </div>`
       : `<div class="app-actions">
           ${launchable || a.running ? `<button class="x" data-app-run="${esc(a.id)}" title="${a.running ? 'Stop' : 'Start'}">${a.running ? '■' : '▶'}</button>` : ''}
@@ -2555,7 +2561,7 @@ function renderAppsSheet(d) {
   $('sheet').querySelectorAll('[data-harness-restart]').forEach((el) => {
     el.onclick = async (e) => {
       e.stopPropagation();
-      await restartOrchestrator(el);
+      await harnessVersionSheet();
     };
   });
   $('sheet').querySelectorAll('[data-new-in]').forEach((el) => {
