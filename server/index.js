@@ -652,7 +652,7 @@ async function dispatchMessage(id, body, reply) {
           } else {
             const where = res.pushed ? 'integrated and pushed' : `integrated locally (not pushed — ${res.reason})`;
             session.events.push(noteEvent(
-              `git: ${where} ${res.files.length} file${res.files.length === 1 ? '' : 's'} · ${res.sha}`,
+              `git: ${where} ${res.files.length} file${res.files.length === 1 ? '' : 's'} · ${res.sha}${app?.builtin && res.pushed ? ' · published to GitHub; automatic machine update queued — see Settings → Harness version for verification' : ''}`,
               { sha: res.sha, commitUrl: res.commitUrl },
             ));
           }
@@ -1324,6 +1324,13 @@ const server = http.createServer(async (req, res) => {
       if (running.size || messageQueue.size) {
         return json(res, 409, { error: 'A turn or queued message is still running — wait for it to finish, then restart.' });
       }
+      const targetRevision = req.headers['x-harness-revision'];
+      if (targetRevision) {
+        const head = await git.run(['rev-parse', 'HEAD'], harnessDir);
+        const dirty = await git.run(['status', '--porcelain'], harnessDir);
+        if (!head.ok || head.out !== targetRevision || !dirty.ok || dirty.out)
+          return json(res, 409, { error: 'Checkout changed; waiting for the expected clean published commit.' });
+      }
       restarting = true;
       let out, helper;
       try {
@@ -1979,14 +1986,33 @@ placement = appPlacement(cluster, USER_DATA, {
 });
 clusterAssets = replicatedAssets(cluster, USER_DATA);
 cluster.replica.start();
-// Each computer updates its own installed checkout; restart stays explicit.
+// Each host downloads safely. Only the coordinator rolls idle hosts forward.
 setInterval(async () => {
-  if (checkingHarnessUpdate || restarting || running.size || messageQueue.size) return;
+  if (checkingHarnessUpdate || restarting) return;
+  if (running.size || messageQueue.size) {
+    harnessUpdate = { ...harnessUpdate, skipped: 'busy — automatic update queued' };
+    return;
+  }
   checkingHarnessUpdate = true;
   try {
     const result = await syncHarnessCheckout(harnessDir, { busy: () => Boolean(restarting || running.size || messageQueue.size) });
     harnessUpdate = { ...result, checkedAt: new Date().toISOString(), restartRequired: Boolean(loadedRevision && result.head !== loadedRevision) };
-  } catch (e) { harnessUpdate = { ...harnessUpdate, error: e.message }; }
+    if (result.skipped || !result.published || cluster.replica.role !== 'leader') return;
+    const versions = await harnessVersions(cluster, { node: cluster.self.id, version: loadedVersion, update: harnessUpdate });
+    if (!versions.hosts.some(host => host.version?.revision && host.version.revision !== result.head)) return;
+    harnessUpdate.phase = 'Waiting for all machines; automatic restart queued';
+    await restartPeers(cluster, { targetRevision: result.head });
+    if (loadedRevision === result.head && !loadedVersion.dirty) {
+      harnessUpdate.phase = 'All machine running commits verified';
+      return;
+    }
+    harnessUpdate.phase = 'Peers verified; restarting this computer';
+    const response = await fetch(`http://127.0.0.1:${PORT}/api/harness/restart`, {
+      method: 'POST', headers: { 'x-cluster-key': cluster.replica.disk.secret, 'x-harness-revision': result.head },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) throw new Error((await response.json()).error || 'Automatic restart refused');
+  } catch (e) { harnessUpdate = { ...harnessUpdate, error: e.message, phase: 'Automatic update waiting — retries every 30 seconds' }; }
   finally { checkingHarnessUpdate = false; }
 }, 30_000).unref();
 // Discover our published address without changing the user's Serve routes.

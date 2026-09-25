@@ -964,7 +964,7 @@ async function refreshState() {
   // of the same name - and [] is truthy, so send() silently refused forever.
   if (s.harnessUpdate?.restartRequired && state.harnessUpdateRevision !== s.harnessUpdate.head) {
     state.harnessUpdateRevision = s.harnessUpdate.head;
-    showBanner('Harness code was updated on this computer. Use Restart on the Harness app to apply it.');
+    showBanner('Harness update downloaded. Automatic restart is queued until all machines are ready and idle.');
   }
   state.machines = s.machines;
   state.apps = s.apps ?? [];
@@ -1244,9 +1244,11 @@ async function harnessVersionSheet() {
         <div class="s">Running ${(esc(host.version?.revision || 'unknown')).slice(0, 12)} · committed ${esc(stamp(host.version?.committedAt))}</div>
         <div class="s">Started ${esc(stamp(host.version?.startedAt))}</div>
         ${host.update?.head && host.update.head !== host.version?.revision ? `<div class="s">Downloaded ${esc(host.update.head.slice(0, 12))}</div>` : ''}
+        ${host.update?.latest ? `<div class="s">GitHub ${esc(host.update.latest.slice(0, 12))} · checked ${esc(stamp(host.update.checkedAt))}</div>` : ''}
+        ${host.update?.phase ? `<div class="s">${esc(host.update.phase)}</div>` : ''}
         ${host.update?.error ? `<div class="s">${esc(host.update.error)}</div>` : ''}
       </div></div>`).join('')}
-      <p class="dim">Checked ${esc(stamp(result.checkedAt))}. Idle machines check GitHub every 30 seconds. Restart applies downloaded changes. Unreachable machines cannot be verified.</p>
+      <p class="dim">Checked ${esc(stamp(result.checkedAt))}. Machines check GitHub every 30 seconds when idle. Published updates restart automatically once every machine has downloaded the same commit. Each restart is verified. Unreachable machines cannot be verified.</p>
       <div class="actions"><button class="ghost" id="version-back">back</button><button class="ghost" id="version-refresh">refresh</button><button class="primary" id="version-restart">restart machines</button></div>`);
     $('version-back').onclick = settingsSheet;
     $('version-refresh').onclick = harnessVersionSheet;

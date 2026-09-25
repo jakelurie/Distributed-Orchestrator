@@ -50,7 +50,8 @@ export async function syncHarnessCheckout(dir, { busy = () => false } = {}) {
       return { head, skipped: 'checkout changed or busy' };
     await git(repo.root, 'merge', '--ff-only', upstream);
     const updated = await git(repo.root, 'rev-parse', 'HEAD');
-    return { head: updated, updated: updated !== head };
+    const latest = await git(repo.root, 'rev-parse', upstream);
+    return { head: updated, latest, published: updated === latest, updated: updated !== head };
   });
 }
 

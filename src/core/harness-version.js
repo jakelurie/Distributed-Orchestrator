@@ -15,6 +15,7 @@ export async function harnessVersions(cluster, local, { request = fetch } = {}) 
       const version = status.version;
       const update = status.update || {};
       const state = !version?.revision ? 'Version unavailable — update this machine'
+        : update.published === false ? 'Local commit not published to GitHub — waiting for integration'
         : update.restartRequired ? 'Restart needed'
         : version.dirty ? 'Local edits at startup'
         : version.revision !== local.version.revision ? 'Different commit — check updates'

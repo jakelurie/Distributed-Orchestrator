@@ -68,6 +68,16 @@ try {
   const followerProcess = await b.call('/api/harness/status');
   assert.notEqual(followerProcess.instanceId, mainProcess.instanceId, 'restart status identifies the addressed host, not the leader');
   assert.equal(followerProcess.pid, b.child.pid);
+  assert.ok(mainProcess.version.revision);
+  const versions = await a.call('/api/harness/versions');
+  assert.equal(versions.hosts.length, 3);
+  assert.ok(versions.hosts.every(host => host.version?.revision === mainProcess.version.revision));
+  const wrongRevision = await fetch(a.origin + '/api/harness/restart', {
+    method: 'POST', headers: { 'x-harness-token': 'cluster-test', 'x-harness-revision': 'not-the-published-commit' },
+  });
+  assert.equal(wrongRevision.status, 409, 'rollout refuses to restart an unexpected checkout');
+  assert.equal((await a.call('/api/harness/status')).instanceId, mainProcess.instanceId);
+
   await c.call('/api/cluster/viewer', 'POST', { id: 'test-phone-123456789' });
   await a.call('/api/sessions/' + session.id, 'PATCH', { name: 'replicated rename' });
   await a.call('/api/models/key', 'POST', { alias: '__transcription', apiKey: 'test-replicated-key' });
