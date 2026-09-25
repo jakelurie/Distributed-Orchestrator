@@ -491,7 +491,7 @@ function turnHtml(turn, i, running, number, isLast) {
     const isFinal = j === finalIndex;
     const replyKey = key + '-final';
     const reply = `<div class="turn assistant${isFinal ? ' final-reply' : ''}">
-      <div class="who"><span class="tag">${esc(a.model)}</span>
+      <div class="who"><span class="tag">${esc(state.models[a.model]?.label || a.servedModel || a.model)}</span>
         ${a.servedModel && a.servedModel !== a.model
           ? `<span class="served">${esc(a.servedModel)}</span>` : ''}
         <span class="at">${clock(a.ts)}</span>
@@ -558,7 +558,7 @@ function liveTurn(tab = state.tab) {
   if (!t.live) {
     const div = document.createElement('div');
     div.className = 'turn assistant';
-    div.innerHTML = `<div class="who"><span class="tag">${esc(t.session?.model ?? '')}</span></div>
+    div.innerHTML = `<div class="who"><span class="tag">${esc(state.models[t.session?.model]?.label || t.session?.model || '')}</span></div>
       <div class="thinking" hidden></div><div class="body"></div>`;
     if (tab === state.tab) $('transcript').append(div);
     t.live = div;

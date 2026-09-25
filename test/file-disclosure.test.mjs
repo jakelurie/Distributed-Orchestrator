@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import vm from 'node:vm';
 
 const source = await fs.readFile(new URL('../server/public/app.js', import.meta.url), 'utf8');
-const context = { esc: String, render: String, compact: String, clock: () => '',
+const context = { state: { models: {} }, esc: String, render: String, compact: String, clock: () => '',
   humanSize: String, copyTexts: new Map(), toolBlock: () => '' };
 vm.createContext(context);
 vm.runInContext(source.slice(source.indexOf('function activityChip('), source.indexOf('function drawTranscript(')), context);

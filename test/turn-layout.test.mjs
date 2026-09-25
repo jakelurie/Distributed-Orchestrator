@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
 const source = await fs.readFile('server/public/app.js', 'utf8');
-const context = { esc: String, render: String, compact: String, clock: () => '', copyTexts: new Map(), toolBlock: () => '<tool>tool</tool>' };
+const context = { state: { models: {} }, esc: String, render: String, compact: String, clock: () => '', copyTexts: new Map(), toolBlock: () => '<tool>tool</tool>' };
 vm.createContext(context);
 vm.runInContext(source.slice(source.indexOf('function activityChip('), source.indexOf('function drawTranscript(')), context);
 const turn = { user: { id: 'u', text: 'QUESTION' }, texts: [{ text: 'PROGRESS', model: 'm' }, { text: 'FINAL', model: 'm' }], steps: [{ call: { name: 'shell' }, result: { ok: true } }], notes: [], files: [], endedOn: 'reply' };

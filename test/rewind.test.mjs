@@ -97,7 +97,7 @@ console.log('PASS restoring is refused on a dirty tree or an unknown commit');
 // -------------------------------------------------------------------- the UI
 
 const source = await fs.readFile('server/public/app.js', 'utf8');
-const context = { esc: String, render: String, compact: String, clock: () => '', copyTexts: new Map(), toolBlock: () => '' };
+const context = { state: { models: {} }, esc: String, render: String, compact: String, clock: () => '', copyTexts: new Map(), toolBlock: () => '' };
 vm.createContext(context);
 vm.runInContext(source.slice(source.indexOf('function activityChip('), source.indexOf('function drawTranscript(')), context);
 const html = context.turnHtml({
