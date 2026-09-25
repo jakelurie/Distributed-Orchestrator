@@ -33,6 +33,12 @@ try {
   const sa = { id: 'a', projectDir: a }, sb = { id: 'b', projectDir: b };
   await Promise.all([prepareTab(sa, { distributed: true }), prepareTab(sb, { distributed: true })]);
   assert.equal((await integrateTab(sa, { distributed: true, onCheck: () => { throw new Error('unchanged turns need no checks'); } })).skipped, 'no changes');
+  const previous = await git(remote, 'rev-parse', 'main');
+  const receipt = await integrateTab(sa, { push: true, recordTurn: true });
+  assert.equal(receipt.pushed, true);
+  assert.notEqual(await git(remote, 'rev-parse', 'main'), previous);
+  assert.equal(await git(remote, 'show', 'main:shared.txt'), 'original');
+  assert.match(await git(remote, 'log', '-1', '--format=%s', 'main'), /chat completed/);
   await fs.writeFile(path.join(sa.tabWorkspace.dir, 'a.txt'), 'from a');
   await fs.writeFile(path.join(sb.tabWorkspace.dir, 'b.txt'), 'from b');
   const credentials = path.join(root, 'credentials');

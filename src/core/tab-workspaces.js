@@ -253,6 +253,11 @@ export async function integrateTab(session, options = {}) {
   return locked(repo, async () => {
     if (await git(ws.dir, 'symbolic-ref', '--short', 'HEAD') !== ws.branch) throw new Error('Tab branch changed; integration stopped.');
     options.signal?.throwIfAborted();
+    if (options.recordTurn) {
+      const saved = await commitAndPush(ws.dir, { push: false });
+      if (!saved.ok) return saved;
+      if (!saved.committed) await git(ws.dir, 'commit', '--allow-empty', '-m', 'harness: chat completed (no file changes)');
+    }
     const remote = await git(repo.root, 'remote', 'get-url', 'origin').catch(() => '');
     if (options.distributed || (options.push && remote)) return integrateDistributed(repo, session, options);
     const saved = await commitAndPush(ws.dir, { push: false });

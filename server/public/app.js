@@ -445,7 +445,7 @@ function messageToggle(key, label) {
 function turnCommitLink(turn) {
   const note = [...(turn.notes || [])].reverse().find(n =>
     /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/commit\/[a-f0-9]{7,40}$/i.test(n.commitUrl || ''));
-  return note ? `<a class="turn-commit" href="${esc(note.commitUrl)}" target="_blank" rel="noopener noreferrer" aria-label="View this turn’s commit on GitHub">commit ↗</a>` : '';
+  return note ? `<a class="turn-commit" href="${esc(note.commitUrl)}" target="_blank" rel="noopener noreferrer" aria-label="View this turn’s commit on GitHub">Published ${esc((note.sha || '').slice(0, 8))} · ${clock(note.ts)} ↗</a>` : '';
 }
 
 function turnHtml(turn, i, running, number, isLast) {
@@ -517,6 +517,9 @@ function turnHtml(turn, i, running, number, isLast) {
     <div class="fold-body" id="fold-${esc(key)}"${open ? '' : ' hidden'}>${body}</div>`);
 
   bits.push(finalReply);
+  const publication = [...turn.notes].reverse().find(n => n.publication);
+  if (publication) bits.push(`<div class="note${publication.publication === 'failed' ? ' error' : ''}" role="status">${publication.publication === 'published' ? `Published to GitHub · ${esc(publication.sha)} · ${clock(publication.ts)}` : esc(publication.text)}</div>`);
+
 
   return bits.join('');
 }
@@ -1227,7 +1230,7 @@ async function settingsSheet() {
     const result = await api('/api/harness/versions');
     if ($('h-version-label') !== label) return;
     const committed = result.version?.committedAt ? new Date(result.version.committedAt).toLocaleString() : 'time unknown';
-    label.textContent = `Harness ${(result.version?.revision || 'unknown').slice(0, 8)} · ${committed} · ${result.aligned ? 'machines match' : 'check machines'}`;
+    label.textContent = `Running ${(result.version?.revision || 'unknown').slice(0, 8)} · code committed ${committed} · ${result.aligned ? 'machines match' : 'check machines'}`;
   } catch { label.textContent = 'Harness version · unable to check'; }
 }
 

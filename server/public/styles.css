@@ -770,7 +770,7 @@ button.primary.danger:active { background: #db5f78; }
 #s-computers .rowlink span { min-width: 0; overflow-wrap: anywhere; }
 
 .turn.user .who { flex-wrap: wrap; }
-.turn-commit { display: inline-flex; align-items: center; min-height: 44px; padding: 0 6px; color: var(--accent); white-space: nowrap; }
+.turn-commit { display: inline-flex; align-items: center; min-height: 44px; padding: 0 6px; color: var(--accent); max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 
 .machine-address { display: flex; align-items: center; min-height: 44px; color: var(--accent); overflow-wrap: anywhere; word-break: break-word; }
 

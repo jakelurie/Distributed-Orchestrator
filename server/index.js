@@ -605,10 +605,10 @@ async function dispatchMessage(id, body, reply) {
       // On by default: only an explicit false turns it off, so sessions
       // created before this became the default still push.
       const endedWithError = session.events.slice(sentAt).some((e) => e.type === 'note' && !String(e.text || '').startsWith('turn-end guard:'));
-      // An unchanged conversation needs neither checks nor a remote push,
-      // including when the model stopped with a note. Inspect saved commits too.
+      // Successful project chats get a commit receipt even without file changes.
+      // Non-project conversations have no repository to publish.
       try {
-        if (!(await tabHasUnpublishedWork(session))) {
+        if (!prepared && !(await tabHasUnpublishedWork(session))) {
           publicationFinished = true;
         }
       } catch { /* Integration below reports errors and preserves tab work. */ }
@@ -622,12 +622,17 @@ async function dispatchMessage(id, body, reply) {
           // brand-new GitHub repo out of a temp folder.
           const app = session.appId
             ? (await apps.load(USER_DATA)).find((a) => a.id === session.appId) : null;
+          const pending = noteEvent('Publishing commit…', { publication: 'pending' });
+          session.events.push(pending);
+          await store.save(session);
+          broadcast(id, { kind: 'event', event: pending });
           turn.last = 'merging and checking tab changes';
           controller.signal.throwIfAborted();
           const network = await connectionStatus();
           if (!network.connected) throw new Error(network.error);
           const res = await integrateTab(session, {
             distributed: placementInfo.distributed,
+            recordTurn: true,
             beforePublish: requireConnection,
             onWaiting: async text => { session.events.push(noteEvent(text)); await store.save(session); broadcast(id, { kind: 'event', event: session.events.at(-1) }); },
             signal: controller.signal,
@@ -653,7 +658,7 @@ async function dispatchMessage(id, body, reply) {
             const where = res.pushed ? 'integrated and pushed' : `integrated locally (not pushed — ${res.reason})`;
             session.events.push(noteEvent(
               `git: ${where} ${res.files.length} file${res.files.length === 1 ? '' : 's'} · ${res.sha}${app?.builtin && res.pushed ? ' · published to GitHub; automatic machine update queued — see Settings → Harness version for verification' : ''}`,
-              { sha: res.sha, commitUrl: res.commitUrl },
+              { sha: res.sha, commitUrl: res.commitUrl, publication: res.pushed ? 'published' : 'failed' },
             ));
           }
           if (session.events.at(-1)?.type === 'note') {
@@ -661,11 +666,18 @@ async function dispatchMessage(id, body, reply) {
             broadcast(id, { kind: 'event', event: session.events.at(-1) });
           }
         } catch (e) {
-          const event = noteEvent(`git: ${e?.message ?? String(e)}`);
+          const event = noteEvent(`Not published: ${e?.message ?? String(e)}`, { publication: 'failed' });
           session.events.push(event);
           await store.save(session);
           broadcast(id, { kind: 'event', event });
         }
+      }
+
+      if (!publicationFinished && !session.events.slice(sentAt).some(e => e.publication === 'failed')) {
+        const event = noteEvent('Not published: this turn stopped, reported an error, or automatic publishing is disabled. Changes remain in this tab.', { publication: 'failed' });
+        session.events.push(event);
+        await store.save(session);
+        broadcast(id, { kind: 'event', event });
       }
 
       // What this turn actually produced. Asking for a file and then
