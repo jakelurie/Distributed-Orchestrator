@@ -14,7 +14,7 @@ const port = probe.address().port;
 await new Promise(resolve => probe.close(resolve));
 const child = spawn(process.execPath, ['server/index.js'], { env: { ...process.env,
   HARNESS_PORT: String(port), HARNESS_DATA_DIR: root, HARNESS_TOKEN: 'network-test',
-  ORCHESTRATOR_TAILSCALE_BIN: path.resolve('test/fixtures/tailscale-connected.mjs'),
+  ORCHESTRATOR_TAILSCALE_BIN: process.execPath,
   ORCHESTRATOR_TAILSCALE_SOCKET: '', HARNESS_TEST_TAILSCALE_STATE: state,
 }, stdio: 'ignore' });
 const exited = once(child, 'exit');

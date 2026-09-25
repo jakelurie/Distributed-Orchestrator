@@ -215,9 +215,19 @@ harness still require a restart after integration.
 src/core/        agent loop, transcript, tools, providers, usage, git
 scripts/         native launcher and machine setup
 server/          LAN server and phone UI
-test/            suites, run with `npm test`
+test/e2e/        real-server end-to-end workflows, run with `npm test`
 python-cli/      the original CLI prototype, archived
 ```
+
+## Testing
+
+Run `npm test` for three server-level E2E workflows: network disconnect and
+recovery, distributed conversations and machine assignment, and individual
+machine restarts. They start real Harness processes on temporary ports with
+isolated data, a local model provider, and a simulated Tailscale client. No API
+keys or live tailnet are needed. These tests exercise HTTP APIs, not browser
+clicks. Extend these workflows when behavior changes; do not add unit tests or
+tests that inspect source text.
 
 ## Licence
 
