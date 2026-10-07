@@ -191,7 +191,7 @@ async function publish(repo, target, options) {
     try {
       const remotes = await git(repo.root, 'remote');
       if (!remotes.split('\n').includes('origin') && options.autoCreatePrivate) {
-        const result = await createPrivateRepo(repo.root, target, options.appName);
+        const result = await createPrivateRepo(repo.root, target, options.appName, options.visibility);
         pushed = result.ok; created = result.repo; reason = result.reason;
       } else { await git(repo.root, 'push', '-u', 'origin', target); pushed = true; reason = null; }
     }
@@ -278,7 +278,8 @@ export async function integrateTab(session, options = {}) {
       if (!saved.committed) await git(ws.dir, 'commit', '--allow-empty', '-m', 'harness: chat completed (no file changes)');
     }
     const remote = await git(repo.root, 'remote', 'get-url', 'origin').catch(() => '');
-    if (options.distributed || (options.push && remote)) return integrateDistributed(repo, session, options);
+    if (remote && (options.distributed || options.push)) return integrateDistributed(repo, session, options);
+    if (options.distributed && !remote && !options.autoCreatePrivate) throw new Error('Connect a remote before publishing this shared project.');
     const saved = await commitAndPush(ws.dir, { push: false });
     if (!saved.ok) return saved;
     const head = await git(repo.root, 'rev-parse', 'HEAD');

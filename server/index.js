@@ -1383,7 +1383,10 @@ const server = http.createServer(async (req, res) => {
         if (!saved || (session.appId ? saved.appId !== session.appId : saved.projectDir !== session.projectDir)) continue;
         for (const event of saved.events || []) if (event.pushReceipt) history.push({ ...event.pushReceipt, ts: event.ts, session: saved.name });
       }
+      const app = session.appId ? (await apps.load(USER_DATA)).find(a => a.id === session.appId) : null;
       return json(res, 200, { ...(await git.status(session.tabWorkspace?.dir ?? session.projectDir)),
+        projectName: app?.name || path.basename(session.projectDir),
+        createRepository: Boolean(app && !app.builtin), repositoryName: git.defaultRepoName(session.projectDir, app?.name),
         isolated: Boolean(session.tabWorkspace), enabled: false,
         summary: url.searchParams.get('history') === '1' ? await pendingSummary(session) : undefined,
         pending: await tabHasUnpublishedWork(session), machine: cluster.self.name || cluster.self.id,
@@ -1407,7 +1410,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && pathname === '/api/git/push') {
-      const { session: id } = await readBody(req);
+      const { session: id, visibility = 'private' } = await readBody(req);
+      if (!['private', 'public'].includes(visibility)) return json(res, 400, { error: 'Choose private or public visibility.' });
       const session = live.get(id) ?? (await store.load(id, { repair: false }));
       if (running.has(id)) return json(res, 409, { error: 'Wait for the tab to finish before integrating.' });
       if (!session.tabWorkspace) return json(res, 409, { error: 'Start an isolated coding turn before integrating changes.' });
@@ -1428,6 +1432,7 @@ const server = http.createServer(async (req, res) => {
           retryPush: true,
           autoCreatePrivate: Boolean(app && !app.builtin),
           appName: app?.name,
+          visibility,
           signal: running.get(id).controller.signal,
           onCheck: (log) => upsertMonitor(USER_DATA, { id: `integration-${id}`, label: 'Integration checks', kind: 'file', path: log, session: id }),
           push: true,

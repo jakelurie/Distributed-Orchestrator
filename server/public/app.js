@@ -701,6 +701,15 @@ function tabComputerBadge(session) {
   return `<span class="tab-computer" title="${label}" aria-label="${label}"><svg viewBox="0 0 28 24" aria-hidden="true"><rect x="1" y="1" width="26" height="17" rx="2"/><path d="M14 18v5M8 23h12"/><text x="14" y="13">${host.number}</text></svg></span>`;
 }
 
+function sessionActive(session) {
+  return (state.busy || []).includes(session.id) || Boolean(session.turnHost);
+}
+function sessionOrder(a, b) {
+  return Number(sessionActive(b)) - Number(sessionActive(a))
+    || (b.lastMessageAt ?? b.createdAt ?? 0) - (a.lastMessageAt ?? a.createdAt ?? 0)
+    || a.id.localeCompare(b.id);
+}
+
 function paintSessionTabs() {
   const bar = $('session-tabs');
   if (!bar) return;
@@ -709,10 +718,10 @@ function paintSessionTabs() {
   if (!current) { bar.innerHTML = ''; return; }
   const sessions = current.appId ? state.sessions.filter((s) => s.appId === current.appId) : [current];
   if (!sessions.some((s) => s.id === current.id)) sessions.push(current);
-  // Keep offline tabs at the right, preserving creation order in each group.
-  sessions.sort((a, b) => Number(sessionOffline(a)) - Number(sessionOffline(b)) || (a.createdAt ?? 0) - (b.createdAt ?? 0) || a.id.localeCompare(b.id));
+  // Active work first, then the sessions the user messaged most recently.
+  sessions.sort(sessionOrder);
   bar.innerHTML = `<div class="session-tab-list" aria-label="Sessions">${sessions.map((s) =>
-    `<button class="ghost${s.id === current.id ? ' on' : ''}${sessionOffline(s) ? ' offline' : ''}" ${sessionOffline(s) ? 'disabled aria-label="' + esc(s.name) + ' · computer offline"' : ''} data-session-id="${esc(s.id)}" aria-current="${s.id === current.id ? 'page' : 'false'}" title="${esc(s.name)}${sessionOffline(s) ? ' · computer offline' : ''}"><span class="session-tab-name">${esc(s.name)}</span>${tabComputerBadge(s)}${(state.busy ?? []).includes(s.id) ? '<span class="session-busy-dot" role="img" aria-label="Working"></span>' : ''}</button>`).join('')}</div>
+    `<button class="ghost${s.id === current.id ? ' on' : ''}${sessionOffline(s) ? ' offline' : ''}" ${sessionOffline(s) ? 'disabled aria-label="' + esc(s.name) + ' · computer offline"' : ''} data-session-id="${esc(s.id)}" aria-current="${s.id === current.id ? 'page' : 'false'}" title="${esc(s.name)}${sessionOffline(s) ? ' · computer offline' : ''}"><span class="session-tab-name">${esc(s.name)}</span>${tabComputerBadge(s)}${sessionActive(s) ? '<span class="session-busy-dot" role="img" aria-label="Working"></span>' : ''}</button>`).join('')}</div>
     <button class="tap" id="session-add" aria-label="New session" title="New session">＋</button>
     <button class="tap" id="session-options" aria-label="Session options" title="Session options">⋯</button>`;
   bar.querySelectorAll('[data-session-id]').forEach((el) => {
@@ -756,6 +765,7 @@ function showSession() {
 }
 
 function paintHeader() {
+  refreshPushStatus();
   const s = state.session;
   const t = cur();
   $('title-name').textContent = state.apps?.find((a) => a.id === s?.appId)?.name || 'Distributed Orchestrator';
@@ -960,6 +970,48 @@ async function send(queue = false) {
 
 // ------------------------------------------------------------------ menus
 
+// Keep one ordered status stream per session; polling never resets a known state.
+const pushStates = new Map();
+function paintPushStatus() {
+  const button = $('push-panel');
+  if (!button) return;
+  const id = state.session?.id;
+  const value = pushStates.get(id);
+  button.disabled = !id;
+  button.textContent = value?.pushing ? 'Pushing…' : 'Push';
+  button.classList.toggle('push-pending', Boolean(value?.pending));
+  button.title = !id ? 'Open a session' : value?.error ? 'Status unavailable — open Push to retry'
+    : value?.pushing ? 'Publishing this session' : value?.pending ? 'This session has changes to push'
+    : typeof value?.pending === 'boolean' ? 'No pending changes in this session' : 'Checking this session';
+}
+async function readPushStatus(id, history = false) {
+  const value = pushStates.get(id) || {};
+  pushStates.set(id, value);
+  const request = value.request = (value.request || 0) + 1;
+  if (history) value.details = true;
+  let g;
+  try { g = await api(`/api/git?session=${encodeURIComponent(id)}${history ? '&history=1' : ''}`); }
+  finally { if (history && value.request === request) value.details = false; }
+  if (value.request !== request) return null;
+  // During a turn/integration files can be temporarily clean. Wait for idle
+  // confirmation before removing the pending indicator.
+  if (!g.busy || !value.pending) value.pending = Boolean(g.pending);
+  value.error = false;
+  paintPushStatus();
+  return { ...g, pending: Boolean(value.pending) };
+}
+async function refreshPushStatus() {
+  paintPushStatus();
+  const id = state.session?.id;
+  if (!id || pushStates.get(id)?.pushing || pushStates.get(id)?.polling || pushStates.get(id)?.details) return;
+  const value = pushStates.get(id) || {};
+  pushStates.set(id, value);
+  value.polling = true;
+  try { await readPushStatus(id); }
+  catch { value.error = true; paintPushStatus(); }
+  finally { value.polling = false; }
+}
+
 async function refreshState() {
   const s = await api('/api/state');
   // Assign field by field. A blanket Object.assign once let the server's
@@ -983,23 +1035,7 @@ async function refreshState() {
     if (inventory.models) state.models = inventory.models;
     if (inventory.default) state.default = inventory.default;
   } catch { /* the owner may be reconnecting */ }
-  if ($('push-panel')) {
-    $('push-panel').disabled = !state.session;
-    if ($('push-panel').dataset.session !== (state.session?.id || '')) {
-      $('push-panel').dataset.session = state.session?.id || '';
-      $('push-panel').classList.remove('push-pending');
-      $('push-panel').textContent = 'Push';
-    }
-    if (state.session) {
-      const sessionId = state.session.id;
-      api(`/api/git?session=${encodeURIComponent(sessionId)}`).then(g => {
-        if (state.session?.id === sessionId) {
-          $('push-panel').textContent = g.pending ? 'Push •' : 'Push';
-          $('push-panel').classList.toggle('push-pending', Boolean(g.pending));
-        }
-      }).catch(() => {});
-    }
-  }
+  refreshPushStatus();
   state.sessions = s.sessions ?? [];
   state.home = s.home ?? '';
   state.busy = s.running ?? [];
@@ -1021,6 +1057,7 @@ async function refreshState() {
     recoverTranscript(name);
   }
   paintSessionTabs();
+  if (sheetView === 'apps' && lastAppsData) renderAppsSheet(lastAppsData);
   return s;
 }
 
@@ -1041,7 +1078,7 @@ function modelOptions(selected) {
  */
 function sessionStatus(s) {
   // `busy`, not `running`: a local boolean already owns that name here.
-  const running = (state.busy ?? []).includes(s.id);
+  const running = sessionActive(s);
   if (!running) return '<span class="sstat waiting">waiting for you</span>';
   const b = state.beacons?.[s.id];
   if (b?.stalled) {
@@ -2119,14 +2156,17 @@ function gitSheet() {
 async function paintGit(session) {
   const box = $('s-git');
   if (!box) return;
+  box.innerHTML = '<p class="dim">Checking changes…</p>';
   let g;
   try {
-    g = await api(`/api/git?session=${encodeURIComponent(session.id)}&history=1`);
+    g = await readPushStatus(session.id, true);
+    if (!g || $('s-git') !== box || state.session?.id !== session.id) return;
   } catch (e) {
-    box.innerHTML = `<p class="dim warn-text">${esc(e.message)}</p>`;
+    if ($('s-git') === box) box.innerHTML = `<p class="dim warn-text">${esc(e.message)}</p>`;
     return;
   }
 
+  const creating = g.repo && !g.remote && g.createRepository;
   if (!g.repo) {
     box.innerHTML = `<p class="dim">${esc(shortDir(session.projectDir))} is not a git repository.</p>
       <label>Connect a remote (creates the repo)</label>
@@ -2134,19 +2174,22 @@ async function paintGit(session) {
       <button class="ghost" id="g-connect" style="flex:0 0 80px">connect</button></div>`;
   } else {
     box.innerHTML = `
-      ${g.remote ? '' : `<label>Add a remote</label>
+      ${g.remote || creating ? '' : `<label>Add a remote</label>
         <div class="row"><input id="g-remote" placeholder="git@github.com:you/repo.git" spellcheck="false" />
         <button class="ghost" id="g-connect" style="flex:0 0 80px">connect</button></div>`}
+      ${creating ? `<p class="dim">Not on GitHub yet · <strong>${esc(g.repositoryName)}</strong></p>
+        <label for="g-create-visibility">Repository visibility</label>
+        <select id="g-create-visibility"><option value="private">Private · only invited people</option><option value="public">Public · anyone can see the code</option></select>` : ''}
       <details><summary>Repository settings</summary>
       <p class="dim">branch <span class="mono">${esc(g.branch ?? '?')}</span>
         · ${g.changed} uncommitted
         · ${g.remote ? `remote <span class="mono">${esc(g.remote)}</span>` : '<span class="warn-text">no remote</span>'}</p>
       ${g.lastCommit ? `<p class="dim">last: <span class="mono">${esc(g.lastCommit)}</span></p>` : '<p class="dim">no commits yet</p>'}
-      <div id="g-vis"></div></details>
-      <div class="actions"><button class="ghost" id="g-now">Push to GitHub</button></div>`;
+       ${g.remote ? '<div id="g-vis"></div>' : ''}</details>
+      <div class="actions"><button class="ghost" id="g-now">${creating ? 'Create repository &amp; push' : 'Push to GitHub'}</button></div>`;
   }
 
-  box.insertAdjacentHTML('afterbegin', `<p class="dim">${esc(g.machine || 'This computer')} · ${g.busy ? 'Working' : g.pending ? 'Ready to push' : 'Up to date'}<br>${esc(g.summary || 'No pending changes.')}</p>`);
+  box.insertAdjacentHTML('afterbegin', `<div class="item"><div class="grow"><div class="t">${esc(g.projectName || session.name)}</div></div></div><p class="dim">${esc(g.machine || 'This computer')} · ${g.busy ? 'Finish the current task before pushing' : creating ? 'Ready to create on GitHub' : g.pending ? 'Ready to push' : 'Up to date'}<br>${esc(g.summary || 'No pending changes.')}</p>`);
   box.insertAdjacentHTML('beforeend', `<details><summary>Recent project pushes</summary>${(g.history || []).map(h => `<div class="item machine-item"><div class="grow"><div class="s">${esc(h.machine)} · ${esc(h.status)} · ${clock(h.ts)} · ${esc(h.sha || '')}${h.error ? ' · ' + esc(h.error) : ''}</div></div></div>`).join('') || '<p class="dim">No pushes yet.</p>'}</details>`);
   if ($('g-connect')) {
     $('g-connect').onclick = async () => {
@@ -2162,17 +2205,18 @@ async function paintGit(session) {
   if ($('g-vis')) {
     api('/api/git/visibility', { method: 'POST', body: JSON.stringify({ session: session.id }) })
       .then((v) => {
-        const box = $('g-vis');
-        if (!box) return;
-        if (!v.ok) { box.innerHTML = `<p class="dim">${esc(v.reason)}</p>`; return; }
+        if ($('s-git') !== box || state.session?.id !== session.id) return;
+        const visibilityBox = $('g-vis');
+        if (!visibilityBox) return;
+        if (!v.ok) { visibilityBox.innerHTML = `<p class="dim">${esc(v.reason)}</p>`; return; }
         const pub = v.visibility === 'public';
-        box.innerHTML = `<p class="dim"><span class="mono">${esc(v.repo)}</span> is
+        visibilityBox.innerHTML = `<p class="dim"><span class="mono">${esc(v.repo)}</span> is
             <strong class="${pub ? 'warn-text' : ''}">${esc(v.visibility)}</strong></p>
           <div class="row">
             <button class="ghost${pub ? '' : ' on'}" data-vis="private">private</button>
             <button class="ghost${pub ? ' on' : ''}" data-vis="public">public</button>
           </div>`;
-        box.querySelectorAll('[data-vis]').forEach((el) => {
+        visibilityBox.querySelectorAll('[data-vis]').forEach((el) => {
           el.onclick = async () => {
             const want = el.dataset.vis;
             if (want === v.visibility) return;
@@ -2189,24 +2233,33 @@ async function paintGit(session) {
       .catch(() => {});
   }
   if ($('g-now')) {
-    $('g-now').disabled = Boolean(g.busy);
+    $('g-now').disabled = Boolean(g.busy || pushStates.get(session.id)?.pushing);
     $('g-now').classList.toggle('push-pending', Boolean(g.pending));
-    if (state.session?.id === session.id) {
-      $('push-panel').textContent = g.pending ? 'Push •' : 'Push';
-      $('push-panel').classList.toggle('push-pending', Boolean(g.pending));
-    }
+    box.insertAdjacentHTML('beforeend', '<p id="g-push-status" class="dim" role="status"></p>');
+    if (pushStates.get(session.id)?.pushError) $('g-push-status').textContent = 'Not published: ' + pushStates.get(session.id).pushError;
     $('g-now').onclick = async () => {
+      const visibility = $('g-create-visibility')?.value || 'private';
+      if (creating && visibility === 'public' && !confirm(`Create ${g.repositoryName} publicly? Anyone can see its code and history.`)) return;
       const button = $('g-now');
-      button.textContent = 'Fetching, merging and checking…';
+      const value = pushStates.get(session.id);
+      value.request++;
+      value.pushError = '';
+      value.pushing = true;
+      paintPushStatus();
+      button.textContent = 'Pushing…';
       button.disabled = true;
       try {
-        const r = await api('/api/git/push', { method: 'POST', body: JSON.stringify({ session: session.id }) });
+        const r = await api(`/api/git/push?session=${encodeURIComponent(session.id)}`, { method: 'POST', body: JSON.stringify({ session: session.id, visibility }) });
         showBanner(r.skipped === 'no changes' ? 'nothing to integrate'
           : !r.ok ? `git: ${r.error}`
             : r.pushed ? `integrated and pushed ${r.files.length} files · ${r.sha}`
               : `integrated ${r.sha} — not pushed: ${r.reason}`);
-      } catch (e) { showBanner(e.message, true); }
-      finally { await paintGit(session); }
+      } catch (e) { value.pushError = e.message; showBanner(e.message, true); }
+      finally {
+        value.pushing = false;
+        if ($('s-git') === box && state.session?.id === session.id) await paintGit(session);
+        else await refreshPushStatus();
+      }
     };
   }
 }
@@ -2387,7 +2440,7 @@ const expandedApps = new Set();
 let lastAppsData = null;   // cached so expand/collapse re-renders without refetching
 
 async function appsSheet() {
-  if (sheetView !== 'apps') openProjectGroups.delete('recent');
+  if (sheetView !== 'apps') openProjectGroups.add('recent');
   // Draw first, fetch second. This used to wait on /api/apps - which shells out
   // to lsof and tailscale - and then on /api/state, two round trips in series,
   // before a single pixel appeared, so tapping the sidebar felt dead for about
@@ -2492,7 +2545,7 @@ function renderAppsSheet(d) {
   // Redrawing throws the scroll position away, which is wrong both for an
   // expander tap and for the refresh that lands a moment after the sheet opens.
   const scroll = sheetView === 'apps' ? $('sheet').scrollTop : 0;
-  const sessionsFor = (id) => state.sessions.filter((x) => x.appId === id);
+  const sessionsFor = (id) => state.sessions.filter((x) => x.appId === id).sort(sessionOrder);
   const known = new Set(d.apps.map((a) => a.id));
   const loose = state.sessions.filter((x) => !x.appId || !known.has(x.appId));
 
@@ -2503,7 +2556,7 @@ function renderAppsSheet(d) {
     <div class="item sub-session${sn.id === state.session?.id ? ' on' : ''}" data-open="${esc(sn.id)}">
       <div class="grow"><div class="t">${esc(label)} ${sessionStatus(sn)}</div>
         <div class="s">${esc(sn.model)} · ${sn.turns} turns</div>
-        <div class="s">Last activity: ${esc(clock(sn.updatedAt ?? sn.createdAt) || 'unknown')}</div></div>
+        <div class="s">Last message: ${esc(clock(sn.lastMessageAt ?? sn.createdAt) || 'unknown')}</div></div>
       <button class="x" data-rename="${esc(sn.id)}" title="Edit session">✎</button>
       <button class="x" data-del="${esc(sn.id)}" title="Delete">×</button>
     </div>`;
@@ -2552,19 +2605,13 @@ function renderAppsSheet(d) {
 
   const appsHtml = (() => {
     const groups = projectGroups(d.apps);
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-    const recentCandidates = state.sessions.filter((session) => (session.updatedAt ?? session.createdAt ?? 0) >= cutoff);
-    const active = recentCandidates.filter((session) => (state.busy ?? []).includes(session.id));
-    const recent = recentCandidates
-      .filter((session) => !(state.busy ?? []).includes(session.id))
-      .sort((a, b) => (b.updatedAt ?? b.createdAt ?? 0) - (a.updatedAt ?? a.createdAt ?? 0))
-      .slice(0, 10);
-    const recentSessions = [...active, ...recent];
-    const inactiveLoose = loose.filter((session) => !(state.busy ?? []).includes(session.id));
+    const active = state.sessions.filter(sessionActive).sort(sessionOrder);
+    const recent = state.sessions.filter(session => !sessionActive(session)).sort(sessionOrder);
+    const inactiveLoose = loose.filter(session => !sessionActive(session)).sort(sessionOrder);
     const disclosure = (id, label, count, content) => count
       ? `<details class="project-group" data-project-group="${id}"${openProjectGroups.has(id) ? ' open' : ''}><summary>${label} (${count})</summary>${content}</details>` : '';
-    return disclosure('recent', `Recent sessions${active.length ? ` · ${active.length} active` : ''}`,
-      recentSessions.length, recentSessions.map(sessionRow).join(''))
+    return (active.length ? `<section aria-label="Active sessions"><label>Working now · ${active.length}</label>${active.map(sessionRow).join('')}</section>` : '')
+      + disclosure('recent', 'Recently messaged', recent.length, recent.map(sessionRow).join(''))
       + groups.visible.map(appCard).join('')
       + disclosure('stopped', 'Not running apps', groups.stopped.length, groups.stopped.map(appCard).join(''))
       + disclosure('chats', 'Chats', groups.chats.length + inactiveLoose.length,

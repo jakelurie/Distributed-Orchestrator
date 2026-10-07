@@ -148,9 +148,15 @@ export async function load(id, { repair = true } = {}) {
   return session;
 }
 
+function lastMessageAt(session) {
+  return (session.events || []).reduce((at, event) =>
+    event.type === 'user' ? Math.max(at, event.ts || 0) : at, session.createdAt || 0);
+}
+
 export async function list() {
   if (shared()) return Object.values(cluster.replica.state.sessions).map((s) => ({
     id: s.id, name: s.name, model: s.model, appId: s.appId ?? null, projectDir: s.projectDir,
+    lastMessageAt: lastMessageAt(s), turnHost: s.turnHost,
     ownerNode: s.ownerNode, createdAt: s.createdAt, updatedAt: s.updatedAt, forkedFrom: s.forkedFrom,
     turns: (s.events || []).filter((e) => e.type === 'assistant').length,
     modelsUsed: [...new Set((s.events || []).filter((e) => e.type === 'assistant').map((e) => e.model))],
@@ -174,6 +180,7 @@ export async function list() {
         projectDir: s.projectDir,
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
+        lastMessageAt: lastMessageAt(s), turnHost: s.turnHost,
         forkedFrom: s.forkedFrom,
         turns: (s.events ?? []).filter((e) => e.type === 'assistant').length,
         modelsUsed: [...new Set((s.events ?? []).filter((e) => e.type === 'assistant').map((e) => e.model))],

@@ -237,11 +237,12 @@ export async function deleteAppRepo(app, confirmation, execute = promisify(execF
   return repo;
 }
 
-export async function createPrivateRepo(root, branch, appName) {
+export async function createPrivateRepo(root, branch, appName, visibility = 'private') {
+  if (!['private', 'public'].includes(visibility)) throw new Error('Invalid repository visibility');
   const name = defaultRepoName(root, appName);
   const env = await githubEnv();
   const res = await new Promise((resolve) => {
-    execFile('gh', ['repo', 'create', name, '--private', '--source', root, '--remote', 'origin', '--push'],
+    execFile('gh', ['repo', 'create', name, '--' + visibility, '--source', root, '--remote', 'origin', '--push'],
       { cwd: root, timeout: 120_000, env },
       (err, stdout, stderr) => resolve({ ok: !err, out: stdout ?? '', err: (stderr || err?.message) ?? '' }));
   });

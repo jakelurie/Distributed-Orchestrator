@@ -3,11 +3,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import vm from 'node:vm';
 import net from 'node:net';
 import { spawn, execFileSync } from 'node:child_process';
 import { prepareTab } from '../../src/core/tab-workspaces.js';
 import { once } from 'node:events';
-import { listeningProcesses, runningInfo } from '../../src/core/apps.js';
+import { listeningProcesses, runningInfo, stop as stopApp } from '../../src/core/apps.js';
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'execution-hosts-'));
 const hosts = [];
 const pause = () => new Promise(r => setTimeout(r, 150));
@@ -61,6 +62,15 @@ try {
     assert.ok(actual, 'running listener discovered');
     assert.equal(runningInfo({ dir: path.join(root, 'parallel'), port }, processes).running, false);
     if (actual.cwd) assert.equal(runningInfo({ dir: groceryDir, port }, processes).running, true);
+    const parent = { id: 'parent', dir: root, port };
+    const grocery = { id: 'grocery', dir: groceryDir, port };
+    assert.equal(runningInfo(parent, processes, [parent, grocery]).running, false);
+    const registry = path.join(root, 'app-registry');
+    await fs.mkdir(registry);
+    await fs.writeFile(path.join(registry, 'apps.json'), JSON.stringify({ apps: [
+      { id: 'parallel', name: 'Parallel', dir: path.join(root, 'parallel'), port },
+    ] }));
+    await stopApp(registry, 'parallel');
     assert.equal(await (await fetch(`http://127.0.0.1:${port}`)).text(), 'grocery');
   } finally { listener.kill(); await listenerExit; }
   const a = await start('model-a'), b = await start('model-b');
@@ -73,6 +83,34 @@ try {
       assert.equal(choices.default, model);
     }
   }
+  // Exercise the served frontend with reordered status replies and tab switches.
+  const frontend = await (await a.request('/app.js')).text();
+  const classes = new Set(), pendingStatus = [];
+  const pushButton = { classList: { toggle(name, on) { on ? classes.add(name) : classes.delete(name); } } };
+  const ui = vm.createContext({ state: { session: { id: 'first' } },
+    $: () => pushButton,
+    api: route => new Promise((resolve, reject) => pendingStatus.push({ route, resolve, reject })),
+  });
+  vm.runInContext(frontend.slice(frontend.indexOf('const pushStates ='), frontend.indexOf('async function refreshState()')), ui);
+  const oldStatus = ui.readPushStatus('first');
+  const newStatus = ui.readPushStatus('first');
+  pendingStatus[1].resolve({ pending: true, busy: false }); await newStatus;
+  pendingStatus[0].resolve({ pending: false, busy: false }); await oldStatus;
+  assert.ok(classes.has('push-pending'), 'older clean response cannot overwrite newer pending changes');
+  const busyStatus = ui.readPushStatus('first');
+  pendingStatus[2].resolve({ pending: false, busy: true }); await busyStatus;
+  assert.ok(classes.has('push-pending'), 'temporary clean files during work do not flash the indicator');
+  const failedStatus = ui.refreshPushStatus();
+  pendingStatus[3].reject(new Error('offline')); await failedStatus;
+  assert.ok(classes.has('push-pending'), 'network failure preserves last known pending state');
+  assert.match(pushButton.title, /unavailable/);
+  ui.state.session = { id: 'second' }; ui.paintPushStatus();
+  assert.ok(!classes.has('push-pending'), 'different session never inherits pending state');
+  ui.state.session = { id: 'first' }; ui.paintPushStatus();
+  assert.ok(classes.has('push-pending'), 'returning to a session restores its known state immediately');
+  const cleanStatus = ui.readPushStatus('first');
+  pendingStatus[4].resolve({ pending: false, busy: false }); await cleanStatus;
+  assert.ok(!classes.has('push-pending'), 'confirmed idle status clears pending changes');
   const state = await a.call('/api/state');
   assert.equal(state.apps.find(app => app.id === '__harness').executionHosts.length, 2);
   const s = await a.call('/api/sessions', 'POST', { appId: '__harness', name: 'remote', mode: 'chat', model: 'model-b', ownerNode: b.status.self });
@@ -85,6 +123,20 @@ try {
   await a.call(`/api/sessions/${s.id}/send`, 'POST', { text: 'wait' });
   for (let i = 0; i < 80 && !release; i++) await pause();
   assert.ok(release, 'a follower executed the model request');
+  const activeState = await a.call('/api/state');
+  const activeSession = activeState.sessions.find(row => row.id === s.id);
+  assert.equal(activeSession.turnHost, b.status.self);
+  assert.ok(activeSession.lastMessageAt > 0);
+  const ordering = vm.createContext({ state: { busy: activeState.running } });
+  vm.runInContext(frontend.slice(frontend.indexOf('function sessionActive('), frontend.indexOf('function paintSessionTabs(')), ordering);
+  const rows = [
+    { id: 'recent', lastMessageAt: activeSession.lastMessageAt + 100 },
+    { id: 'renamed', lastMessageAt: 1, updatedAt: Date.now() + 10000 },
+    activeSession,
+  ].sort(ordering.sessionOrder);
+  assert.equal(rows[0].id, s.id, 'remote active session sorts first');
+  assert.equal(rows[1].id, 'recent', 'message time wins over incidental saves');
+
   assert.ok((await a.call('/api/state')).running.includes(s.id));
   assert.equal((await a.request(`/api/sessions/${s.id}/machine`, 'POST', { ownerNode: a.status.self })).status, 409);
   const parallel = await a.call('/api/sessions', 'POST', { appId: '__harness', name: 'parallel', mode: 'chat', model: 'model-a', ownerNode: a.status.self });
@@ -146,6 +198,14 @@ try {
   assert.equal(disallowed.status, 400);
   const local = await b.call('/api/sessions', 'POST', { appId: project.id, mode: 'chat', model: 'model-a' });
   assert.equal(local.ownerNode, a.status.self, 'another computer can create a tab on the only enabled owner');
+  const creation = await b.call(`/api/git?session=${local.id}&history=1`);
+  assert.equal(creation.projectName, 'local only');
+  assert.equal(creation.repositoryName, 'local-only');
+  assert.equal(creation.createRepository, true);
+  assert.ok(!creation.remote);
+  const invalidVisibility = await b.request(`/api/git/push?session=${local.id}`, 'POST', { session: local.id, visibility: 'invalid' });
+  assert.equal(invalidVisibility.status, 400);
+
   assert.equal((await b.call(`/api/sessions/${local.id}/models`)).default, 'model-a');
   await b.call(`/api/sessions/${local.id}/send`, 'POST', { text: 'hello' });
   for (let i = 0; i < 80; i++) {

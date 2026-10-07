@@ -212,10 +212,14 @@ function canMatchByDir(dir) {
  * folder, whatever port it chose. The allocated port still counts, so an app
  * the dashboard started is recognised too.
  */
-export function runningInfo(app, procs) {
+export function runningInfo(app, procs, registered = []) {
   const byDir = canMatchByDir(app.dir);
   const mine = procs.filter((p) => {
     if (p.pid === process.pid) return false;          // never the harness itself
+    // The most specific registered project owns a nested app's listener.
+    if (p.cwd && registered.some(other => other.id !== app.id && other.dir && app.dir &&
+      isInsideDir(app.dir, other.dir) && !isInsideDir(other.dir, app.dir) &&
+      isInsideDir(other.dir, p.cwd))) return false;
     // A known working directory takes precedence over a reused port.
     if (p.cwd) return byDir && isInsideDir(app.dir, p.cwd);
     if (app.port && p.port === app.port) return p.pid === app.pid;
@@ -438,7 +442,7 @@ export async function start(userDataDir, id) {
 
   // Already up — possibly on a port a session chose. Adopt it rather than
   // starting a second copy, and publish the port it is really on.
-  const live = runningInfo(app, await listeningProcesses());
+  const live = runningInfo(app, await listeningProcesses(), apps);
   if (live.running) {
     await rememberApp(userDataDir, app);
     return { app, already: true, adopted: live.adopted, livePort: live.port,
@@ -474,7 +478,7 @@ export async function start(userDataDir, id) {
   let bound = null;
   for (let i = 0; i < 20 && !bound; i += 1) {
     await new Promise((r) => { setTimeout(r, 500); });
-    const info = runningInfo(app, await listeningProcesses());
+    const info = runningInfo(app, await listeningProcesses(), apps);
     if (info.running) bound = info.port;
   }
 
@@ -543,10 +547,9 @@ export async function stop(userDataDir, id) {
   // Whatever is actually running for this app — matched by its folder as well
   // as its port, since a session-started server chose its own — not just the
   // pid recorded at launch, which a dev server that re-execs itself invalidates.
-  const info = runningInfo(app, await listeningProcesses());
+  const info = runningInfo(app, await listeningProcesses(), apps);
   const pids = new Set([
     ...info.pids,
-    ...(await pidsOnPort(app.port)),
     ...(app.pid ? [app.pid] : []),
   ]);
   // Stopping an app must never be able to stop the harness that is running it.
@@ -556,7 +559,7 @@ export async function stop(userDataDir, id) {
     try { await killTree(pid); } catch { /* already gone */ }
   }
   await new Promise((r) => { setTimeout(r, 600); });
-  for (const pid of runningInfo(app, await listeningProcesses()).pids) {
+  for (const pid of runningInfo(app, await listeningProcesses(), apps).pids) {
     if (pid === process.pid || pid === process.ppid) continue;
     try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
   }
@@ -625,7 +628,7 @@ export async function listWithStatus(userDataDir) {
   return Promise.all(apps.map(async (app) => {
     // A listener alone is not an app: chats can run temporary download servers.
     const info = app.hasBeenApp
-      ? runningInfo(app, procs)
+      ? runningInfo(app, procs, apps)
       : { running: false, pids: [], adopted: false };
     let reachable = false;
     let served = false;
