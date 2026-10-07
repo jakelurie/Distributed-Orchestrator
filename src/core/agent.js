@@ -342,7 +342,11 @@ async function runTurnInner({
         onThinking: (text) => onDelta?.({ kind: 'thinking', text }),
         onToolStart: (call) => onDelta?.({ kind: 'tool_start', call }),
         onToolEnd: (result) => onDelta?.({ kind: 'tool_end', result }),
-        onStep: appendStep,
+        // Providers fire this without awaiting it, so a failed save (e.g. the
+        // coordinator changed mid-turn) would be an unhandled rejection and kill
+        // the server. The event is already in session.events; the next save
+        // persists it.
+        onStep: (st) => appendStep(st).catch((e) => console.warn(`step not saved: ${e?.message ?? e}`)),
         onRateLimit: (info) => onDelta?.({ kind: 'rate_limit', info }),
         useTools: usesTools(session),
         longContext: Boolean(session.allowLongContext),
