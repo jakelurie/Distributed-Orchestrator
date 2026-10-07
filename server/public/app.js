@@ -1057,7 +1057,7 @@ async function newSheet() {
     </select>
     <label>Name</label><input id="n-name" placeholder="${esc(nextTabName(draft.appId))}" />
     <div id="n-computer-row" hidden><label>Computer</label><select id="n-computer"></select></div>
-    <label>Model</label><select id="n-model">${modelOptions(state.default)}</select>
+    <label>Model</label><select id="n-model" disabled><option value="">Select a computer</option></select>
     <label>Mode</label>
     <select id="n-mode">
       <option value="agent">agent — tools, works in a project folder</option>
@@ -1068,7 +1068,7 @@ async function newSheet() {
     <button class="ghost" id="n-browse" style="flex:0 0 92px">browse</button></div>
     <label>Extra instructions (optional)</label><textarea id="n-sys"></textarea>
     <div class="actions"><button class="ghost" id="n-cancel">cancel</button>
-    <button class="primary" id="n-go">create</button></div>`);
+    <button class="primary" id="n-go" disabled>create</button></div>`);
 
   if (draft.name) $('n-name').value = draft.name;
   if (draft.system) $('n-sys').value = draft.system;
@@ -1100,16 +1100,30 @@ async function newSheet() {
   // The app's directory wins, and the field goes read-only so the two cannot
   // disagree about where the session is working.
   let modelRequest = 0;
+  const computerSelect = $('n-computer');
   const loadComputerModels = async () => {
     const request = ++modelRequest;
     $('n-go').disabled = true;
+    $('n-model').disabled = true;
+    $('n-model').innerHTML = '<option value="">Loading models for this computer…</option>';
+    const current = () => request === modelRequest && $('n-computer') === computerSelect;
+    if (!computerSelect.value) {
+      $('n-model').innerHTML = '<option value="">No computer available</option>';
+      return;
+    }
     try {
       const inventory = await api(`/api/execution-models?app=${encodeURIComponent($('n-app').value)}&host=${encodeURIComponent($('n-computer').value)}`);
-      if (request !== modelRequest || !$('n-computer')) return;
+      if (!current()) return;
       $('n-model').innerHTML = Object.values(inventory.models).map(m => `<option value="${esc(m.alias)}" ${m.available === false ? 'disabled' : ''}>${esc(m.label || m.alias)}${m.available === false ? ' — ' + esc(m.availability) : m.hasKey ? '' : ' — no key'}</option>`).join('');
       $('n-model').value = inventory.models[draft.model]?.available !== false && inventory.models[draft.model] ? draft.model : inventory.default;
-      $('n-go').disabled = !inventory.default;
-    } catch (e) { if (request === modelRequest) showBanner(e.message); }
+      $('n-model').disabled = !Object.keys(inventory.models).length;
+      if ($('n-model').disabled) $('n-model').innerHTML = '<option value="">No models on this computer</option>';
+      $('n-go').disabled = !$('n-model').value;
+    } catch (e) {
+      if (!current()) return;
+      $('n-model').innerHTML = '<option value="">Cannot load this computer’s models</option>';
+      showBanner(e.message);
+    }
   };
   $('n-computer').onchange = loadComputerModels;
   const applyApp = () => {
@@ -1119,7 +1133,7 @@ async function newSheet() {
     $('n-computer-row').hidden = hosts.length < 2;
     $('n-computer').innerHTML = hosts.map(h => `<option value="${esc(h.id)}">${h.number} · ${esc(h.name)}${h.active ? '' : ' · offline'}</option>`).join('');
     if (hosts.some(h => h.id === draft.ownerNode)) $('n-computer').value = draft.ownerNode;
-    if (hosts.length) loadComputerModels();
+    loadComputerModels();
     const app = appList.find((a) => a.id === $('n-app').value);
     if (app) {
       $('n-dir').value = app.dir;
