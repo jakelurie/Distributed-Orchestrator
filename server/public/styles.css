@@ -177,6 +177,7 @@ body {
   resize: none; min-height: 46px; max-height: 40vh; outline: none;
 }
 #queue { min-height: 44px; }
+.ghost.push-pending { background: var(--green); border-color: var(--green); color: var(--bg); }
 #input:focus { border-color: var(--fg-faint); }
 #dictate.recording { background: var(--bg-3); border-color: var(--accent); color: var(--accent); }
 #voice-status { padding: 8px 12px; background: var(--bg-2); font-size: 14px; overflow-wrap: anywhere; }

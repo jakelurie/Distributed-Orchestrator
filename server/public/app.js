@@ -971,7 +971,7 @@ async function refreshState() {
       const pending = result.hosts.filter(host => host.update?.restartRequired || host.update?.available);
       const key = pending.map(host => host.id + ':' + host.update.head + ':' + host.update.latest + ':' + host.update.restartRequired).join(',');
       if (key && key !== state.harnessUpdateRevision) {
-        showBanner(pending.map(host => `${host.name || host.id}: ${host.state}`).join('; ') + '. Open Restart on the Harness app.');
+        showBanner(pending.map(host => `${host.name || host.id}: ${host.state}`).join('; '));
       }
       state.harnessUpdateRevision = key;
     }).catch(() => {});
@@ -987,10 +987,18 @@ async function refreshState() {
   } catch { /* the owner may be reconnecting */ }
   if ($('push-panel')) {
     $('push-panel').disabled = !state.session;
+    if ($('push-panel').dataset.session !== (state.session?.id || '')) {
+      $('push-panel').dataset.session = state.session?.id || '';
+      $('push-panel').classList.remove('push-pending');
+      $('push-panel').textContent = 'Push';
+    }
     if (state.session) {
       const sessionId = state.session.id;
       api(`/api/git?session=${encodeURIComponent(sessionId)}`).then(g => {
-        if (state.session?.id === sessionId) $('push-panel').textContent = g.pending ? 'Push •' : 'Push';
+        if (state.session?.id === sessionId) {
+          $('push-panel').textContent = g.pending ? 'Push •' : 'Push';
+          $('push-panel').classList.toggle('push-pending', Boolean(g.pending));
+        }
       }).catch(() => {});
     }
   }
@@ -2185,6 +2193,11 @@ async function paintGit(session) {
   }
   if ($('g-now')) {
     $('g-now').disabled = Boolean(g.busy);
+    $('g-now').classList.toggle('push-pending', Boolean(g.pending));
+    if (state.session?.id === session.id) {
+      $('push-panel').textContent = g.pending ? 'Push •' : 'Push';
+      $('push-panel').classList.toggle('push-pending', Boolean(g.pending));
+    }
     $('g-now').onclick = async () => {
       const button = $('g-now');
       button.textContent = 'Fetching, merging and checking…';
