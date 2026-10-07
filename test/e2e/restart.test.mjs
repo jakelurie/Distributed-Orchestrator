@@ -5,6 +5,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import vm from 'node:vm';
 // Restart an isolated real server; never address the user's live server.
 const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'restart-server-'));
 const checkout = path.join(dir, 'checkout');
@@ -58,7 +59,26 @@ try {
   peerClosed = once(peer, 'exit');
   const peerOriginal = await waitFor(() => true, peerOrigin);
   await call('/api/cluster/join', 'POST', peerOrigin, { url: origin, ownUrl: peerOrigin, token: 'restart-test' });
-  const peerRequested = await call('/api/harness/restart?host=' + peerOriginal.node, 'POST');
+  const source = await fs.readFile('server/public/app.js', 'utf8');
+  let peerRequested;
+  const button = { isConnected: true, setAttribute() {} };
+  const ui = vm.createContext({ Date, setTimeout, AbortSignal,
+    nativeFetch: route => fetch(origin + route, { headers: { 'x-harness-token': 'restart-test' } }),
+    api: async (route, options) => {
+      const result = await call(route, options?.method || 'GET');
+      if (options?.method === 'POST') peerRequested = result;
+      return result;
+    },
+    closeSheet() { assert.fail('remote restart must keep the panel open'); },
+    harnessVersionSheet() { assert.fail('remote restart must retain its button result'); },
+    location: { reload() { assert.fail('remote restart must not reload the serving frontend'); } },
+    showBanner(message) { assert.fail(message); },
+  });
+  vm.runInContext(source.slice(source.indexOf('async function restartOrchestrator('), source.indexOf('function renderAppsSheet(')), ui);
+  await ui.restartOrchestrator(button, peerOriginal.node);
+  assert.equal(button.textContent, 'Restarted ✓');
+  assert.equal(button.disabled, true);
+
   peerReplacement = await waitFor(status => status.restartId === peerRequested.restartId, peerOrigin);
   assert.equal((await call('/api/harness/status')).instanceId, original.instanceId, 'restarting a peer leaves this machine running');
   assert.equal(peerReplacement.node, peerOriginal.node);

@@ -2458,28 +2458,34 @@ async function showPeerSessions() {
 async function restartOrchestrator(button, host) {
   const query = host ? `?host=${encodeURIComponent(host)}` : '';
   button.disabled = true;
-  closeSheet(); // Feedback must be visible, including a refused restart.
-  showBanner('Checking for updates and restarting the selected machine…');
+  button.textContent = 'Checking…';
+  button.setAttribute('aria-live', 'polite');
   try {
-    const local = host ? await api('/api/harness/status') : null;
+    const response = await nativeFetch('/api/harness/status', { cache: 'no-store' });
+    if (!response.ok) throw new Error('Could not identify the serving machine.');
+    const local = await response.json();
     const expected = await api('/api/harness/restart' + query, { method: 'POST' });
     if (!expected.restartId) throw new Error('The old server accepted the restart but cannot verify it. Wait a few seconds, then refresh to load the updated restart control.');
-    showBanner('Restarting — waiting for the replacement server…');
+    button.textContent = 'Restarting…';
     const deadline = Date.now() + 45_000;
     while (Date.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve, 700));
       try {
         const current = await api('/api/harness/status' + query, { cache: 'no-store', signal: AbortSignal.timeout(3000) });
         if (current.restartId === expected.restartId && current.instanceId !== expected.instanceId && current.node === expected.node && (!expected.revision || current.version?.revision === expected.revision)) {
-          if (host && host !== local.node) { showBanner('Machine restarted successfully.'); await harnessVersionSheet(); }
+          if (expected.node !== local.node) { button.textContent = 'Restarted ✓'; }
           else location.reload();
           return;
         }
       } catch { /* The listener is unavailable during a normal restart. */ }
     }
     throw new Error('Restart could not be verified. The old server may still be running, or its replacement failed. Check the server log on this host.');
-  } catch (error) { showBanner(error.message, true); }
-  finally { button.disabled = false; }
+  } catch (error) {
+    button.textContent = 'Restart failed';
+    button.title = error.message;
+    if (button.isConnected) showBanner(error.message, true);
+  }
+  // Keep the result on this button; reopening the sheet creates a fresh control.
 }
 
 function renderAppsSheet(d) {
