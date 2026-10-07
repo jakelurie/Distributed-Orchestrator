@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { defaultDataDir } from '../src/core/platform.js';
 import { stopServer } from './stop-server.mjs';
+import { startupUpdate } from './startup-update.mjs';
 
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 process.chdir(root);
@@ -19,14 +20,6 @@ const run = (bin, args, options = {}) => new Promise((resolve, reject) => {
 try {
   if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('Install Node.js 22 or newer, then run this launcher again.');
   await run('git', ['--version']);
-  const lockHash = crypto.createHash('sha256').update(await fs.readFile('package-lock.json')).digest('hex');
-  const stamp = '.launcher/dependencies.sha256';
-  if (await fs.readFile(stamp, 'utf8').catch(() => '') !== lockHash || !await fs.stat('node_modules/cross-spawn/package.json').catch(() => null)) {
-    if (process.platform === 'win32') await run(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'npm ci']);
-    else await run('npm', ['ci']);
-    await fs.mkdir('.launcher', { recursive: true });
-    await fs.writeFile(stamp, lockHash);
-  }
   const config = '.orchestrator-node.env';
   if (!await fs.stat(config).catch(() => null)) {
     const values = { HARNESS_PORT: process.env.HARNESS_PORT || '8787', HARNESS_DATA_DIR: process.env.HARNESS_DATA_DIR || defaultDataDir(),
@@ -41,6 +34,15 @@ try {
   const probe = net.createServer();
   await new Promise((resolve, reject) => { probe.once('error', () => reject(new Error(`Port ${port} is already in use. Stop the existing server or choose another HARNESS_PORT in ${config}.`))); probe.listen(port, '0.0.0.0', resolve); });
   await new Promise((resolve) => probe.close(resolve));
+  await startupUpdate(root);
+  const lockHash = crypto.createHash('sha256').update(await fs.readFile('package-lock.json')).digest('hex');
+  const stamp = '.launcher/dependencies.sha256';
+  if (await fs.readFile(stamp, 'utf8').catch(() => '') !== lockHash || !await fs.stat('node_modules/cross-spawn/package.json').catch(() => null)) {
+    if (process.platform === 'win32') await run(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'npm ci']);
+    else await run('npm', ['ci']);
+    await fs.mkdir('.launcher', { recursive: true });
+    await fs.writeFile(stamp, lockHash);
+  }
   const server = spawn(process.execPath, [path.join(root, 'server/index.js')], { stdio: 'inherit', env: process.env });
   server.once('error', (e) => { console.error(e.message); process.exitCode = 1; });
   // An in-app restart hands the port to a detached server this window no longer owns.

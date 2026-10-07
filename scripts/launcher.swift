@@ -184,7 +184,7 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func start() {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["node", "server/index.js"]
+        process.arguments = ["node", "scripts/start.mjs", "--no-browser"]
         process.currentDirectoryURL = root
         process.environment = env
         let path = root.appendingPathComponent(".launcher.log").path
@@ -196,7 +196,7 @@ final class Launcher: NSObject, NSApplicationDelegate, NSWindowDelegate {
         do {
             try process.run()
             child = process
-            status.stringValue = "Starting…"
+            status.stringValue = "Checking GitHub before starting…"
             timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { _ in
                 guard process.isRunning else {
                     self.status.stringValue = "Stopped — details in .launcher.log"

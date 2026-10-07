@@ -10,6 +10,7 @@ const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'orchestrator bootstrap '));
 let blocker;
 try {
   for (const folder of ['scripts', 'src/core', 'server', '.launcher', 'node_modules/cross-spawn']) await fs.mkdir(path.join(dir, folder), { recursive: true });
+  await fs.copyFile('scripts/startup-update.mjs', path.join(dir, 'scripts/startup-update.mjs'));
   await fs.copyFile('scripts/start.mjs', path.join(dir, 'scripts/start.mjs'));
   await fs.copyFile('scripts/stop-server.mjs', path.join(dir, 'scripts/stop-server.mjs'));
   await fs.copyFile('src/core/platform.js', path.join(dir, 'src/core/platform.js'));
@@ -30,7 +31,28 @@ try {
   const config = await fs.readFile(path.join(dir, '.orchestrator-node.env'), 'utf8');
   await run();
   assert.equal(await fs.readFile(path.join(dir, '.orchestrator-node.env'), 'utf8'), config);
-  await new Promise(r => blocker.listen(port, '127.0.0.1', r));
+  // A second computer publishes while this installation is stopped.
+  const git = async (cwd, ...args) => promisify(execFile)('git', ['-c', 'user.name=test', '-c', 'user.email=test@localhost', ...args], { cwd });
+  const remote = path.join(dir, 'remote.git'), other = path.join(dir, 'other');
+  await fs.writeFile(path.join(dir, '.gitignore'), 'node_modules/\n.launcher/\n.orchestrator-node.env\nremote.git/\nother/\ndata/\n');
+  await git(dir, 'init', '-b', 'main');
+  await git(dir, 'add', '.'); await git(dir, 'commit', '-m', 'initial');
+  await git(dir, 'init', '--bare', remote);
+  await git(dir, 'remote', 'add', 'origin', remote); await git(dir, 'push', '-u', 'origin', 'main');
+  await git(dir, 'clone', '-b', 'main', remote, other);
+  await fs.appendFile(path.join(other, 'server/index.js'), "\nconsole.log('STARTED UPDATED SERVER');\n");
+  await git(other, 'commit', '-am', 'update from another computer'); await git(other, 'push');
+  const updated = await run();
+  assert.match(updated.stdout, /Startup update verified:/);
+  assert.match(updated.stdout, /STARTED UPDATED SERVER/);
+  assert.ok(updated.stdout.indexOf('Startup update verified:') < updated.stdout.indexOf('STARTED UPDATED SERVER'));
+  await fs.appendFile(path.join(dir, 'server/index.js'), '\n// local edit\n');
+  await assert.rejects(run(), /Local changes/);
+  await git(dir, 'restore', 'server/index.js');
+  await git(dir, 'remote', 'set-url', 'origin', path.join(dir, 'missing.git'));
+  await assert.rejects(run(), /update check failed/);
+  await git(dir, 'remote', 'set-url', 'origin', remote);
+  await new Promise(r => blocker.listen(port, '0.0.0.0', r));
   await assert.rejects(run(), /already in use/);
   assert.equal(blocker.listening, true);
   console.log('PASS first-run server startup, checkout paths with spaces, config preservation and occupied-port refusal');
