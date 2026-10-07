@@ -5,54 +5,6 @@ import path from 'node:path';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import vm from 'node:vm';
-
-// An HTTP response from the old process must not count as a restart.
-const source = await fs.readFile('server/public/app.js', 'utf8');
-const code = source.slice(source.indexOf('async function restartOrchestrator('), source.indexOf('function renderAppsSheet('));
-const binding = source.slice(source.indexOf("$('sheet').querySelectorAll('[data-harness-restart]')"), source.indexOf("$('sheet').querySelectorAll('[data-new-in]')"));
-let click, invoked = 0;
-vm.runInNewContext(binding, {
-  $: () => ({ querySelectorAll: () => [{ set onclick(fn) { click = fn; } }] }),
-  restartOrchestrator: async () => { invoked++; },
-});
-await click({ stopPropagation() {} });
-assert.equal(invoked, 1, 'the first tap actually requests a restart');
-const expected = { instanceId: 'old', restartId: 'ticket', node: 'host' };
-for (const scenario of ['success', 'timeout', 'refused', 'legacy']) {
-  let now = 0, polls = 0, reloaded = false, closed = false;
-  const banners = [];
-  const button = {};
-  const context = {
-    Date: { now: () => now }, AbortSignal,
-    setTimeout: (fn, ms) => { now += ms; fn(); },
-    closeSheet: () => { closed = true; }, showBanner: text => banners.push(text),
-    location: { reload: () => { reloaded = true; } },
-    api: async (route) => {
-      if (route.endsWith('/restart')) {
-        if (scenario === 'refused') throw Error('A turn is still running');
-        return scenario === 'legacy' ? { ok: true } : expected;
-      }
-      polls++;
-      if (polls === 2) throw Error('connection refused');
-      if (scenario === 'success' && polls === 4) return { ...expected, instanceId: 'new' };
-      if (polls === 3) return { ...expected, instanceId: 'other', node: 'other-host' };
-      return expected;
-    },
-  };
-  vm.createContext(context);
-  vm.runInContext(code, context);
-  await context.restartOrchestrator(button);
-  assert.equal(closed, true);
-  assert.equal(button.disabled, false);
-  assert.equal(reloaded, scenario === 'success');
-  if (scenario === 'success') assert.equal(polls, 4);
-  if (scenario === 'timeout') assert.match(banners.at(-1), /could not be verified/);
-  if (scenario === 'refused') assert.match(banners.at(-1), /still running/);
-  if (scenario === 'legacy') assert.match(banners.at(-1), /old server/);
-}
-console.log('PASS restart UI rejects old processes, other hosts, timeouts and refusals');
-
 // Restart an isolated real server; never address the user's live server.
 const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'restart-server-'));
 const checkout = path.join(dir, 'checkout');
@@ -100,11 +52,13 @@ try {
   peerClosed = once(peer, 'exit');
   const peerOriginal = await waitFor(() => true, peerOrigin);
   await call('/api/cluster/join', 'POST', peerOrigin, { url: origin, ownUrl: peerOrigin, token: 'restart-test' });
-  const requested = await call('/api/harness/restart', 'POST');
-  peerReplacement = await waitFor(status => status.instanceId !== peerOriginal.instanceId, peerOrigin);
+  const peerRequested = await call('/api/harness/restart?host=' + peerOriginal.node, 'POST');
+  peerReplacement = await waitFor(status => status.restartId === peerRequested.restartId, peerOrigin);
+  assert.equal((await call('/api/harness/status')).instanceId, original.instanceId, 'restarting a peer leaves this machine running');
   assert.equal(peerReplacement.node, peerOriginal.node);
   assert.notEqual(peerReplacement.pid, peerOriginal.pid);
   await peerClosed;
+  const requested = await call('/api/harness/restart', 'POST');
   assert.equal(requested.instanceId, original.instanceId);
   replacement = await waitFor(status => status.restartId === requested.restartId);
   assert.notEqual(replacement.pid, original.pid);

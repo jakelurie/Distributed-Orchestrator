@@ -45,11 +45,25 @@ export function createAISources(dir, { request = fetch, discoverClaude = claudeM
   }
   const service = {
     ensureRunning: start,
+    async prepare(model) {
+      await start();
+      if ((await ollama('/api/ps')).models?.some(m => m.name === model || m.model === model)) return;
+      let job = [...jobs.values()].find(j => j.model === model && j.action === 'load' && j.state === 'running');
+      job ||= await service.localAction('load', model);
+      while (job.state === 'running') await new Promise(resolve => setTimeout(resolve, 200));
+      if (job.state === 'failed') throw new Error(job.error);
+    },
     async catalog() {
       const cfg = await loadConfig(dir);
       const runtime = Object.values(cfg.models).some(m => m.sourceKind === 'ollama')
         ? await ollama('/api/ps', null, 2000).catch(() => ({ models: [], unavailable: true })) : null;
-      return { runtime, models: Object.fromEntries(Object.entries(cfg.models).map(([id, m]) => [id, { ...m, apiKey: undefined }])),
+      return { runtime, models: Object.fromEntries(Object.entries(cfg.models).map(([id, m]) => [id, { ...m, apiKey: undefined,
+          ...(m.sourceKind === 'ollama' ? { runtimeStatus: (() => {
+            const job = [...jobs.values()].find(j => j.model === m.model && j.state === 'running');
+            if (job) return { load: 'loading', unload: 'unloading', pull: 'downloading' }[job.action];
+            if (runtime?.unavailable) return 'runtime unavailable';
+            return runtime?.models?.some(r => r.name === m.model || r.model === m.model) ? 'loaded' : 'not loaded';
+          })() } : {}) }])),
         default: cfg.default, error: cfg.error, jobs: [...jobs.values()] };
     },
     async discover(kind) {

@@ -8,13 +8,16 @@ import { once } from 'node:events';
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'network-gate-'));
 const state = path.join(root, 'tailscale-state');
 await fs.writeFile(state, 'Stopped');
+await fs.writeFile(path.join(root, 'models.json'), JSON.stringify({ default: 'local', models: {
+  local: { provider: 'openai', sourceKind: 'ollama', model: 'test:local', apiKeyOptional: true, baseUrl: 'http://127.0.0.1:11434/v1' },
+} }));
 const probe = net.createServer();
 await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
 const port = probe.address().port;
 await new Promise(resolve => probe.close(resolve));
 const child = spawn(process.execPath, ['server/index.js'], { env: { ...process.env,
-  HARNESS_PORT: String(port), HARNESS_DATA_DIR: root, HARNESS_TOKEN: 'network-test',
-  ORCHESTRATOR_TAILSCALE_BIN: path.resolve('test/fixtures/tailscale-connected.mjs'),
+  HARNESS_TEST_LOCAL_MODELS: '1', HARNESS_PORT: String(port), HARNESS_DATA_DIR: root, HARNESS_TOKEN: 'network-test',
+  ORCHESTRATOR_TAILSCALE_BIN: process.execPath,
   ORCHESTRATOR_TAILSCALE_SOCKET: '', HARNESS_TEST_TAILSCALE_STATE: state,
 }, stdio: 'ignore' });
 const exited = once(child, 'exit');
@@ -40,6 +43,26 @@ try {
   await pause(2200);
   assert.equal((await (await request('/api/network')).json()).connected, true);
   assert.equal((await request('/api/state')).status, 200, 'same process recovers without a restart');
+  const sources = async body => {
+    const response = await fetch(`http://127.0.0.1:${port}/api/cluster/sources`, {
+      method: 'POST', headers: { 'x-harness-token': 'network-test', 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  assert.equal((await sources({ action: 'catalog' })).models.local.runtimeStatus, 'not loaded');
+  for (const [operation, pending, final] of [['load', 'loading', 'loaded'], ['unload', 'unloading', 'not loaded']]) {
+    await sources({ action: 'local', operation, model: 'test:local' });
+    assert.equal((await sources({ action: 'catalog' })).models.local.runtimeStatus, pending);
+    let catalog;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      catalog = await sources({ action: 'catalog' });
+      if (catalog.models.local.runtimeStatus === final) break;
+      await pause(100);
+    }
+    assert.equal(catalog.models.local.runtimeStatus, final);
+    assert.equal(catalog.jobs.at(-1).state, 'done');
+  }
   await fs.writeFile(state, 'Stopped');
   await pause(2200);
   assert.equal((await request('/api/state')).status, 503, 'disconnects close the gate again');

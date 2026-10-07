@@ -30,7 +30,6 @@ import { deviceInventory } from '../src/core/cluster/devices.js';
 import { hostPairing } from '../src/core/cluster/pairing.js';
 import { executionHosts, executionOwner, assignmentError, sessionWriteError, recoverStoppedTurn } from '../src/core/cluster/execution.js';
 import { createCluster } from '../src/core/cluster/index.js';
-import { restartPeers } from '../src/core/cluster/restart.js';
 import { harnessVersions } from '../src/core/harness-version.js';
 import { createNodes } from '../src/core/nodes.js';
 import { createAISources } from '../src/core/ai-sources.js';
@@ -523,7 +522,6 @@ async function dispatchMessage(id, body, reply) {
   const inventory = await modelInventory(cfg);
   if (!inventory.models[session.model]?.available) return reply(400, { error: inventory.models[session.model]?.availability || 'Model unavailable on this computer.' });
   delete session.queueTurn;
-  if (cfg.models[session.model]?.sourceKind === 'ollama') await aiSources.ensureRunning();
   const sentAt = session.events.length;
   const controller = new AbortController();
   const turn = { controller, startedAt: Date.now(), last: null, executionEpoch: session.executionEpoch || 0 };
@@ -544,6 +542,7 @@ async function dispatchMessage(id, body, reply) {
 
   let prepared = false;
   await Promise.resolve().then(async () => {
+    if (cfg.models[session.model]?.sourceKind === 'ollama') await aiSources.prepare(cfg.models[session.model].model);
     if (session.mode !== 'chat' && !session.monitorFor) {
       await prepareTab(session, { distributed: placementInfo.distributed, recover: Boolean(session.tabWorkspace) });
       if (cluster.shared()) session.tabWorkspace.ownerNode = cluster.self.id;
@@ -1248,13 +1247,21 @@ const server = http.createServer(async (req, res) => {
     // A harness-editing session changes files, but the running process keeps
     // the old code until it restarts. Without this, every self-edit looks
     // broken: new endpoints 404, new UI never appears.
+    if (['/api/harness/status', '/api/harness/restart'].includes(pathname) && url.searchParams.has('host')) {
+      const target = url.searchParams.get('host');
+      if (!cluster.replica.members().some(host => host.id === target)) return json(res, 404, { error: 'Unknown machine' });
+      if (target !== cluster.self.id) {
+        if (cluster.trusted(req)) return json(res, 409, { error: 'Machine identity changed' });
+        return cluster.proxy(req, res, target);
+      }
+    }
     if (req.method === 'GET' && pathname === '/api/harness/status') {
       return json(res, 200, { instanceId, restartId: process.env.ORCHESTRATOR_RESTART_ID || null,
         node: cluster.self.id, pid: process.pid, busy: Boolean(running.size || messageQueue.size), restarting,
         version: loadedVersion, update: harnessUpdate });
     }
     if (req.method === 'GET' && pathname === '/api/harness/versions') {
-      return json(res, 200, await harnessVersions(cluster, { node: cluster.self.id, version: loadedVersion, update: harnessUpdate }));
+      return json(res, 200, await harnessVersions(cluster, { node: cluster.self.id, version: loadedVersion, update: harnessUpdate, busy: Boolean(running.size || messageQueue.size), restarting }));
     }
     if (req.method === 'POST' && pathname === '/api/harness/restart') {
       if (restarting) return json(res, 409, { error: 'A restart is already in progress.' });
@@ -1271,9 +1278,7 @@ const server = http.createServer(async (req, res) => {
       restarting = true;
       let out, helper, revision;
       try {
-        // Cluster-authenticated requests restart only the addressed peer. The
-        // browser request rolls through peers first and this host last.
-        if (!cluster.trusted(req)) await restartPeers(cluster);
+        // Restart only the addressed machine; the browser chooses each host.
         if (running.size || messageQueue.size) throw new Error('Work started during the restart. Wait for it to finish, then retry.');
         const restartId = crypto.randomUUID();
         out = openSync(path.join(USER_DATA, 'server.log'), 'a');
@@ -1947,10 +1952,6 @@ cluster.replica.start();
 // Each host downloads safely. Only the coordinator rolls idle hosts forward.
 setInterval(async () => {
   if (checkingHarnessUpdate || restarting) return;
-  if (running.size || messageQueue.size) {
-    harnessUpdate = { ...harnessUpdate, skipped: 'busy — automatic update queued' };
-    return;
-  }
   checkingHarnessUpdate = true;
   try {
     const result = await syncHarnessCheckout(harnessDir, { busy: () => Boolean(restarting || running.size || messageQueue.size) });

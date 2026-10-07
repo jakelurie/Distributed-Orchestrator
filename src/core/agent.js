@@ -126,7 +126,7 @@ const HARNESS_GUIDE = [
   "- server/index.js is the HTTP server and all /api routes.",
   "- server/public/index.html, app.js and styles.css are the one UI, used on both phone and desktop. app.js renders every screen; there is no framework and no build step.",
   "- src/core/ is the engine: agent.js (the turn loop and this system prompt), tools.js, providers/, apps.js, git.js, store.js, transcript.js, notify.js.",
-  "- test/ holds the suite, run with: npm test",
+  "- test/e2e/ holds a small set of real-server end-to-end workflows, run with: npm test",
   "",
   "Design system (match it exactly, or new UI looks bolted on):",
   "- Dark theme only. Never introduce light backgrounds. Use the existing CSS custom properties (--bg, --bg-2, --bg-3, --fg, --fg-dim, --fg-faint, --line, --accent), never hard-coded colors.",
@@ -135,7 +135,7 @@ const HARNESS_GUIDE = [
   "",
   "Working discipline:",
   "- Read the neighbouring code before adding to it; match its style, naming and structure.",
-  "- Run npm test before you finish and report the result. Add a test for anything you add.",
+  "- Run npm test before you finish and report the result. Extend the relevant E2E workflow for behavior changes; do not add unit or source-inspection tests.",
   "- The running server holds the OLD code until it is restarted, so your file edits are NOT live until the harness restarts. After changing server or UI code, tell the user plainly that a restart is needed (there is a Restart control on the Harness app), and never claim a change works when you could not load it.",
   "- The harness data directory (secrets, tokens, the session store, other projects) is off-limits: reads and writes there are refused. Do not try to read secrets.",
 ].join('\n');

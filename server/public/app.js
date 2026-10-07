@@ -965,9 +965,16 @@ async function refreshState() {
   // Assign field by field. A blanket Object.assign once let the server's
   // `running` (an array of busy session ids) land on top of the local boolean
   // of the same name - and [] is truthy, so send() silently refused forever.
-  if (s.harnessUpdate?.restartRequired && state.harnessUpdateRevision !== s.harnessUpdate.head) {
-    state.harnessUpdateRevision = s.harnessUpdate.head;
-    showBanner('Harness update downloaded. Automatic restart is queued until all machines are ready and idle.');
+  if (!state.harnessCheckedAt || Date.now() - state.harnessCheckedAt > 30_000) {
+    state.harnessCheckedAt = Date.now();
+    api('/api/harness/versions').then(result => {
+      const pending = result.hosts.filter(host => host.update?.restartRequired || host.update?.available);
+      const key = pending.map(host => host.id + ':' + host.update.head + ':' + host.update.latest + ':' + host.update.restartRequired).join(',');
+      if (key && key !== state.harnessUpdateRevision) {
+        showBanner(pending.map(host => `${host.name || host.id}: ${host.state}`).join('; ') + '. Open Restart on the Harness app.');
+      }
+      state.harnessUpdateRevision = key;
+    }).catch(() => {});
   }
   state.machines = s.machines;
   state.apps = s.apps ?? [];
@@ -1062,7 +1069,7 @@ async function newSheet() {
     </select>
     <label>Name</label><input id="n-name" placeholder="${esc(nextTabName(draft.appId))}" />
     <div id="n-computer-row" hidden><label>Computer</label><select id="n-computer"></select></div>
-    <label>Model</label><select id="n-model">${modelOptions(state.default)}</select>
+    <label>Model</label><select id="n-model" disabled><option value="">Select a computer</option></select>
     <label>Mode</label>
     <select id="n-mode">
       <option value="agent">agent — tools, works in a project folder</option>
@@ -1073,7 +1080,7 @@ async function newSheet() {
     <button class="ghost" id="n-browse" style="flex:0 0 92px">browse</button></div>
     <label>Extra instructions (optional)</label><textarea id="n-sys"></textarea>
     <div class="actions"><button class="ghost" id="n-cancel">cancel</button>
-    <button class="primary" id="n-go">create</button></div>`);
+    <button class="primary" id="n-go" disabled>create</button></div>`);
 
   if (draft.name) $('n-name').value = draft.name;
   if (draft.system) $('n-sys').value = draft.system;
@@ -1105,16 +1112,30 @@ async function newSheet() {
   // The app's directory wins, and the field goes read-only so the two cannot
   // disagree about where the session is working.
   let modelRequest = 0;
+  const computerSelect = $('n-computer');
   const loadComputerModels = async () => {
     const request = ++modelRequest;
     $('n-go').disabled = true;
+    $('n-model').disabled = true;
+    $('n-model').innerHTML = '<option value="">Loading models for this computer…</option>';
+    const current = () => request === modelRequest && $('n-computer') === computerSelect;
+    if (!computerSelect.value) {
+      $('n-model').innerHTML = '<option value="">No computer available</option>';
+      return;
+    }
     try {
       const inventory = await api(`/api/execution-models?app=${encodeURIComponent($('n-app').value)}&host=${encodeURIComponent($('n-computer').value)}`);
-      if (request !== modelRequest || !$('n-computer')) return;
+      if (!current()) return;
       $('n-model').innerHTML = Object.values(inventory.models).map(m => `<option value="${esc(m.alias)}" ${m.available === false ? 'disabled' : ''}>${esc(m.label || m.alias)}${m.available === false ? ' — ' + esc(m.availability) : m.hasKey ? '' : ' — no key'}</option>`).join('');
       $('n-model').value = inventory.models[draft.model]?.available !== false && inventory.models[draft.model] ? draft.model : inventory.default;
-      $('n-go').disabled = !inventory.default;
-    } catch (e) { if (request === modelRequest) showBanner(e.message); }
+      $('n-model').disabled = !Object.keys(inventory.models).length;
+      if ($('n-model').disabled) $('n-model').innerHTML = '<option value="">No models on this computer</option>';
+      $('n-go').disabled = !$('n-model').value;
+    } catch (e) {
+      if (!current()) return;
+      $('n-model').innerHTML = '<option value="">Cannot load this computer’s models</option>';
+      showBanner(e.message);
+    }
   };
   $('n-computer').onchange = loadComputerModels;
   const applyApp = () => {
@@ -1124,7 +1145,7 @@ async function newSheet() {
     $('n-computer-row').hidden = hosts.length < 2;
     $('n-computer').innerHTML = hosts.map(h => `<option value="${esc(h.id)}">${h.number} · ${esc(h.name)}${h.active ? '' : ' · offline'}</option>`).join('');
     if (hosts.some(h => h.id === draft.ownerNode)) $('n-computer').value = draft.ownerNode;
-    if (hosts.length) loadComputerModels();
+    loadComputerModels();
     const app = appList.find((a) => a.id === $('n-app').value);
     if (app) {
       $('n-dir').value = app.dir;
@@ -1221,7 +1242,7 @@ async function settingsSheet() {
       <button class="rowlink" id="h-models"><span>AI sources</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-voice"><span>Voice setup</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-notify"><span>Notifications</span><span class="chev">›</span></button>
-      <button class="rowlink" id="h-version"><span id="h-version-label">Harness version · check machines</span><span class="chev">›</span></button>
+      <button class="rowlink" id="h-version"><span id="h-version-label">Restart and updates</span><span class="chev">›</span></button>
     </div>
     <div class="actions"><button class="primary" id="s-close">done</button></div>`);
 
@@ -1234,37 +1255,31 @@ async function settingsSheet() {
 
   $('s-close').onclick = closeSheet;
   $('h-version').onclick = harnessVersionSheet;
-  const label = $('h-version-label');
-  try {
-    const result = await api('/api/harness/versions');
-    if ($('h-version-label') !== label) return;
-    const committed = result.version?.committedAt ? new Date(result.version.committedAt).toLocaleString() : 'time unknown';
-    label.textContent = `Running ${(result.version?.revision || 'unknown').slice(0, 8)} · code committed ${committed} · ${result.aligned ? 'machines match' : 'check machines'}`;
-  } catch { label.textContent = 'Harness version · unable to check'; }
 }
 
 async function harnessVersionSheet() {
-  openSheet('<h2>Harness version</h2><p class="dim">Checking paired machines…</p>');
+  openSheet('<h2>Restart Harness</h2><p class="dim">Checking paired machines…</p>');
   try {
     const result = await api('/api/harness/versions');
     const stamp = value => value ? new Date(value).toLocaleString() : 'unknown';
-    openSheet(`<h2>Harness version</h2>
+    openSheet(`<h2>Restart Harness</h2>
       <p class="dim">${result.aligned ? 'All paired machines run the same commit.' : 'Some machines need attention. Different commits may be ahead or behind.'}</p>
       ${result.hosts.map(host => `<div class="item machine-item"><div class="grow">
         <div class="t">${esc(host.name || host.id)}</div>
         <div class="s">${esc(host.state)}</div>
-        <div class="s">Running ${(esc(host.version?.revision || 'unknown')).slice(0, 12)} · committed ${esc(stamp(host.version?.committedAt))}</div>
+        <div class="s">Active commit ${(esc(host.version?.revision || 'unknown')).slice(0, 12)} · committed ${esc(stamp(host.version?.committedAt))}</div>
         <div class="s">Started ${esc(stamp(host.version?.startedAt))}</div>
         ${host.update?.head && host.update.head !== host.version?.revision ? `<div class="s">Downloaded ${esc(host.update.head.slice(0, 12))}</div>` : ''}
-        ${host.update?.latest ? `<div class="s">GitHub ${esc(host.update.latest.slice(0, 12))} · checked ${esc(stamp(host.update.checkedAt))}</div>` : ''}
-        ${host.update?.phase ? `<div class="s">${esc(host.update.phase)}</div>` : ''}
+        ${host.update?.latest ? `<div class="s">Latest commit ${esc(host.update.latest.slice(0, 12))}</div>` : ''}
         ${host.update?.error ? `<div class="s">${esc(host.update.error)}</div>` : ''}
-      </div></div>`).join('')}
-      <p class="dim">Checked ${esc(stamp(result.checkedAt))}. Machines check GitHub every 30 seconds when idle. Published updates restart automatically once every machine has downloaded the same commit. Each restart is verified. Unreachable machines cannot be verified.</p>
-      <div class="actions"><button class="ghost" id="version-back">back</button><button class="ghost" id="version-refresh">refresh</button><button class="primary" id="version-restart">restart machines</button></div>`);
+      </div><button class="ghost" data-restart-host="${esc(host.id)}" ${!host.version || host.busy || host.restarting ? 'disabled' : ''}>${host.busy ? 'busy' : host.restarting ? 'restarting' : 'restart'}</button></div>`).join('')}
+      <p class="dim">Checked ${esc(stamp(result.checkedAt))}. Machines check GitHub every 30 seconds and download updates when idle. Restart applies downloaded changes. Unreachable machines cannot be verified.</p>
+      <div class="actions"><button class="ghost" id="version-back">back</button><button class="ghost" id="version-refresh">refresh</button></div>`);
     $('version-back').onclick = settingsSheet;
     $('version-refresh').onclick = harnessVersionSheet;
-    $('version-restart').onclick = event => restartOrchestrator(event.currentTarget);
+    $('sheet').querySelectorAll('[data-restart-host]').forEach(button => {
+      button.onclick = () => restartOrchestrator(button, button.dataset.restartHost);
+    });
   } catch (e) { showBanner(e.message, true); closeSheet(); }
 }
 
@@ -1281,7 +1296,7 @@ async function githubSheet() {
     <p class="dim">Back up your projects to private GitHub repositories.</p>
     <details class="github-details"><summary>What gets shared</summary>
       <p class="dim">GitHub receives project files and commit history, not chat transcripts or saved integration credentials. The connection is shared with your paired hosts.</p>
-      <p class="dim">Projects with automatic Git enabled are pushed after their next changed turn. New repositories are private. Manage visibility in Edit session → Git &amp; GitHub.</p>
+      <p class="dim">Changes are published only when you press Push. New repositories are private. Manage visibility in Edit session → Git &amp; GitHub.</p>
     </details>
     ${backToSettings}`);
   const box = $('github-status');
@@ -1703,13 +1718,28 @@ async function modelsSheet() {
       <button class="rowlink" id="source-claude">${sourceLabel('claude-cli', 'Claude Code')} <span>›</span></button>
       <button class="rowlink" id="source-codex">${sourceLabel('codex-cli', 'Codex')} <span>›</span></button>
       <button class="rowlink" id="source-local">${Object.values(catalog.models).some(m => m.sourceKind === 'ollama') ? 'Manage' : 'Set up'} local models · Ollama <span>›</span></button>
-      ${Object.values(catalog.models).map(m => `<div class="item machine-item"><div class="grow"><div class="t">${esc(m.label || m.model)}</div><div class="s">${esc(m.provider)} · ${esc(m.model)}</div><div class="s">${esc(modelVersionDetails(m))}</div></div>
+      ${Object.values(catalog.models).map(m => `<div class="item machine-item"><div class="grow"><div class="t">${esc(m.label || m.model)}</div><div class="s">${esc(m.provider)} · ${esc(m.model)}</div><div class="s">${esc(modelVersionDetails(m))}</div>${m.sourceKind === 'ollama' ? `<div class="s" data-runtime-model="${sourceAttr(m.alias)}">${esc(m.runtimeStatus)}</div>` : ''}</div>
         ${m.sourceKind === 'ollama' ? `<button class="ghost" data-local-load="${sourceAttr(m.model)}">load</button><button class="ghost" data-local-unload="${sourceAttr(m.model)}">unload</button><button class="ghost" data-helper="${sourceAttr(m.alias)}" data-enabled="${!m.allowDelegate}">helper ${m.allowDelegate ? 'on' : 'off'}</button>` : ''}
         ${sourceHost === machines.self ? `<button class="ghost" data-source-edit="${sourceAttr(m.alias)}">edit</button>` : ''}
         <button class="ghost" data-source-remove="${sourceAttr(m.alias)}">remove</button></div>`).join('') || '<p class="dim">No sources added on this computer.</p>'}
       ${catalog.runtime ? `<p class="dim">Local runtime: ${catalog.runtime.unavailable ? 'stopped or unavailable' : catalog.runtime.models?.length ? catalog.runtime.models.map(m => esc(m.name) + ' · GPU ' + Math.round((m.size_vram || 0) / 1073741824 * 10) / 10 + ' GiB').join(', ') : 'running · no models loaded'}</p>` : ''}
+      <p class="dim">Local models load automatically on use. Load prewarms for 10 minutes of inactivity; unload frees memory. Requests may change the idle expiry.</p>
       <p class="dim" id="sources-status">${catalog.jobs.map(j => esc(`${j.action} ${j.model || ''}: ${j.state}${j.error ? ' — ' + j.error : ''}`)).join('<br>')}</p>
       <div class="actions"><button class="ghost" id="sources-refresh">refresh</button><button class="ghost" id="source-add">advanced API source</button></div>${backToSettings}`);
+    const statusNode = $('sources-status');
+    const refreshRuntime = async () => {
+      if ($('sources-status') !== statusNode || sourceHost !== host) return;
+      try {
+        const next = await sourcesCall('catalog', { host });
+        if ($('sources-status') !== statusNode || sourceHost !== host) return;
+        $('sheet').querySelectorAll('[data-runtime-model]').forEach(el => {
+          el.textContent = next.models[el.dataset.runtimeModel]?.runtimeStatus || 'unknown';
+        });
+        statusNode.textContent = next.jobs.map(j => `${j.action} ${j.model || ''}: ${j.state}${j.error ? ' - ' + j.error : ''}`).join(' / ');
+      } catch { if ($('sources-status') === statusNode) statusNode.textContent = 'Unable to refresh model status'; }
+      if ($('sources-status') === statusNode) setTimeout(refreshRuntime, 2000);
+    };
+    setTimeout(refreshRuntime, 2000);
     $('sources-host').onchange = () => { sourceHost = $('sources-host').value; modelsSheet(); };
     $('sub-back').onclick = settingsSheet;
     $('sources-refresh').onclick = modelsSheet;
@@ -2415,21 +2445,24 @@ async function showPeerSessions() {
   } catch { if ($('peer-sessions') === box) box.textContent = 'Could not load connected machines.'; }
 }
 
-async function restartOrchestrator(button) {
+async function restartOrchestrator(button, host) {
+  const query = host ? `?host=${encodeURIComponent(host)}` : '';
   button.disabled = true;
   closeSheet(); // Feedback must be visible, including a refused restart.
-  showBanner('Checking for updates and restarting paired computers one at a time…');
+  showBanner('Checking for updates and restarting the selected machine…');
   try {
-    const expected = await api('/api/harness/restart', { method: 'POST' });
+    const local = host ? await api('/api/harness/status') : null;
+    const expected = await api('/api/harness/restart' + query, { method: 'POST' });
     if (!expected.restartId) throw new Error('The old server accepted the restart but cannot verify it. Wait a few seconds, then refresh to load the updated restart control.');
     showBanner('Restarting — waiting for the replacement server…');
     const deadline = Date.now() + 45_000;
     while (Date.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve, 700));
       try {
-        const current = await api('/api/harness/status', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
+        const current = await api('/api/harness/status' + query, { cache: 'no-store', signal: AbortSignal.timeout(3000) });
         if (current.restartId === expected.restartId && current.instanceId !== expected.instanceId && current.node === expected.node && (!expected.revision || current.version?.revision === expected.revision)) {
-          location.reload();
+          if (host && host !== local.node) { showBanner('Machine restarted successfully.'); await harnessVersionSheet(); }
+          else location.reload();
           return;
         }
       } catch { /* The listener is unavailable during a normal restart. */ }
@@ -2481,7 +2514,7 @@ function renderAppsSheet(d) {
       : `<span class="pill ${a.reachable ? 'ready' : a.running ? 'warm' : ''}">${label}</span>`;
     const actions = a.builtin
       ? `<div class="app-actions">
-          <button class="x" data-harness-restart="1" title="Restart Harness on all paired computers to apply code changes">⟳</button>
+          <button class="x" data-harness-restart="1" title="Restart Harness: choose a machine">⟳</button>
         </div>`
       : `<div class="app-actions">
           ${launchable || a.running ? `<button class="x" data-app-run="${esc(a.id)}" title="${a.running ? 'Stop' : 'Start'}">${a.running ? '■' : '▶'}</button>` : ''}
@@ -2557,7 +2590,7 @@ function renderAppsSheet(d) {
   $('sheet').querySelectorAll('[data-harness-restart]').forEach((el) => {
     el.onclick = async (e) => {
       e.stopPropagation();
-      await restartOrchestrator(el);
+      await harnessVersionSheet();
     };
   });
   $('sheet').querySelectorAll('[data-new-in]').forEach((el) => {
@@ -3256,3 +3289,22 @@ async function checkNetworkConnection() {
 window.addEventListener('online', checkNetworkConnection);
 setInterval(checkNetworkConnection, 3000);
 checkNetworkConnection();
+
+// Runtime status is always requested from the selected session owner.
+let sessionRuntimePending = false;
+setInterval(async () => {
+  const session = state.session;
+  if (sessionRuntimePending || !session?.ownerNode || state.models[session.model]?.sourceKind !== 'ollama') return;
+  sessionRuntimePending = true;
+  try {
+    const response = await nativeFetch('/api/cluster/sources', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host: session.ownerNode, action: 'catalog' }) });
+    if (!response.ok) throw new Error('unavailable');
+    const catalog = await response.json();
+    if (state.session?.id !== session.id || state.session?.model !== session.model) return;
+    const status = catalog.models[session.model]?.runtimeStatus || 'unknown';
+    $('title-sub').textContent = `Model: ${state.models[session.model]?.label || session.model} ? ${status === 'not loaded' ? 'not loaded ? loads on send' : status === 'loaded' ? 'loaded' : status}`;
+  } catch {
+    if (state.session?.id === session.id) $('title-sub').textContent = 'Local model status unavailable';
+  } finally { sessionRuntimePending = false; }
+}, 2000);

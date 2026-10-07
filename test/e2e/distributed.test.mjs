@@ -48,6 +48,14 @@ async function start(name) {
 try {
   const a = await start('model-a'), b = await start('model-b');
   await b.call('/api/cluster/join', 'POST', { url: a.status.hosts[0].url, ownUrl: b.status.hosts[0].url, token: 'execution-test' });
+  // New-session inventories must follow the selected computer from either browser host.
+  for (const browser of [a, b]) {
+    for (const [owner, model] of [[a, 'model-a'], [b, 'model-b']]) {
+      const choices = await browser.call(`/api/execution-models?app=__harness&host=${owner.status.self}`);
+      assert.deepEqual(Object.keys(choices.models), [model]);
+      assert.equal(choices.default, model);
+    }
+  }
   const state = await a.call('/api/state');
   assert.equal(state.apps.find(app => app.id === '__harness').executionHosts.length, 2);
   const s = await a.call('/api/sessions', 'POST', { appId: '__harness', name: 'remote', mode: 'chat', model: 'model-b', ownerNode: b.status.self });
@@ -145,6 +153,11 @@ try {
     await pause();
   }
   await a.call(`/api/sessions/${s.id}`, 'DELETE');
+  b.child.kill('SIGTERM');
+  await b.closed;
+  const unavailable = await a.request(`/api/execution-models?app=__harness&host=${b.status.self}`);
+  assert.ok(!unavailable.ok, 'an offline computer never falls back to the serving computer’s models');
+  assert.equal((await unavailable.json()).models, undefined);
   console.log('PASS follower-owned turns, local model inventories, SSE proxy, busy assignment guard, single-host eligibility and commands from another computer');
 } finally {
   release?.();
