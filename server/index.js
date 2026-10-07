@@ -1421,10 +1421,13 @@ const server = http.createServer(async (req, res) => {
           session.turnStartedAt = startedAt;
           await store.save(session);
         }
+        const app = session.appId ? (await apps.load(USER_DATA)).find(a => a.id === session.appId) : null;
         const result = await integrateTab(session, {
           distributed: (await sessionPlacement(session)).distributed,
           beforePublish: requireConnection,
           retryPush: true,
+          autoCreatePrivate: Boolean(app && !app.builtin),
+          appName: app?.name,
           signal: running.get(id).controller.signal,
           onCheck: (log) => upsertMonitor(USER_DATA, { id: `integration-${id}`, label: 'Integration checks', kind: 'file', path: log, session: id }),
           push: true,
@@ -1432,6 +1435,10 @@ const server = http.createServer(async (req, res) => {
         });
         if (!result.ok || (!result.pushed && result.skipped !== 'no changes'))
           throw new Error(result.error || result.reason || 'Publication did not finish.');
+        if (app && !app.builtin && result.created) {
+          const linked = await git.status(session.projectDir);
+          if (linked.remote) await apps.update(USER_DATA, app.id, { repo: linked.remote });
+        }
         const note = noteEvent(result.pushed ? `Published to GitHub · ${result.sha}` : 'Already published; no new changes.', {
           sha: result.sha, commitUrl: result.commitUrl, publication: 'published',
           pushReceipt: { machine: cluster.self.name || cluster.self.id, status: result.pushed ? 'Published' : 'No changes', sha: result.sha, files: result.files?.length || 0 },

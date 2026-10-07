@@ -15,7 +15,7 @@ import { shellCommand, windowsListeners, killTree } from './platform.js';
 import { exec, execFile, spawn } from 'node:child_process';
 import http from 'node:http';
 import fs from 'node:fs/promises';
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -187,7 +187,8 @@ export async function listeningProcesses() {
 
 function isInsideDir(dir, candidate) {
   if (!candidate) return false;
-  const rel = path.relative(path.resolve(dir), path.resolve(candidate));
+  const canonical = value => { try { return realpathSync(value); } catch { return path.resolve(value); } };
+  const rel = path.relative(canonical(dir), canonical(candidate));
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
@@ -215,7 +216,9 @@ export function runningInfo(app, procs) {
   const byDir = canMatchByDir(app.dir);
   const mine = procs.filter((p) => {
     if (p.pid === process.pid) return false;          // never the harness itself
-    if (app.port && p.port === app.port) return true;
+    // A known working directory takes precedence over a reused port.
+    if (p.cwd) return byDir && isInsideDir(app.dir, p.cwd);
+    if (app.port && p.port === app.port) return p.pid === app.pid;
     return byDir && isInsideDir(app.dir, p.cwd);
   });
   if (!mine.length) return { running: false, port: app.port, pids: [], adopted: false };

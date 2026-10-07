@@ -7,6 +7,7 @@ import net from 'node:net';
 import { spawn, execFileSync } from 'node:child_process';
 import { prepareTab } from '../../src/core/tab-workspaces.js';
 import { once } from 'node:events';
+import { listeningProcesses, runningInfo } from '../../src/core/apps.js';
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'execution-hosts-'));
 const hosts = [];
 const pause = () => new Promise(r => setTimeout(r, 150));
@@ -47,6 +48,21 @@ async function start(name) {
   throw Error('server did not start');
 }
 try {
+  // A real listener on a reused port belongs to its directory, not the old app.
+  const groceryDir = path.join(root, 'grocery');
+  await fs.mkdir(groceryDir);
+  const listener = spawn(process.execPath, ['-e', "require('http').createServer((q,r)=>r.end('grocery')).listen(0,'127.0.0.1',function(){console.log(this.address().port)})"], { cwd: groceryDir });
+  const listenerExit = once(listener, 'exit');
+  try {
+    const [data] = await once(listener.stdout, 'data');
+    const port = Number(String(data).trim());
+    const processes = await listeningProcesses();
+    const actual = processes.find(p => p.pid === listener.pid && p.port === port);
+    assert.ok(actual, 'running listener discovered');
+    assert.equal(runningInfo({ dir: path.join(root, 'parallel'), port }, processes).running, false);
+    if (actual.cwd) assert.equal(runningInfo({ dir: groceryDir, port }, processes).running, true);
+    assert.equal(await (await fetch(`http://127.0.0.1:${port}`)).text(), 'grocery');
+  } finally { listener.kill(); await listenerExit; }
   const a = await start('model-a'), b = await start('model-b');
   await b.call('/api/cluster/join', 'POST', { url: a.status.hosts[0].url, ownUrl: b.status.hosts[0].url, token: 'execution-test' });
   // New-session inventories must follow the selected computer from either browser host.
