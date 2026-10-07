@@ -11,6 +11,7 @@ let blocker;
 try {
   for (const folder of ['scripts', 'src/core', 'server', '.launcher', 'node_modules/cross-spawn']) await fs.mkdir(path.join(dir, folder), { recursive: true });
   await fs.copyFile('scripts/startup-update.mjs', path.join(dir, 'scripts/startup-update.mjs'));
+  await fs.copyFile('scripts/restart-server.mjs', path.join(dir, 'scripts/restart-server.mjs'));
   await fs.copyFile('scripts/start.mjs', path.join(dir, 'scripts/start.mjs'));
   await fs.copyFile('scripts/stop-server.mjs', path.join(dir, 'scripts/stop-server.mjs'));
   await fs.copyFile('src/core/platform.js', path.join(dir, 'src/core/platform.js'));
@@ -46,11 +47,21 @@ try {
   assert.match(updated.stdout, /Startup update verified:/);
   assert.match(updated.stdout, /STARTED UPDATED SERVER/);
   assert.ok(updated.stdout.indexOf('Startup update verified:') < updated.stdout.indexOf('STARTED UPDATED SERVER'));
+  await fs.appendFile(path.join(other, 'server/index.js'), "\nconsole.log('RESTART PULLED UPDATE');\n");
+  await git(other, 'commit', '-am', 'update before restart'); await git(other, 'push');
+  const restart = () => promisify(execFile)(process.execPath,
+    [path.join(dir, 'scripts/restart-server.mjs'), String(port), path.join(dir, 'server/index.js')],
+    { env, timeout: 10000 });
+  const restarted = await restart();
+  assert.match(restarted.stdout, /RESTART PULLED UPDATE/);
+  assert.ok(restarted.stdout.indexOf('Startup update verified:') < restarted.stdout.indexOf('RESTART PULLED UPDATE'));
   await fs.appendFile(path.join(dir, 'server/index.js'), '\n// local edit\n');
   await assert.rejects(run(), /Local changes/);
+  await assert.rejects(restart(), /Local changes/);
   await git(dir, 'restore', 'server/index.js');
   await git(dir, 'remote', 'set-url', 'origin', path.join(dir, 'missing.git'));
   await assert.rejects(run(), /update check failed/);
+  await assert.rejects(restart(), /update check failed/);
   await git(dir, 'remote', 'set-url', 'origin', remote);
   await new Promise(r => blocker.listen(port, '0.0.0.0', r));
   await assert.rejects(run(), /already in use/);

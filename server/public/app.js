@@ -2421,7 +2421,7 @@ async function showPeerSessions() {
 async function restartOrchestrator(button) {
   button.disabled = true;
   closeSheet(); // Feedback must be visible, including a refused restart.
-  showBanner('Restarting paired computers one at a time, then this computer…');
+  showBanner('Checking for updates and restarting paired computers one at a time…');
   try {
     const expected = await api('/api/harness/restart', { method: 'POST' });
     if (!expected.restartId) throw new Error('The old server accepted the restart but cannot verify it. Wait a few seconds, then refresh to load the updated restart control.');
@@ -2431,7 +2431,7 @@ async function restartOrchestrator(button) {
       await new Promise(resolve => setTimeout(resolve, 700));
       try {
         const current = await api('/api/harness/status', { cache: 'no-store', signal: AbortSignal.timeout(3000) });
-        if (current.restartId === expected.restartId && current.instanceId !== expected.instanceId && current.node === expected.node) {
+        if (current.restartId === expected.restartId && current.instanceId !== expected.instanceId && current.node === expected.node && (!expected.revision || current.version?.revision === expected.revision)) {
           location.reload();
           return;
         }

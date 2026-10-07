@@ -28,6 +28,7 @@ export async function startupUpdate(root) {
     const head = await git('rev-parse', 'HEAD');
     if (head !== latest) throw Error('Local commits have not been published. Publish them before starting.');
     console.log(`Startup update verified: ${head.slice(0, 12)}`);
+    return head;
   } catch (error) {
     throw Error(`Harness was not started: update check failed. ${error.stderr || error.message}`);
   } finally { await fs.rmdir(lock); }

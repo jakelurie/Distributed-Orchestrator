@@ -7,7 +7,7 @@ export async function restartPeers(cluster, { request = fetch, sleep = pause, no
   const call = async (host, operation, method = 'GET') => {
     const response = await request(new URL(`/api/harness/${operation}`, host.url), {
       method, redirect: 'error', headers: { 'x-cluster-key': cluster.replica.disk.secret, ...(targetRevision ? { 'x-harness-revision': targetRevision } : {}) },
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(operation === 'restart' ? 190000 : 5000),
     });
     const value = await response.json();
     if (!response.ok) throw new Error(value.error || `HTTP ${response.status}`);
@@ -40,7 +40,7 @@ export async function restartPeers(cluster, { request = fetch, sleep = pause, no
         try { status = await call(current, 'status'); }
         catch { continue; } // A restarting listener is temporarily unavailable.
         if (status.node === current.id && status.restartId === expected.restartId && status.instanceId !== expected.instanceId) {
-          if (targetRevision && (status.version?.revision !== targetRevision || status.version?.dirty)) throw new Error('Replacement is not running the expected clean commit.');
+          if ((expected.revision || targetRevision) && (status.version?.revision !== (expected.revision || targetRevision) || status.version?.dirty)) throw new Error('Replacement is not running the expected clean commit.');
           verified = true;
           break;
         }

@@ -43,7 +43,7 @@ try {
   child.stdout.on('data', d => { output += d; });
   const finished = new Promise(r => child.once('exit', r));
   await new Promise(r => setTimeout(r, 450));
-  assert.equal(output, '');
+  assert.doesNotMatch(output, /replacement started/);
   await new Promise(r => blocker.close(r));
   assert.equal(await finished, 0);
   assert.match(output, /replacement started/);

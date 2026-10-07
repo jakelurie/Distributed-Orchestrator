@@ -1344,7 +1344,7 @@ const server = http.createServer(async (req, res) => {
           return json(res, 409, { error: 'Checkout changed; waiting for the expected clean published commit.' });
       }
       restarting = true;
-      let out, helper;
+      let out, helper, revision;
       try {
         // Cluster-authenticated requests restart only the addressed peer. The
         // browser request rolls through peers first and this host last.
@@ -1359,7 +1359,7 @@ const server = http.createServer(async (req, res) => {
         });
         // Do not stop this server until the relauncher has loaded successfully.
         await new Promise((resolve, reject) => {
-          const timer = setTimeout(() => finish(new Error('Restart helper did not become ready.')), 5000);
+          const timer = setTimeout(() => finish(new Error('Restart update check timed out.')), 180000);
           const finish = (error) => {
             clearTimeout(timer);
             helper.removeListener('error', finish);
@@ -1368,14 +1368,21 @@ const server = http.createServer(async (req, res) => {
             error ? reject(error) : resolve();
           };
           const exited = () => finish(new Error('Restart helper exited before it was ready.'));
-          const ready = (message) => { if (message?.ready) finish(); };
+          const ready = (message) => {
+            if (message?.error) return finish(new Error(message.error));
+            if (message?.ready) {
+              revision = message.revision;
+              if (targetRevision && revision !== targetRevision) return finish(new Error('GitHub changed during rollout; retry with the latest commit.'));
+              finish();
+            }
+          };
           helper.once('error', finish);
           helper.once('exit', exited);
           helper.on('message', ready);
         });
         helper.disconnect();
         helper.unref();
-        await json(res, 200, { ok: true, restarting: true, instanceId, restartId, node: cluster.self.id });
+        await json(res, 200, { ok: true, restarting: true, instanceId, restartId, node: cluster.self.id, revision });
         setTimeout(() => shutdown('restart'), 400);
       } catch (error) {
         helper?.kill();

@@ -55,12 +55,17 @@ console.log('PASS restart UI rejects old processes, other hosts, timeouts and re
 
 // Restart an isolated real server; never address the user's live server.
 const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'restart-server-'));
+const checkout = path.join(dir, 'checkout');
+await fs.mkdir(checkout);
+for (const folder of ['server', 'src', 'scripts']) await fs.cp(folder, path.join(checkout, folder), { recursive: true });
+await fs.copyFile('package.json', path.join(checkout, 'package.json'));
+await fs.symlink(path.resolve('node_modules'), path.join(checkout, 'node_modules'), 'junction');
 const probe = net.createServer();
 await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
 const port = probe.address().port;
 await new Promise(resolve => probe.close(resolve));
 const origin = `http://127.0.0.1:${port}`;
-const child = spawn(process.execPath, ['server/index.js'], { env: { ...process.env,
+const child = spawn(process.execPath, ['server/index.js'], { cwd: checkout, env: { ...process.env,
   HARNESS_PORT: String(port), HARNESS_TOKEN: 'restart-test', HARNESS_DATA_DIR: dir,
   ORCHESTRATOR_PUBLIC_URL: origin,
 }, stdio: 'ignore' });
@@ -88,7 +93,7 @@ try {
   const peerPort = peerProbe.address().port;
   await new Promise(resolve => peerProbe.close(resolve));
   const peerOrigin = `http://127.0.0.1:${peerPort}`;
-  peer = spawn(process.execPath, ['server/index.js'], { env: { ...process.env,
+  peer = spawn(process.execPath, ['server/index.js'], { cwd: checkout, env: { ...process.env,
     HARNESS_PORT: String(peerPort), HARNESS_TOKEN: 'restart-test', HARNESS_DATA_DIR: path.join(dir, 'peer'),
     ORCHESTRATOR_PUBLIC_URL: peerOrigin,
   }, stdio: 'ignore' });
