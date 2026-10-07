@@ -236,9 +236,17 @@ check('stream closed with done', frames.at(-1)?.kind === 'done');
 
 const isolated = await (await call(`/api/sessions/${session.id}`)).json();
 check('coding turn uses its own worktree', isolated.tabWorkspace?.dir && isolated.tabWorkspace.dir !== projectDir);
+const pendingPush = await (await call(`/api/git?session=${session.id}`)).json();
+check('chat completion leaves changes pending for explicit push', pendingPush.pending === true && pendingPush.enabled === false);
+check('push panel identifies the owning machine and history', Boolean(pendingPush.machine) && Array.isArray(pendingPush.history));
+const pushResponse = await call('/api/git/push', { method: 'POST', body: JSON.stringify({ session: session.id }) });
+check('push without valid publication checks reports an error', pushResponse.status === 409);
+const pushFailure = await (await call(`/api/git?session=${session.id}&history=1`)).json();
+check('failed explicit pushes leave a timestamped machine receipt', pushFailure.history[0]?.status === 'Failed' && Boolean(pushFailure.history[0]?.machine) && Boolean(pushFailure.history[0]?.ts));
+
 const wrote = await fs.readFile(path.join(isolated.tabWorkspace?.dir ?? projectDir, 'phone.txt'), 'utf8').catch(() => null);
 check('without integration checks the shared folder stays unchanged', !(await fs.stat(path.join(projectDir, 'phone.txt')).catch(() => null)));
-check('missing integration checks are reported in the transcript', isolated.events.some((e) => e.type === 'note' && e.text?.includes('No automated integration check')));
+check('missing integration checks are reported after explicit push', (await (await call(`/api/sessions/${session.id}`)).json()).events.some((e) => e.type === 'note' && e.text?.includes('No automated integration check')));
 check('the turn actually wrote the file on the laptop', wrote === 'from the phone', JSON.stringify(wrote));
 
 const reloaded = await (await call(`/api/sessions/${session.id}`)).json();

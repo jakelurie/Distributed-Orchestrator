@@ -16,7 +16,7 @@ assert.equal(missing.ok, false);
 assert.match(missing.error, /Project folder is missing/);
 console.log('PASS platform detection, explicit overrides, notification setup and missing Git folder diagnostics');
 
-// A new project must still be able to turn automatic Git off before its first commit.
+// New projects explain explicit publishing before their first commit.
 const { readFile } = await import('node:fs/promises');
 const { runInNewContext } = await import('node:vm');
 const source = await readFile(new URL('../server/public/app.js', import.meta.url), 'utf8');
@@ -35,6 +35,7 @@ const paint = runInNewContext(gitSource + '\npaintGit;', {
   esc: (s) => s, shortDir: (s) => s,
 });
 await paint({ id: 'test', projectDir: '/new/project' });
-assert.match(html, /data-git="off"/);
-assert.match(html, /data-git="on"/);
+assert.doesNotMatch(html, /data-git=/);
+assert.match(html, /Push fetches remote changes/);
+assert.match(html, /Recent pushes/);
 console.log('PASS Git controls remain available before repository creation');

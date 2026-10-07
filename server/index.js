@@ -543,8 +543,6 @@ async function dispatchMessage(id, body, reply) {
   broadcast(id, { kind: 'started', startedAt: turn.startedAt });
 
   let prepared = false;
-  let turnFailed = false;
-  let publicationFinished = false;
   await Promise.resolve().then(async () => {
     if (session.mode !== 'chat' && !session.monitorFor) {
       await prepareTab(session, { distributed: placementInfo.distributed, recover: Boolean(session.tabWorkspace) });
@@ -590,7 +588,6 @@ async function dispatchMessage(id, body, reply) {
     });
   })
     .catch(async (e) => {
-      turnFailed = true;
       const event = noteEvent(e?.message ?? String(e));
       session.events.push(event);
       await store.save(session);
@@ -599,82 +596,10 @@ async function dispatchMessage(id, body, reply) {
     .finally(async () => {
       beacons.stop(id);
 
-      // Integrate only this tab's tested work. Failures are reported
-      // into the transcript rather than thrown: a git problem should not
-      // look like the turn itself failed.
-      // On by default: only an explicit false turns it off, so sessions
-      // created before this became the default still push.
-      const endedWithError = session.events.slice(sentAt).some((e) => e.type === 'note' && !String(e.text || '').startsWith('turn-end guard:'));
-      // Successful project chats get a commit receipt even without file changes.
-      // Non-project conversations have no repository to publish.
-      try {
-        if (!prepared && !(await tabHasUnpublishedWork(session))) {
-          publicationFinished = true;
-        }
-      } catch { /* Integration below reports errors and preserves tab work. */ }
-      if (!publicationFinished && prepared && !turnFailed && !controller.signal.aborted && !endedWithError && (placementInfo.distributed || session.gitPush !== false)) {
-        try {
-          const last = [...session.events].reverse().find((e) => e.type === 'assistant');
-          // Auto-create a repo only for a session that belongs to an app —
-          // that is what "every project pushes and is private" means. A
-          // loose or scratch session (no app, e.g. a test run) commits
-          // locally or pushes to an existing remote, but never conjures a
-          // brand-new GitHub repo out of a temp folder.
-          const app = session.appId
-            ? (await apps.load(USER_DATA)).find((a) => a.id === session.appId) : null;
-          const pending = noteEvent('Publishing commit…', { publication: 'pending' });
-          session.events.push(pending);
-          await store.save(session);
-          broadcast(id, { kind: 'event', event: pending });
-          turn.last = 'merging and checking tab changes';
-          controller.signal.throwIfAborted();
-          const network = await connectionStatus();
-          if (!network.connected) throw new Error(network.error);
-          const res = await integrateTab(session, {
-            distributed: placementInfo.distributed,
-            recordTurn: true,
-            beforePublish: requireConnection,
-            onWaiting: async text => { session.events.push(noteEvent(text)); await store.save(session); broadcast(id, { kind: 'event', event: session.events.at(-1) }); },
-            signal: controller.signal,
-            onCheck: (log) => upsertMonitor(USER_DATA, { id: `integration-${id}`, label: 'Integration checks', kind: 'file', path: log, session: id }),
-            push: true,
-            appName: app?.name,
-            model: session.model,
-            servedModel: last?.servedModel,
-            autoCreatePrivate: Boolean(session.appId),
-          });
-          if (app && !app.builtin && !app.repo && res.created) {
-            const linked = await git.status(session.projectDir);
-            if (linked.remote) await apps.update(USER_DATA, app.id, { repo: linked.remote });
-          }
-          if (!res.ok || (placementInfo.distributed && !res.pushed && res.skipped !== 'no changes'))
-            throw new Error(res.error || res.reason || 'Publication did not finish.');
-          publicationFinished = true;
-          if (res.skipped === 'no changes') {
-            // Nothing to say: a turn that changed no files is normal.
-          } else if (!res.ok) {
-            session.events.push(noteEvent(`git: ${res.error ?? res.skipped}`));
-          } else {
-            const where = res.pushed ? 'integrated and pushed' : `integrated locally (not pushed — ${res.reason})`;
-            session.events.push(noteEvent(
-              `git: ${where} ${res.files.length} file${res.files.length === 1 ? '' : 's'} · ${res.sha}${app?.builtin && res.pushed ? ' · published to GitHub; automatic machine update queued — see Settings → Harness version for verification' : ''}`,
-              { sha: res.sha, commitUrl: res.commitUrl, publication: res.pushed ? 'published' : 'failed' },
-            ));
-          }
-          if (session.events.at(-1)?.type === 'note') {
-            await store.save(session);
-            broadcast(id, { kind: 'event', event: session.events.at(-1) });
-          }
-        } catch (e) {
-          const event = noteEvent(`Not published: ${e?.message ?? String(e)}`, { publication: 'failed' });
-          session.events.push(event);
-          await store.save(session);
-          broadcast(id, { kind: 'event', event });
-        }
-      }
-
-      if (!publicationFinished && !session.events.slice(sentAt).some(e => e.publication === 'failed')) {
-        const event = noteEvent('Not published: this turn stopped, reported an error, or automatic publishing is disabled. Changes remain in this tab.', { publication: 'failed' });
+      // Publishing is explicit: finishing a chat never updates the remote.
+      if (prepared) {
+        const pending = await tabHasUnpublishedWork(session).catch(() => true);
+        const event = noteEvent(pending ? 'Changes saved in this tab. Open Push to review and publish.' : 'No pending changes in this tab.', { publication: 'pending' });
         session.events.push(event);
         await store.save(session);
         broadcast(id, { kind: 'event', event });
@@ -1438,7 +1363,15 @@ const server = http.createServer(async (req, res) => {
       const id = url.searchParams.get('session');
       const session = id ? (live.get(id) ?? (await store.load(id, { repair: false }).catch(() => null))) : null;
       if (!session) return json(res, 404, { error: 'no such session' });
-      return json(res, 200, { ...(await git.status(session.tabWorkspace?.dir ?? session.projectDir)), isolated: Boolean(session.tabWorkspace), enabled: session.gitPush !== false });
+      const history = [];
+      for (const entry of url.searchParams.get('history') === '1' ? await store.list() : []) {
+        const saved = await store.load(entry.id, { repair: false }).catch(() => null);
+        for (const event of saved?.events || []) if (event.pushReceipt) history.push({ ...event.pushReceipt, ts: event.ts, session: saved.name });
+      }
+      return json(res, 200, { ...(await git.status(session.tabWorkspace?.dir ?? session.projectDir)),
+        isolated: Boolean(session.tabWorkspace), enabled: false,
+        pending: await tabHasUnpublishedWork(session), machine: cluster.self.name || cluster.self.id,
+        busy: running.has(id), history: history.sort((a, b) => b.ts - a.ts).slice(0, 12) });
     }
 
     if (req.method === 'POST' && pathname === '/api/git/connect') {
@@ -1481,16 +1414,22 @@ const server = http.createServer(async (req, res) => {
           push: true,
           model: session.model, servedModel: last?.servedModel,
         });
-        if (!result.ok || ((await sessionPlacement(session)).distributed && !result.pushed && result.skipped !== 'no changes'))
+        if (!result.ok || (!result.pushed && result.skipped !== 'no changes'))
           throw new Error(result.error || result.reason || 'Publication did not finish.');
-        if (result.commitUrl) {
-          const note = noteEvent(`git: integrated and pushed · ${result.sha}`, { sha: result.sha, commitUrl: result.commitUrl });
-          session.events.push(note);
-          broadcast(id, { kind: 'event', event: note });
-        }
+        const note = noteEvent(result.pushed ? `Published to GitHub · ${result.sha}` : 'Already published; no new changes.', {
+          sha: result.sha, commitUrl: result.commitUrl, publication: 'published',
+          pushReceipt: { machine: cluster.self.name || cluster.self.id, status: result.pushed ? 'Published' : 'No changes', sha: result.sha, files: result.files?.length || 0 },
+        });
+        session.events.push(note);
+        broadcast(id, { kind: 'event', event: note });
         await store.save(session);
         return json(res, 200, result);
       } catch (e) {
+        const note = noteEvent(`Not published: ${e.message}`, { publication: 'failed',
+          pushReceipt: { machine: cluster.self.name || cluster.self.id, status: 'Failed', error: e.message } });
+        session.events.push(note);
+        await store.save(session);
+        broadcast(id, { kind: 'event', event: note });
         return json(res, 409, { error: e.message });
       } finally {
         if (session.turnHost) {

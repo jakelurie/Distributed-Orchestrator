@@ -60,9 +60,8 @@ export function newSession({ name, model, projectDir, system = '', mode = 'agent
     projectDir,
     system,
     confineToProjectDir: true,
-    // Push what each turn changed, by default. New projects get a private
-    // GitHub repo created automatically on the first push.
-    gitPush: true,
+    // Publishing requires the explicit frontend Push action.
+    gitPush: false,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     forkedFrom: null,

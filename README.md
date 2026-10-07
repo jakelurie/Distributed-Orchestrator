@@ -176,9 +176,10 @@ Each session has a project directory, a model, and a mode:
 A session is confined to its project directory. It can be granted other folders
 as **read-only**, for one project that consumes another's output.
 
-Coding tabs use separate Git worktrees. With **check & integrate after each turn**
-enabled, each finished tab attempts integration independently. The harness commits
-that tab, fetches and merges the latest local and remote changes, runs checks, and
+Coding tabs use separate Git worktrees. Chats never publish automatically. Open
+**Push** beside the composer to review the selected tab’s machine, pending changes,
+and recent push receipts from paired machines. Press **Push to GitHub** to commit
+that tab, fetch and merge the latest local and remote changes, run checks, and
 pushes without force. If another tab pushes first, it fetches, merges, and tests
 again, up to three attempts. There is no project turn queue or reserved turn slot.
 The local checkout is updated after a successful push; projects without a remote
@@ -192,12 +193,12 @@ For other projects, commit `.harness-integration.json` containing, for example,
 install any needed dependencies and run the project's checks. Without a test
 script or custom command, integration stops and preserves the tab commit. Logs
 are in the repository's Git directory under `harness-tabs`, and failures include
-the log path. Use **check & integrate now** to retry after resolving the problem.
+the log path. Use **Push to GitHub** to retry after resolving the problem.
 
 New repositories receive an initial snapshot before tabs are created. Existing
 repositories must have a clean shared checkout; existing uncommitted work is
 never silently swept into a tab. Dependencies and ignored files are not copied
-between tabs. Turning automatic integration off keeps work in the tab; it does
+between tabs. Work remains in its tab until you explicitly push; this does
 not restore shared editing. Tab worktrees and branches are retained when sessions
 are deleted, for recovery. A process interrupted during integration may leave
 `harness-integration.lock` in the Git directory; remove that empty directory only

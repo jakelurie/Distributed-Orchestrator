@@ -518,7 +518,7 @@ function turnHtml(turn, i, running, number, isLast) {
 
   bits.push(finalReply);
   const publication = [...turn.notes].reverse().find(n => n.publication);
-  if (publication) bits.push(`<div class="note${publication.publication === 'failed' ? ' error' : ''}" role="status">${publication.publication === 'published' ? `Published to GitHub · ${esc(publication.sha)} · ${clock(publication.ts)}` : esc(publication.text)}</div>`);
+  if (publication) bits.push(`<div class="note${publication.publication === 'failed' ? ' error' : ''}" role="status">${publication.publication === 'published' ? `Published to GitHub · ${esc(publication.sha || 'already up to date')} · ${clock(publication.ts)}` : esc(publication.text)}</div>`);
 
 
   return bits.join('');
@@ -978,6 +978,15 @@ async function refreshState() {
     if (inventory.models) state.models = inventory.models;
     if (inventory.default) state.default = inventory.default;
   } catch { /* the owner may be reconnecting */ }
+  if ($('push-panel')) {
+    $('push-panel').disabled = !state.session;
+    if (state.session) {
+      const sessionId = state.session.id;
+      api(`/api/git?session=${encodeURIComponent(sessionId)}`).then(g => {
+        if (state.session?.id === sessionId) $('push-panel').textContent = g.pending ? 'Push •' : 'Push';
+      }).catch(() => {});
+    }
+  }
   state.sessions = s.sessions ?? [];
   state.home = s.home ?? '';
   state.busy = s.running ?? [];
@@ -2064,8 +2073,8 @@ async function paintNotify() {
  */
 function gitSheet() {
   const session = cur().session;
-  openSheet(`<h2>Git &amp; GitHub</h2>
-    <p class="dim">${session ? `Settings for ${esc(session.name)}. Git saves changes locally; GitHub stores a remote copy. GitHub access uses the hosting computer’s gh login.` : 'Open a session to configure its repository and automatic commits.'}</p>
+  openSheet(`<h2>Push changes</h2>
+    <p class="dim">${session ? `Settings for ${esc(session.name)}. Changes stay local until you press Push. The selected tab’s computer performs the push.` : 'Open a session to configure its repository and automatic commits.'}</p>
     <div id="s-git"></div><div class="actions"><button class="ghost" id="sub-back">‹ edit session</button></div>`);
   $('sub-back').onclick = sessionSettingsSheet;
   if (session) paintGit(session);
@@ -2076,7 +2085,7 @@ async function paintGit(session) {
   if (!box) return;
   let g;
   try {
-    g = await api(`/api/git?session=${encodeURIComponent(session.id)}`);
+    g = await api(`/api/git?session=${encodeURIComponent(session.id)}&history=1`);
   } catch (e) {
     box.innerHTML = `<p class="dim warn-text">${esc(e.message)}</p>`;
     return;
@@ -2097,26 +2106,13 @@ async function paintGit(session) {
         <div class="row"><input id="g-remote" placeholder="git@github.com:you/repo.git" spellcheck="false" />
         <button class="ghost" id="g-connect" style="flex:0 0 80px">connect</button></div>`}
       <div id="g-vis"></div>
-      <div class="actions"><button class="ghost" id="g-now">check &amp; integrate now</button></div>`;
+      <div class="actions"><button class="ghost" id="g-now">Push to GitHub</button></div>`;
   }
 
   if (g.isolated) box.insertAdjacentHTML('afterbegin', '<p class="dim">This tab has its own working copy. Changes reach the project only after merging and passing integration checks.</p>');
-  box.insertAdjacentHTML('afterbegin', `<div class="row">
-    <button class="ghost${g.enabled ? '' : ' on'}" data-git="off">automatic commits off</button>
-    <button class="ghost${g.enabled ? ' on' : ''}" data-git="on">check &amp; integrate after each turn</button>
-  </div>`);
-
-  box.querySelectorAll('[data-git]').forEach((el) => {
-    el.onclick = async () => {
-      const updated = await api(`/api/sessions/${session.id}`, {
-        method: 'PATCH', body: JSON.stringify({ gitPush: el.dataset.git === 'on' }),
-      });
-      const t = cur();
-      t.session = updated;
-      if (state.tab === 'chat') state.session = updated;
-      paintGit(updated);
-    };
-  });
+  box.insertAdjacentHTML('afterbegin', `<p class="dim">${esc(g.machine || 'This computer')} · ${g.busy ? 'Working' : g.pending ? 'Changes waiting to push' : 'No pending tab changes'}</p>
+    <p class="dim">Push fetches remote changes, merges, runs checks, then publishes. Conflicts preserve your work and show an error.</p>`);
+  box.insertAdjacentHTML('beforeend', `<label>Recent pushes · all machines</label>${(g.history || []).map(h => `<div class="item machine-item"><div class="grow"><div class="t">${esc(h.machine)} · ${esc(h.status)}</div><div class="s">${clock(h.ts)} · ${esc(h.session || '')} · ${esc(h.sha || '')}${h.error ? ' · ' + esc(h.error) : ''}</div></div></div>`).join('') || '<p class="dim">No push receipts yet.</p>'}`);
   if ($('g-connect')) {
     $('g-connect').onclick = async () => {
       const remote = $('g-remote').value.trim();
@@ -2158,9 +2154,10 @@ async function paintGit(session) {
       .catch(() => {});
   }
   if ($('g-now')) {
+    $('g-now').disabled = Boolean(g.busy);
     $('g-now').onclick = async () => {
       const button = $('g-now');
-      button.textContent = 'checking…';
+      button.textContent = 'Fetching, merging and checking…';
       button.disabled = true;
       try {
         const r = await api('/api/git/push', { method: 'POST', body: JSON.stringify({ session: session.id }) });
@@ -3024,6 +3021,7 @@ async function viewFile(file, kind) {
 
 $('menu').onclick = sessionsSheet;
 $('gear').onclick = settingsSheet;
+$('push-panel').onclick = gitSheet;
 function paintPending() {
   paintComposerAction();
   const box = $('pending');
