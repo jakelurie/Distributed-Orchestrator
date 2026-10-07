@@ -136,6 +136,30 @@ try {
   const cleanStatus = ui.readPushStatus('first');
   pendingStatus[4].resolve({ pending: false, busy: false }); await cleanStatus;
   assert.ok(!classes.has('push-pending'), 'confirmed idle status clears pending changes');
+  // A sheet opened during a turn must still accept a click after that turn.
+  const gitNodes = new Map(['s-git', 'g-now', 'g-push-status'].map(id => [id, {
+    innerHTML: '', textContent: '', classList: { toggle() {} }, insertAdjacentHTML() {},
+  }]));
+  let publishCalls = 0;
+  const panel = vm.createContext({
+    state: { session: { id: 'panel' } }, $: id => gitNodes.get(id),
+    esc: String, clock: String, showBanner() {},
+    api: async route => {
+      if (route.startsWith('/api/git/push?')) {
+        publishCalls++;
+        throw new Error('Finish the current task before pushing');
+      }
+      return { repo: true, pending: true, busy: true, history: [] };
+    },
+  });
+  vm.runInContext(frontend.slice(frontend.indexOf('const pushStates ='), frontend.indexOf('async function refreshState()')), panel);
+  vm.runInContext(frontend.slice(frontend.indexOf('async function paintGit('), frontend.indexOf('/** Repoint a session')), panel);
+  await panel.paintGit(panel.state.session);
+  assert.equal(gitNodes.get('g-now').disabled, false, 'busy snapshot does not leave an inert button');
+  await gitNodes.get('g-now').onclick();
+  assert.equal(publishCalls, 1, 'click checks current server state');
+  assert.match(gitNodes.get('g-push-status').textContent, /Not published: Finish the current task/);
+  assert.equal(gitNodes.get('g-now').disabled, false, 'refused push can be retried without reopening');
   const state = await a.call('/api/state');
   assert.equal(state.apps.find(app => app.id === '__harness').executionHosts.length, 2);
   const s = await a.call('/api/sessions', 'POST', { appId: '__harness', name: 'remote', mode: 'chat', model: 'model-b', ownerNode: b.status.self });

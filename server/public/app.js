@@ -2258,7 +2258,9 @@ async function paintGit(session) {
       .catch(() => {});
   }
   if ($('g-now')) {
-    $('g-now').disabled = Boolean(g.busy || pushStates.get(session.id)?.pushing);
+    // Busy is a snapshot: the task may finish while this sheet stays open.
+    // Let the server check it at click time and explain any refusal.
+    $('g-now').disabled = Boolean(pushStates.get(session.id)?.pushing);
     $('g-now').classList.toggle('push-pending', Boolean(g.pending));
     box.insertAdjacentHTML('beforeend', '<p id="g-push-status" class="dim" role="status"></p>');
     if (pushStates.get(session.id)?.pushError) $('g-push-status').textContent = 'Not published: ' + pushStates.get(session.id).pushError;
