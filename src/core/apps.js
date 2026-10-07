@@ -325,6 +325,13 @@ export async function update(userDataDir, id, patch) {
     const repo = await renameAppRepo(app, patch.name);
     if (repo) patch.repo = repo;
   }
+  if (patch.aiDependencies !== undefined) {
+    if (!Array.isArray(patch.aiDependencies) || patch.aiDependencies.length > 30
+      || patch.aiDependencies.some(d => !d || ['host', 'alias', 'purpose'].some(k => typeof d[k] !== 'string' || !d[k].trim() || d[k].length > 500)))
+      throw new Error('AI dependencies need a computer, source and purpose.');
+    patch.aiDependencies = patch.aiDependencies.map(d => ({ host: d.host, alias: d.alias,
+      purpose: d.purpose, label: String(d.label || d.alias).slice(0, 200) }));
+  }
   const wasApp = app.hasBeenApp;
   Object.assign(app, patch, { updatedAt: Date.now() });
   if (wasApp || app.start?.trim() || app.lastStartedAt) await rememberApp(userDataDir, app);
@@ -435,7 +442,7 @@ async function ensureServe(app) {
   }
 }
 
-export async function start(userDataDir, id) {
+export async function start(userDataDir, id, { ai = [] } = {}) {
   const apps = await load(userDataDir);
   const app = apps.find((a) => a.id === id);
   if (!app) throw new Error('no such app');
@@ -464,7 +471,7 @@ export async function start(userDataDir, id) {
     cwd: app.dir,
     detached: true,
     stdio: ['ignore', out, out],
-    env: { ...process.env, PORT: String(app.port) },
+    env: { ...process.env, PORT: String(app.port), HARNESS_APP_AI: JSON.stringify(ai) },
   });
   child.unref();
 

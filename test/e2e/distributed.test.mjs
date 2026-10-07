@@ -13,9 +13,11 @@ const root = await fs.mkdtemp(path.join(os.tmpdir(), 'execution-hosts-'));
 const hosts = [];
 const pause = () => new Promise(r => setTimeout(r, 150));
 let release;
+const modelRequests = [];
 const mock = http.createServer(async (req, res) => {
   const chunks = []; for await (const c of req) chunks.push(c);
   const body = JSON.parse(Buffer.concat(chunks));
+  modelRequests.push(body);
   res.writeHead(200, { 'Content-Type': 'text/event-stream' });
   res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: body.model }, finish_reason: null }] })}\n\n`);
   if (body.messages.at(-1)?.content === 'wait') await new Promise(r => { release = r; });
@@ -30,7 +32,18 @@ async function start(name) {
     provider: 'openai', model: name, label: name, baseUrl: `http://127.0.0.1:${mock.address().port}/v1`,
   } } }));
   const origin = `http://127.0.0.1:${port}`;
-  const launch = () => spawn(process.execPath, ['server/index.js'], { env: { ...process.env,
+  const fixture = path.join(dir, 'jev-fetch.mjs');
+  await fs.writeFile(fixture, `
+    const original = globalThis.fetch;
+    globalThis.fetch = (url, options) => {
+      if (String(url) !== 'https://api.typesafe.ai/v1/systemone') return original(url, options);
+      const body = JSON.parse(options.body);
+      if (options.headers.Authorization !== 'Bearer synthetic-jev-key' || body.model !== 'jev-latest')
+        return Promise.resolve(new Response('{}', {status: 401}));
+      return Promise.resolve(Response.json({ model: 'jev-test', answers: { urgent: {type: 'noul', noul: 0.9} }, usage: {input_tokens: 10} }));
+    };
+  `);
+  const launch = () => spawn(process.execPath, ['--import', fixture, 'server/index.js'], { env: { ...process.env,
     HARNESS_PORT: String(port), HARNESS_TOKEN: 'execution-test', HARNESS_DATA_DIR: dir,
     ORCHESTRATOR_PUBLIC_URL: origin, ORCHESTRATOR_NODE_NAME: name,
   }, stdio: 'ignore' });
@@ -75,6 +88,18 @@ try {
   } finally { listener.kill(); await listenerExit; }
   const a = await start('model-a'), b = await start('model-b');
   await b.call('/api/cluster/join', 'POST', { url: a.status.hosts[0].url, ownUrl: b.status.hosts[0].url, token: 'execution-test' });
+  assert.deepEqual(await a.call('/api/jev'), { configured: false });
+  assert.equal((await a.request('/api/jev/evaluate', 'POST', {})).status, 400);
+  assert.equal((await b.request('/api/jev', 'PUT', {apiKey: ''})).status, 400);
+  const savedJev = await b.call('/api/jev', 'PUT', { apiKey: 'synthetic-jev-key' });
+  assert.deepEqual(savedJev, { configured: true });
+  assert.deepEqual(await a.call('/api/jev'), { configured: true });
+  assert.equal((await a.request('/api/jev/evaluate', 'POST', {})).status, 400);
+  const evaluated = await b.call('/api/jev/evaluate', 'POST', {state: 'urgent', questions: {urgent: {type: 'noul', instructions: 'Urgent?'}}});
+  assert.equal(evaluated.answers.urgent.noul, 0.9);
+  assert.equal(JSON.stringify(evaluated).includes('synthetic-jev-key'), false);
+  assert.deepEqual(await b.call('/api/jev', 'DELETE'), { configured: false });
+  assert.deepEqual(await a.call('/api/jev'), { configured: false });
   // New-session inventories must follow the selected computer from either browser host.
   for (const browser of [a, b]) {
     for (const [owner, model] of [[a, 'model-a'], [b, 'model-b']]) {
@@ -137,6 +162,36 @@ try {
   assert.equal(rows[0].id, s.id, 'remote active session sorts first');
   assert.equal(rows[1].id, 'recent', 'message time wins over incidental saves');
 
+  ordering.state.sessions = [
+    { id: 'do-tab', appId: '__harness', lastMessageAt: 1 },
+    { id: 'grocery-old', appId: 'grocery', lastMessageAt: 2 },
+    { id: 'grocery-new', appId: 'grocery', lastMessageAt: 30 },
+    { id: 'other-tab', appId: 'other', lastMessageAt: 20, updatedAt: 100, turnHost: 'busy-host' },
+  ];
+  vm.runInContext(frontend.slice(frontend.indexOf('function orderProjects('), frontend.indexOf('let peerCatalog')), ordering);
+  const projects = [
+    { id: 'other', name: 'Other', running: true },
+    { id: 'grocery', name: 'Grocery', running: false },
+    { id: '__harness', name: 'DO', builtin: true },
+  ];
+  assert.deepEqual(Array.from(ordering.orderProjects(projects), p => p.id), ['__harness', 'grocery', 'other']);
+  let projectHtml;
+  const elements = new Map();
+  Object.assign(ordering, {
+    sheetView: 'apps', esc: String, shortDir: String, clock: String,
+    sessionStatus: () => '', showPeerSessions() {},
+    $: id => {
+      if (!elements.has(id)) elements.set(id, { scrollTop: 0, querySelectorAll: () => [] });
+      return elements.get(id);
+    },
+    openSheet: html => { projectHtml = html; },
+  });
+  vm.runInContext(frontend.slice(frontend.indexOf('function renderAppsSheet('), frontend.indexOf('async function runApp(')), ordering);
+  ordering.renderAppsSheet({ apps: projects });
+  assert.ok(projectHtml.indexOf('data-app-toggle="__harness"') < projectHtml.indexOf('data-app-toggle="grocery"'));
+  assert.ok(projectHtml.indexOf('data-app-toggle="grocery"') < projectHtml.indexOf('data-app-toggle="other"'));
+  assert.doesNotMatch(projectHtml, /data-open=|Working now|Recently messaged/);
+
   assert.ok((await a.call('/api/state')).running.includes(s.id));
   assert.equal((await a.request(`/api/sessions/${s.id}/machine`, 'POST', { ownerNode: a.status.self })).status, 409);
   const parallel = await a.call('/api/sessions', 'POST', { appId: '__harness', name: 'parallel', mode: 'chat', model: 'model-a', ownerNode: a.status.self });
@@ -198,6 +253,21 @@ try {
   assert.equal(disallowed.status, 400);
   const local = await b.call('/api/sessions', 'POST', { appId: project.id, mode: 'chat', model: 'model-a' });
   assert.equal(local.ownerNode, a.status.self, 'another computer can create a tab on the only enabled owner');
+  const dependency = { host: a.status.self, alias: 'model-a', label: 'Analysis model', purpose: 'Product analysis' };
+  await b.call('/api/apps/' + project.id, 'PATCH', { aiDependencies: [dependency] });
+  await a.call('/api/apps/' + project.id, 'PATCH', { aiDependencies: [{ ...dependency, host: b.status.self }] });
+  const wrongHostLaunch = await a.request('/api/apps/' + project.id + '/start', 'POST');
+  assert.equal(wrongHostLaunch.status, 400);
+  assert.match((await wrongHostLaunch.json()).error, /source computer/);
+  await a.call('/api/apps/' + project.id, 'PATCH', { aiDependencies: [dependency] });
+  const configured = await a.call('/api/apps');
+  assert.deepEqual(configured.apps.find(app => app.id === project.id).aiDependencies, [dependency]);
+  const blockedRemoval = await a.request('/api/cluster/sources', 'POST', { host: a.status.self, action: 'remove', alias: 'model-a' });
+  assert.equal(blockedRemoval.status, 400);
+  assert.match((await blockedRemoval.json()).error, /Used by local only/);
+  const invalidDependency = await b.request('/api/apps/' + project.id, 'PATCH', { aiDependencies: [{ purpose: 'missing source' }] });
+  assert.equal(invalidDependency.status, 400);
+
   const creation = await b.call(`/api/git?session=${local.id}&history=1`);
   assert.equal(creation.projectName, 'local only');
   assert.equal(creation.repositoryName, 'local-only');
@@ -239,6 +309,10 @@ try {
   const summarySession = await a.call('/api/sessions', 'POST', { name: 'summary', projectDir: summaryDir, model: 'model-a' });
   await prepareTab(summarySession);
   const work = summarySession.tabWorkspace.dir;
+  // Push prepares public AI requirements in the isolated worktree, even if
+  // project validation subsequently blocks publication.
+  summarySession.appId = project.id;
+
   await fs.writeFile(path.join(work, 'README.md'), 'saved documentation');
   git(work, 'commit', '-am', 'documentation');
   await fs.mkdir(path.join(work, 'server/public'), { recursive: true });
@@ -254,6 +328,39 @@ try {
   assert.match(summary.summary, /interface/);
   assert.match(summary.summary, /2 files/);
   assert.equal(summary.machine, 'model-a', 'summary comes from the session owner');
+  const attempted = await a.request('/api/git/push?session=' + summarySession.id, 'POST', { session: summarySession.id });
+  assert.equal(attempted.status, 409, 'missing project checks still prevent publication');
+  const readme = await fs.readFile(path.join(work, 'README.md'), 'utf8');
+  assert.match(readme, /AI requirements/);
+  assert.match(readme, /Analysis model/);
+  assert.match(readme, /HARNESS_APP_AI/);
+  assert.ok(!readme.includes(dependency.host), 'private machine IDs are excluded from public requirements');
+
+  // Check the instructions actually delivered to a model by a project turn.
+  const traceDir = path.join(root, 'tracing-project');
+  await fs.mkdir(traceDir);
+  const traceSession = await a.call('/api/sessions', 'POST', { name: 'tracing', projectDir: traceDir, mode: 'agent', model: 'model-a' });
+  await a.call(`/api/sessions/${traceSession.id}/send`, 'POST', { text: 'check project tracing' });
+  let traceResult;
+  for (let i = 0; i < 80; i++) {
+    traceResult = await a.call(`/api/sessions/${traceSession.id}`);
+    if (!traceResult.turnHost && traceResult.events.some(e => e.type === 'assistant')) break;
+    await pause();
+  }
+  assert.ok(traceResult.events.some(e => e.type === 'assistant'));
+  const traceRequest = modelRequests.find(r => r.messages.at(-1)?.content === 'check project tracing');
+  assert.ok(traceRequest, 'project request reached provider');
+  const instructions = traceRequest.messages.filter(m => m.role === 'system').map(m => m.content).join('\n');
+  assert.match(instructions, /Jev \(TypeSafe\)/);
+  assert.match(instructions, /api\/jev\/evaluate/);
+  assert.match(instructions, /Tracing for future AI work/);
+  assert.match(instructions, /screen or state actually shown/);
+  assert.match(instructions, /inspect the relevant recent traces before guessing/);
+  assert.match(instructions, /Do not record secrets/);
+  const chatRequest = modelRequests.find(r => r.messages.at(-1)?.content === 'wait');
+  assert.ok(chatRequest);
+  assert.doesNotMatch(JSON.stringify(chatRequest.messages), /Tracing for future AI work/);
+
   await a.call(`/api/sessions/${s.id}`, 'DELETE');
   b.child.kill('SIGTERM');
   await b.closed;

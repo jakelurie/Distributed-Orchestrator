@@ -11,6 +11,7 @@
  * URL once and then kept in a cookie.
  */
 
+import { runtimeAI } from '../src/core/app-ai.js';
 import { createMessageQueue } from '../src/core/message-queue.js';
 import { defaultDataDir } from '../src/core/platform.js';
 import { execFile, spawn } from 'node:child_process';
@@ -37,7 +38,7 @@ import { modelInventory, machineHelp } from '../src/core/machine-help.js';
 import { runTurn } from '../src/core/agent.js';
 import { loadConfig, patchModel, addModel } from '../src/core/config.js';
 import { resetClients } from '../src/core/providers/index.js';
-import { setSecret } from '../src/core/secrets.js';
+import { loadSecrets, setSecret } from '../src/core/secrets.js';
 import { transcribe, transcriptionKey } from '../src/core/transcription.js';
 import * as attachments from '../src/core/attachments.js';
 import * as git from '../src/core/git.js';
@@ -450,6 +451,9 @@ async function sourceAction(body) {
   if (action === 'discover') return aiSources.discover(args.kind);
   if (action === 'add') return aiSources.add(args);
   if (action === 'remove') {
+    const dependents = (await apps.load(USER_DATA)).filter(app => (app.aiDependencies || []).some(d => d.host === cluster.self.id && d.alias === args.alias));
+    if (dependents.length) throw new Error('Used by ' + dependents.map(a => a.name).join(', ') + '. Update their AI dependencies before removing this source.');
+
     if ([...live.values()].some(s => s.model === args.alias)) throw new Error('Wait for sessions using this source to finish.');
     return aiSources.remove(args.alias);
   }
@@ -562,7 +566,7 @@ async function dispatchMessage(id, body, reply) {
       session,
       models: cfg.models,
       userText: text,
-      executionContext: `\n\nFor optional local GPU helpers, POST JSON {host, action:"catalog"} to /api/cluster/sources to find models with allowDelegate enabled, then POST {host, action:"helper", alias, prompt} to the same authenticated endpoint. Supply only task-relevant text; helpers have no tools. Use the localhost origin and authentication described below. For cross-machine setup diagnostics, GET http://127.0.0.1:${PORT}/api/cluster/status for host IDs, then POST JSON {host, question, useClaude} to http://127.0.0.1:${PORT}/api/machine-help using the same authentication as the activity command below. This returns installation/configuration checks; useClaude asks that computer’s Claude to interpret the snapshot without tools. It cannot inspect arbitrary files or edit another computer.`,
+      executionContext: `\n\nJev (TypeSafe) is an optional API integration. Check GET http://127.0.0.1:${PORT}/api/jev for configured status using the same authentication as the activity command. If configured, consider it for classification, routing, ranking and rubric scoring, or when the user requests it. It returns structured decisions, not generated text. POST /api/jev/evaluate on that origin with {state, questions, model?}; model defaults to jev-latest. Read https://docs.typesafe.ai/api for question schemas (noul, choice, score). The server supplies the stored key; never read or copy secrets. Send only task-relevant data, handle uncertain results and failures explicitly, and explain API requirements in app README files. Saving a key does not validate account access. For deployed apps, use their own backend and TYPESAFE_API_KEY; never expose provider keys or Harness credentials in frontend code.\n\nFor optional local GPU helpers, POST JSON {host, action:"catalog"} to /api/cluster/sources to find models with allowDelegate enabled, then POST {host, action:"helper", alias, prompt} to the same authenticated endpoint. Supply only task-relevant text; helpers have no tools. Use the localhost origin and authentication described below. For cross-machine setup diagnostics, GET http://127.0.0.1:${PORT}/api/cluster/status for host IDs, then POST JSON {host, question, useClaude} to http://127.0.0.1:${PORT}/api/machine-help using the same authentication as the activity command below. This returns installation/configuration checks; useClaude asks that computer’s Claude to interpret the snapshot without tools. It cannot inspect arbitrary files or edit another computer.`,
       localModel: async ({ host = cluster.self.id, ...args }) => host === cluster.self.id
         ? sourceAction({ action: 'helper', ...args }) : cluster.hostSources(host, { action: 'helper', ...args }),
       machineHelp: async ({ host, ...request }) => host === cluster.self.id
@@ -884,6 +888,36 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && /^\/(app\.js|voice\.js|cluster-client\.js|sw\.js|styles\.css)$/.test(pathname)) {
       return serveStatic(res, pathname.slice(1));
+    }
+
+    // Jev keys stay in the shared secret store; callers only receive results.
+    if (pathname === '/api/jev' && req.method === 'GET') {
+      return json(res, 200, { configured: Boolean((await loadSecrets(USER_DATA)).__jev) });
+    }
+    if (pathname === '/api/jev' && ['PUT', 'DELETE'].includes(req.method)) {
+      const body = req.method === 'PUT' ? await readBody(req) : {};
+      if (req.method === 'PUT' && (typeof body.apiKey !== 'string' || !body.apiKey.trim() || body.apiKey.length > 4096 || /[\r\n]/.test(body.apiKey)))
+        return json(res, 400, { error: 'Enter a valid TypeSafe API key.' });
+      await saveModelSecret('__jev', req.method === 'PUT' ? body.apiKey.trim() : '');
+      return json(res, 200, { configured: req.method === 'PUT' });
+    }
+    if (pathname === '/api/jev/evaluate' && req.method === 'POST') {
+      const key = (await loadSecrets(USER_DATA)).__jev;
+      if (!key) return json(res, 400, { error: 'Add a key in Settings → Jev · TypeSafe first.' });
+      const body = await readBody(req);
+      if (body.state == null || !body.questions || typeof body.questions !== 'object' || Array.isArray(body.questions)
+        || !Object.keys(body.questions).length || (body.model !== undefined && typeof body.model !== 'string'))
+        return json(res, 400, { error: 'Supply state and a nonempty questions map; model is optional.' });
+      try {
+        const upstream = await fetch('https://api.typesafe.ai/v1/systemone', {
+          method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30000),
+          headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ state: body.state, questions: body.questions, model: body.model || 'jev-latest' }),
+        });
+        if (!upstream.ok) return json(res, upstream.status, { error: `Jev returned HTTP ${upstream.status}. Check your key, question format, or account limits.` });
+        const result = await upstream.json();
+        return json(res, 200, { model: result.model, answers: result.answers, usage: result.usage });
+      } catch { return json(res, 502, { error: 'Jev could not be reached or returned an invalid response. No automatic retry was made.' }); }
     }
 
     // Voice uses the same access control as the rest of the chat.
@@ -1212,7 +1246,11 @@ const server = http.createServer(async (req, res) => {
       }
       if (req.method === 'POST' && appId && verb === 'start') {
         try {
-          const r = await apps.start(USER_DATA, appId);
+          const app = (await apps.load(USER_DATA)).find(a => a.id === appId);
+          if (!app) throw new Error('No such app');
+          const inventory = await modelInventory(await loadConfig(USER_DATA));
+          const dependencies = runtimeAI(app.aiDependencies || [], cluster.self.id, inventory.models);
+          const r = await apps.start(USER_DATA, appId, { ai: dependencies });
           return json(res, 200, { ...r, urls: apps.urlsFor(r.app, await apps.tailnetHost()) });
         } catch (e) { return json(res, 400, { error: e.message }); }
       }
@@ -1432,6 +1470,7 @@ const server = http.createServer(async (req, res) => {
           retryPush: true,
           autoCreatePrivate: Boolean(app && !app.builtin),
           appName: app?.name,
+          aiDependencies: app && !app.builtin ? app.aiDependencies || [] : undefined,
           visibility,
           signal: running.get(id).controller.signal,
           onCheck: (log) => upsertMonitor(USER_DATA, { id: `integration-${id}`, label: 'Integration checks', kind: 'file', path: log, session: id }),

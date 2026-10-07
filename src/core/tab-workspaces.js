@@ -1,4 +1,5 @@
 /** Per-tab working trees and serialized, tested integration into the project. */
+import { documentAI } from './app-ai.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -272,6 +273,7 @@ export async function integrateTab(session, options = {}) {
   return locked(repo, async () => {
     if (await git(ws.dir, 'symbolic-ref', '--short', 'HEAD') !== ws.branch) throw new Error('Tab branch changed; integration stopped.');
     options.signal?.throwIfAborted();
+    if (options.aiDependencies !== undefined) await documentAI(ws.dir, options.aiDependencies);
     if (options.recordTurn) {
       const saved = await commitAndPush(ws.dir, { push: false });
       if (!saved.ok) return saved;

@@ -1283,6 +1283,7 @@ async function settingsSheet() {
       <button class="rowlink" id="h-network"><span>Phone access · Tailscale</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-machines"><span>Machines</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-models"><span>AI sources</span><span class="chev">›</span></button>
+      <button class="rowlink" id="h-jev"><span>Jev · TypeSafe</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-voice"><span>Voice setup</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-notify"><span>Notifications</span><span class="chev">›</span></button>
       <button class="rowlink" id="h-version"><span id="h-version-label">Restart and updates</span><span class="chev">›</span></button>
@@ -1293,11 +1294,35 @@ async function settingsSheet() {
   $('h-machines').onclick = machinesSheet;
   $('h-network').onclick = networkSheet;
   $('h-models').onclick = modelsSheet;
+  $('h-jev').onclick = jevSheet;
   $('h-voice').onclick = () => window.voiceSetup();
   $('h-notify').onclick = notifySheet;
 
   $('s-close').onclick = closeSheet;
   $('h-version').onclick = harnessVersionSheet;
+}
+
+async function jevSheet() {
+  openSheet(`<h2>Jev · TypeSafe</h2>
+    <p class="dim">For classification, routing and scoring in your projects. Requests go to TypeSafe and use your API account. The saved key is shared with your paired computers.</p>
+    <p class="dim"><a href="https://console.typesafe.ai" target="_blank" rel="noopener noreferrer">Get a TypeSafe key ↗</a></p>
+    <label>API key</label><input id="jev-key" type="password" autocomplete="new-password" placeholder="Paste key to add or replace" />
+    <p class="dim" id="jev-status" role="status">Checking…</p>
+    <div class="actions"><button class="ghost" id="jev-back">back</button><button class="ghost" id="jev-remove">remove key</button><button class="primary" id="jev-save">save</button></div>`);
+  const status = $('jev-status'), input = $('jev-key');
+  const show = d => { status.textContent = d.configured ? 'Key saved · account access is checked when used.' : 'No key saved.'; };
+  $('jev-back').onclick = settingsSheet;
+  const change = async method => {
+    try {
+      const key = input.value.trim();
+      if (method === 'PUT' && !key) throw new Error('Paste a key before saving.');
+      const result = await api('/api/jev', { method, ...(method === 'PUT' ? { body: JSON.stringify({ apiKey: key }) } : {}) });
+      input.value = ''; show(result);
+    } catch (e) { status.textContent = e.message; }
+  };
+  $('jev-save').onclick = () => change('PUT');
+  $('jev-remove').onclick = () => change('DELETE');
+  try { show(await api('/api/jev')); } catch (e) { status.textContent = e.message; }
 }
 
 async function harnessVersionSheet() {
@@ -2440,7 +2465,6 @@ const expandedApps = new Set();
 let lastAppsData = null;   // cached so expand/collapse re-renders without refetching
 
 async function appsSheet() {
-  if (sheetView !== 'apps') openProjectGroups.add('recent');
   // Draw first, fetch second. This used to wait on /api/apps - which shells out
   // to lsof and tailscale - and then on /api/state, two round trips in series,
   // before a single pixel appeared, so tapping the sidebar felt dead for about
@@ -2470,21 +2494,15 @@ async function appsSheet() {
  * asks gh for visibility, so a tap felt sluggish. Expansion is a pure view
  * change, so it re-renders from the cached data instead.
  */
-// Keep the built-in project first, then runnable apps, then workspaces.
+// Harness stays pinned; project recency comes from messages, not incidental saves.
 function orderProjects(apps) {
-  const rank = (app) => app.builtin ? 0 : app.start?.trim() || app.running ? 1 : 2;
-  return [...apps].sort((a, b) => rank(a) - rank(b));
-}
-
-// Runtime history keeps an app classified as an app if its command is cleared.
-function projectGroups(apps) {
-  const visible = [], stopped = [], chats = [];
-  for (const app of apps) {
-    if (app.builtin || app.running) visible.push(app);
-    else if (app.hasBeenApp || app.start?.trim() || app.lastStartedAt) stopped.push(app);
-    else chats.push(app);
+  const latest = new Map();
+  for (const session of state.sessions) {
+    latest.set(session.appId, Math.max(latest.get(session.appId) || 0,
+      session.lastMessageAt ?? session.createdAt ?? 0));
   }
-  return { visible: orderProjects(visible), stopped, chats };
+  return [...apps].sort((a, b) => Number(Boolean(b.builtin)) - Number(Boolean(a.builtin))
+    || (latest.get(b.id) || 0) - (latest.get(a.id) || 0));
 }
 const openProjectGroups = new Set();
 
@@ -2596,6 +2614,7 @@ function renderAppsSheet(d) {
         <div class="grow">
           <div class="t">${esc(a.name)} ${pill}</div>
           ${meta}
+          ${(a.aiDependencies || []).map(dep => `<div class="s">AI: ${esc(dep.label || dep.alias)} · ${esc(state.machines?.hosts?.find(h => h.id === dep.host)?.name || dep.host)} · ${esc(dep.purpose)}</div>`).join('')}
           <div class="s dim">${mine.length} session${mine.length === 1 ? '' : 's'}</div>
         </div>
         ${actions}
@@ -2604,18 +2623,10 @@ function renderAppsSheet(d) {
   };
 
   const appsHtml = (() => {
-    const groups = projectGroups(d.apps);
-    const active = state.sessions.filter(sessionActive).sort(sessionOrder);
-    const recent = state.sessions.filter(session => !sessionActive(session)).sort(sessionOrder);
-    const inactiveLoose = loose.filter(session => !sessionActive(session)).sort(sessionOrder);
     const disclosure = (id, label, count, content) => count
       ? `<details class="project-group" data-project-group="${id}"${openProjectGroups.has(id) ? ' open' : ''}><summary>${label} (${count})</summary>${content}</details>` : '';
-    return (active.length ? `<section aria-label="Active sessions"><label>Working now · ${active.length}</label>${active.map(sessionRow).join('')}</section>` : '')
-      + disclosure('recent', 'Recently messaged', recent.length, recent.map(sessionRow).join(''))
-      + groups.visible.map(appCard).join('')
-      + disclosure('stopped', 'Not running apps', groups.stopped.length, groups.stopped.map(appCard).join(''))
-      + disclosure('chats', 'Chats', groups.chats.length + inactiveLoose.length,
-        groups.chats.map(appCard).join('') + inactiveLoose.map(sessionRow).join(''));
+    return orderProjects(d.apps).map(appCard).join('')
+      + disclosure('chats', 'Standalone sessions', loose.length, loose.sort(sessionOrder).map(sessionRow).join(''));
   })();
 
   openSheet(`<h2>Apps &amp; Chats</h2>${appsHtml}<div id="peer-sessions"></div>
@@ -2775,6 +2786,8 @@ function appEditSheet(app = null, draft = null) {
     <label>Repository (optional)</label>
     <input id="ap-repo" value="${esc(a.repo ?? '')}" spellcheck="false" placeholder="git@github.com:you/app.git" />
     <div id="ap-machines"></div>
+    ${existing ? '<details><summary>AI used by this app</summary><p class="dim">Select the AI your app runs with. Changes apply on the next app launch; the app must support Harness model selection. Requirements are added to README when you push.</p><div id="ap-ai"></div></details>' : ''}
+
     ${existing && a.repo ? `<label>GitHub visibility</label>
       <div id="ap-vis"><p class="dim">checking…</p></div>` : ''}
     <div class="actions">
@@ -2811,6 +2824,7 @@ function appEditSheet(app = null, draft = null) {
   $('ap-back').onclick = appsSheet;
   if ($('ap-vis')) paintAppVisibility(app);
   const machines = paintAppMachines(app, a.hosts);
+  const dependencies = existing ? paintAppDependencies(app) : null;
 
   if ($('ap-log')) $('ap-log').onclick = async () => {
     const text = await (await fetch(`/api/apps/${app.id}/log`)).text();
@@ -2822,6 +2836,10 @@ function appEditSheet(app = null, draft = null) {
   $('ap-save').onclick = async () => {
     const v = values();
     const body = { name: v.name.trim(), start: v.start.trim(), repo: v.repo.trim() || null };
+    if (dependencies) {
+      const read = await dependencies;
+      try { body.aiDependencies = read(); } catch (e) { return showBanner(e.message, true); }
+    }
     const hosts = await machines;
     if (hosts) body.hosts = hosts();
     if (!body.name && !existing) return showBanner('give the app a name');
@@ -2844,6 +2862,45 @@ function appEditSheet(app = null, draft = null) {
  * machines, or null when there is no choice to make. New projects start on
  * their original host; additional hosts can own their own tabs.
  */
+async function paintAppDependencies(app) {
+  const box = $('ap-ai');
+  const deps = app.aiDependencies || [];
+  box.innerHTML = deps.map((d, i) => `<label class="item"><input type="checkbox" data-ai-keep="${i}" checked /><span>${esc(d.label || d.alias)} · ${esc(state.machines?.hosts?.find(h => h.id === d.host)?.name || d.host)} · ${esc(d.purpose)}</span></label>`).join('')
+    + '<label>AI computer · launch the app here</label><select id="ap-ai-host"></select><label>Use another model</label><select id="ap-ai-source"><option value="">No source to add</option></select><label>Used for</label><input id="ap-ai-purpose" placeholder="e.g. product analysis" /><p class="dim" id="ap-ai-status"></p>';
+  const machines = await nativeFetch('/api/cluster/status').then(r => r.json());
+  if ($('ap-ai') !== box) return () => deps;
+  $('ap-ai-host').innerHTML = machines.hosts.filter(h => h.member).map(h => `<option value="${esc(h.id)}">${esc(h.name)}${h.active === false ? ' · offline' : ''}</option>`).join('');
+  if (deps[0]?.host && machines.hosts.some(h => h.id === deps[0].host)) $('ap-ai-host').value = deps[0].host;
+  let models = {}, request = 0;
+  const discover = async () => {
+    const current = ++request, host = $('ap-ai-host').value;
+    models = {};
+    $('ap-ai-source').innerHTML = '<option value="">No source to add</option>';
+    try {
+      const catalog = await sourcesCall('catalog', { host });
+      if (current !== request || $('ap-ai') !== box) return;
+      models = catalog.models;
+      $('ap-ai-source').innerHTML += Object.values(models).map(m => `<option value="${esc(m.alias)}">${esc(m.label || m.model)}</option>`).join('');
+      $('ap-ai-status').textContent = '';
+    } catch { if ($('ap-ai') === box) $('ap-ai-status').textContent = 'Source computer unavailable. Existing dependencies are retained. This computer must be online to use its AI.'; }
+  };
+  $('ap-ai-host').onchange = discover;
+  await discover();
+  if (deps.length === 1) $('ap-ai-purpose').value = deps[0].purpose;
+  return () => {
+    const kept = [...box.querySelectorAll('[data-ai-keep]:checked')].map(el => deps[Number(el.dataset.aiKeep)]);
+    const alias = $('ap-ai-source').value;
+    if (alias) {
+      const purpose = $('ap-ai-purpose').value.trim();
+      if (!purpose) throw new Error('Describe what the app uses this AI for.');
+      const replacement = { host: $('ap-ai-host').value, alias, label: models[alias]?.label || alias, purpose };
+      const index = kept.findIndex(d => d.purpose.toLowerCase() === purpose.toLowerCase());
+      if (index >= 0) kept[index] = replacement; else kept.push(replacement);
+    }
+    return kept;
+  };
+}
+
 async function paintAppMachines(app, draft) {
   const box = $('ap-machines');
   let data;

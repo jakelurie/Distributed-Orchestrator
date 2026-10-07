@@ -140,6 +140,15 @@ const HARNESS_GUIDE = [
   "- The harness data directory (secrets, tokens, the session store, other projects) is off-limits: reads and writes there are refused. Do not try to read secrets.",
 ].join('\n');
 
+const PROJECT_TRACING = [
+  'Tracing for future AI work — applies to every project:',
+  '- When building or changing a program, include diagnostic tracing that lets a future coding assistant reconstruct how the user used it. These logs are for the assistant, not a debug interface the user has to read.',
+  '- Trace meaningful user actions and navigation, the screen or state actually shown (including loading, empty, success and error states), and the requests or background jobs those actions triggered. Include timestamps, app version, correlation IDs, relevant host, durations, outcomes and failures. Connect browser actions to server work where applicable; server success alone does not prove the user saw success.',
+  '- Use structured, searchable logs with bounded size and retention. Reuse existing logging where possible, keep it lightweight, and ensure logging failures never break the app. Keep logs out of Git. Do not record secrets, credentials, raw private content, keystrokes or screenshots by default; use redacted summaries and identifiers.',
+  '- Document where traces live, how to read them within the project permissions, and how to reproduce a flow. When the user describes a problem or asks for a change, inspect the relevant recent traces before guessing. Distinguish recorded events from assumptions about what the user saw or felt; say when evidence is missing.',
+  '- Verify tracing with a representative user flow, including an error path, so another assistant can follow action → visible result → underlying cause. Keep the normal interface simple; do not make the user collect or interpret routine debugging logs.',
+].join('\n');
+
 export function systemPromptFor(session, monitorsFile, activityCmd, tailnetHost = null) {
   if (!usesTools(session)) {
     return session.system?.trim() ? `${CHAT_SYSTEM}\n\n${session.system.trim()}` : CHAT_SYSTEM;
@@ -148,9 +157,10 @@ export function systemPromptFor(session, monitorsFile, activityCmd, tailnetHost 
   // The machine's own tailnet name is substituted here rather than written
   // into the source: it is this user's infrastructure, not part of the tool.
   const base = BASE_SYSTEM.replace(/TAILNET_HOST/g, tailnetHost ?? '<this machine>.ts.net');
-  const parts = [base, `\nProject directory: ${session.tabWorkspace?.cwd ?? session.tabWorkspace?.dir ?? session.projectDir}`,
+  const parts = [base, PROJECT_TRACING, `\nProject directory: ${session.tabWorkspace?.cwd ?? session.tabWorkspace?.dir ?? session.projectDir}`,
     process.platform === 'win32' ? 'Execution host: native Windows. Shell commands use cmd.exe; use Windows paths and commands, or invoke PowerShell explicitly. Do not assume WSL or Unix tools.' : `Execution host: ${process.platform}.`];
   if (session.tabWorkspace) parts.push('This tab has an isolated Git worktree. Work only in the project directory above, even if older messages name a different directory. Do not switch branches, push, or edit the shared checkout or other worktrees. Install dependencies locally when needed. Changes stay in this tab until the user presses Push in the frontend. That operation fetches remote changes, merges, runs integration checks, and publishes. Never push automatically after a turn. If integration reports a conflict, resolve it here in a subsequent turn. Changes are not live until integration succeeds.');
+  if (session.appId && session.appId !== '__harness') parts.push(`When this app itself uses AI at runtime, record its dependency via PATCH /api/apps/${session.appId} with aiDependencies: [{host, alias, label, purpose}]. Discover exact host IDs and source aliases via /api/cluster/status and /api/cluster/sources catalog. Preserve existing dependencies when updating. Record only sources actually configured in the app, never the coding assistant merely building it. Do not put credentials in metadata. Implement runtime model selection by reading HARNESS_APP_AI (JSON array of purpose, provider, model, alias, host) provided at app launch. Support only provider adapters actually implemented; reject unsupported replacements with an actionable error. Document AI requirements and how to use personal credentials in README.md. Never claim metadata alone changes a hard-coded integration. Explain if registration is unavailable.`);
   if (monitorsFile) {
     // A monitor companion scopes its monitors to the session it watches, not
     // to itself, or its panels would show up in the wrong place.
