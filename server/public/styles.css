@@ -54,6 +54,10 @@ body {
   font-size: 15px; font-weight: 600;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+#header-revision {
+  font-family: var(--mono); font-size: 10px; color: var(--fg-faint);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 #title-sub {
   font-family: var(--mono); font-size: 11px; color: var(--fg-faint);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

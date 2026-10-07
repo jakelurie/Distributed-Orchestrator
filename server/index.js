@@ -421,7 +421,16 @@ async function serveStatic(res, name) {
   try {
     const file = path.join(PUBLIC, name);
     if (!file.startsWith(PUBLIC)) return json(res, 403, { error: 'forbidden' });
-    const body = await fs.readFile(file);
+    let body = await fs.readFile(file);
+    if (name === 'index.html') {
+      const escape = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+      const machine = cluster.self.name || os.hostname();
+      const revision = loadedVersion.revision?.slice(0, 8) || 'unknown';
+      const label = `${machine} · ${revision}${loadedVersion.dirty ? ' · local edits' : ''}`;
+      body = body.toString().replace('<!-- serving-revision -->',
+        `<span title="${escape(`Serving commit ${loadedVersion.revision || 'unknown'} · started ${loadedVersion.startedAt}`)}">${escape(label)}</span>`);
+      body = Buffer.from(body);
+    }
     send(res, 200, `${MIME[path.extname(file)] ?? 'application/octet-stream'}; charset=utf-8`, body);
   } catch {
     json(res, 404, { error: 'not found' });

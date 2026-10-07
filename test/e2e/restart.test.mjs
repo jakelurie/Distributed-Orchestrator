@@ -40,6 +40,12 @@ let replacement, peer, peerClosed, peerReplacement;
 try {
   const original = await waitFor(() => true);
   assert.equal(original.pid, child.pid);
+  const header = async target => {
+    const response = await fetch(target + '/?node=another-machine', { headers: { 'x-harness-token': 'restart-test' } });
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    return (await response.text()).match(/<div id="header-revision">(.*?)<\/div>/)[1];
+  };
+  assert.ok((await header(origin)).includes(original.version.startedAt));
   const peerProbe = net.createServer();
   await new Promise(resolve => peerProbe.listen(0, '127.0.0.1', resolve));
   const peerPort = peerProbe.address().port;
@@ -65,6 +71,7 @@ try {
   assert.notEqual(replacement.instanceId, original.instanceId);
   assert.equal(replacement.node, original.node);
   await exited;
+  assert.ok((await header(origin)).includes(replacement.version.startedAt), 'header reflects the serving replacement, independent of node selection');
   // The replacement still serves the same app and data after the old parent exits.
   let state;
   for (let i = 0; i < 120; i++) {
