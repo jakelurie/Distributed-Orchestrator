@@ -522,7 +522,6 @@ async function dispatchMessage(id, body, reply) {
   const inventory = await modelInventory(cfg);
   if (!inventory.models[session.model]?.available) return reply(400, { error: inventory.models[session.model]?.availability || 'Model unavailable on this computer.' });
   delete session.queueTurn;
-  if (cfg.models[session.model]?.sourceKind === 'ollama') await aiSources.ensureRunning();
   const sentAt = session.events.length;
   const controller = new AbortController();
   const turn = { controller, startedAt: Date.now(), last: null, executionEpoch: session.executionEpoch || 0 };
@@ -545,6 +544,7 @@ async function dispatchMessage(id, body, reply) {
   let turnFailed = false;
   let publicationFinished = false;
   await Promise.resolve().then(async () => {
+    if (cfg.models[session.model]?.sourceKind === 'ollama') await aiSources.prepare(cfg.models[session.model].model);
     if (session.mode !== 'chat' && !session.monitorFor) {
       await prepareTab(session, { distributed: placementInfo.distributed, recover: Boolean(session.tabWorkspace) });
       if (cluster.shared()) session.tabWorkspace.ownerNode = cluster.self.id;

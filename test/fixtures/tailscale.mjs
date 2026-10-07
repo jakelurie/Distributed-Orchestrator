@@ -12,3 +12,18 @@ if (command === 'status' || command === 'serve') {
   fs.writeSync(1, JSON.stringify(value));
   process.exit(0);
 }
+
+// Simulate only the external Ollama service for the network workflow.
+if (process.env.HARNESS_TEST_LOCAL_MODELS === '1') {
+  const originalFetch = globalThis.fetch;
+  let loaded = false;
+  globalThis.fetch = async (url, options) => {
+    if (!String(url).startsWith('http://127.0.0.1:11434/')) return originalFetch(url, options);
+    const route = new URL(url).pathname;
+    if (route === '/api/generate') {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      loaded = JSON.parse(options.body).keep_alive !== 0;
+    }
+    return Response.json(route === '/api/ps' ? { models: loaded ? [{ name: 'test:local' }] : [] } : {});
+  };
+}

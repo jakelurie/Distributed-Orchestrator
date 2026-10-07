@@ -1706,13 +1706,28 @@ async function modelsSheet() {
       <button class="rowlink" id="source-claude">${sourceLabel('claude-cli', 'Claude Code')} <span>›</span></button>
       <button class="rowlink" id="source-codex">${sourceLabel('codex-cli', 'Codex')} <span>›</span></button>
       <button class="rowlink" id="source-local">${Object.values(catalog.models).some(m => m.sourceKind === 'ollama') ? 'Manage' : 'Set up'} local models · Ollama <span>›</span></button>
-      ${Object.values(catalog.models).map(m => `<div class="item machine-item"><div class="grow"><div class="t">${esc(m.label || m.model)}</div><div class="s">${esc(m.provider)} · ${esc(m.model)}</div><div class="s">${esc(modelVersionDetails(m))}</div></div>
+      ${Object.values(catalog.models).map(m => `<div class="item machine-item"><div class="grow"><div class="t">${esc(m.label || m.model)}</div><div class="s">${esc(m.provider)} · ${esc(m.model)}</div><div class="s">${esc(modelVersionDetails(m))}</div>${m.sourceKind === 'ollama' ? `<div class="s" data-runtime-model="${sourceAttr(m.alias)}">${esc(m.runtimeStatus)}</div>` : ''}</div>
         ${m.sourceKind === 'ollama' ? `<button class="ghost" data-local-load="${sourceAttr(m.model)}">load</button><button class="ghost" data-local-unload="${sourceAttr(m.model)}">unload</button><button class="ghost" data-helper="${sourceAttr(m.alias)}" data-enabled="${!m.allowDelegate}">helper ${m.allowDelegate ? 'on' : 'off'}</button>` : ''}
         ${sourceHost === machines.self ? `<button class="ghost" data-source-edit="${sourceAttr(m.alias)}">edit</button>` : ''}
         <button class="ghost" data-source-remove="${sourceAttr(m.alias)}">remove</button></div>`).join('') || '<p class="dim">No sources added on this computer.</p>'}
       ${catalog.runtime ? `<p class="dim">Local runtime: ${catalog.runtime.unavailable ? 'stopped or unavailable' : catalog.runtime.models?.length ? catalog.runtime.models.map(m => esc(m.name) + ' · GPU ' + Math.round((m.size_vram || 0) / 1073741824 * 10) / 10 + ' GiB').join(', ') : 'running · no models loaded'}</p>` : ''}
+      <p class="dim">Local models load automatically on use. Load prewarms for 10 minutes of inactivity; unload frees memory. Requests may change the idle expiry.</p>
       <p class="dim" id="sources-status">${catalog.jobs.map(j => esc(`${j.action} ${j.model || ''}: ${j.state}${j.error ? ' — ' + j.error : ''}`)).join('<br>')}</p>
       <div class="actions"><button class="ghost" id="sources-refresh">refresh</button><button class="ghost" id="source-add">advanced API source</button></div>${backToSettings}`);
+    const statusNode = $('sources-status');
+    const refreshRuntime = async () => {
+      if ($('sources-status') !== statusNode || sourceHost !== host) return;
+      try {
+        const next = await sourcesCall('catalog', { host });
+        if ($('sources-status') !== statusNode || sourceHost !== host) return;
+        $('sheet').querySelectorAll('[data-runtime-model]').forEach(el => {
+          el.textContent = next.models[el.dataset.runtimeModel]?.runtimeStatus || 'unknown';
+        });
+        statusNode.textContent = next.jobs.map(j => `${j.action} ${j.model || ''}: ${j.state}${j.error ? ' - ' + j.error : ''}`).join(' / ');
+      } catch { if ($('sources-status') === statusNode) statusNode.textContent = 'Unable to refresh model status'; }
+      if ($('sources-status') === statusNode) setTimeout(refreshRuntime, 2000);
+    };
+    setTimeout(refreshRuntime, 2000);
     $('sources-host').onchange = () => { sourceHost = $('sources-host').value; modelsSheet(); };
     $('sub-back').onclick = settingsSheet;
     $('sources-refresh').onclick = modelsSheet;
@@ -3273,3 +3288,22 @@ async function checkNetworkConnection() {
 window.addEventListener('online', checkNetworkConnection);
 setInterval(checkNetworkConnection, 3000);
 checkNetworkConnection();
+
+// Runtime status is always requested from the selected session owner.
+let sessionRuntimePending = false;
+setInterval(async () => {
+  const session = state.session;
+  if (sessionRuntimePending || !session?.ownerNode || state.models[session.model]?.sourceKind !== 'ollama') return;
+  sessionRuntimePending = true;
+  try {
+    const response = await nativeFetch('/api/cluster/sources', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host: session.ownerNode, action: 'catalog' }) });
+    if (!response.ok) throw new Error('unavailable');
+    const catalog = await response.json();
+    if (state.session?.id !== session.id || state.session?.model !== session.model) return;
+    const status = catalog.models[session.model]?.runtimeStatus || 'unknown';
+    $('title-sub').textContent = `Model: ${state.models[session.model]?.label || session.model} ? ${status === 'not loaded' ? 'not loaded ? loads on send' : status === 'loaded' ? 'loaded' : status}`;
+  } catch {
+    if (state.session?.id === session.id) $('title-sub').textContent = 'Local model status unavailable';
+  } finally { sessionRuntimePending = false; }
+}, 2000);
