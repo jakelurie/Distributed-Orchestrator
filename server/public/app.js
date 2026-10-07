@@ -969,11 +969,9 @@ async function refreshState() {
     state.harnessCheckedAt = Date.now();
     api('/api/harness/versions').then(result => {
       const pending = result.hosts.filter(host => host.update?.restartRequired || host.update?.available);
-      const key = pending.map(host => host.id + ':' + host.update.head + ':' + host.update.latest + ':' + host.update.restartRequired).join(',');
-      if (key && key !== state.harnessUpdateRevision) {
-        showBanner(pending.map(host => `${host.name || host.id}: ${host.state}`).join('; '));
-      }
-      state.harnessUpdateRevision = key;
+      const notice = $('update-notice');
+      notice.textContent = pending.map(host => `${host.name || host.id}: ${host.state}`).join('; ');
+      notice.hidden = pending.length === 0;
     }).catch(() => {});
   }
   state.machines = s.machines;
@@ -2112,7 +2110,7 @@ async function paintNotify() {
 function gitSheet() {
   const session = cur().session;
   openSheet(`<h2>Push changes</h2>
-    <p class="dim">${session ? `Settings for ${esc(session.name)}. Changes stay local until you press Push. The selected tab’s computer performs the push.` : 'Open a session to configure its repository and automatic commits.'}</p>
+    <p class="dim">${session ? `This session · ${esc(session.name)}` : 'Open a session to push changes.'}</p>
     <div id="s-git"></div><div class="actions"><button class="ghost" id="sub-back">‹ edit session</button></div>`);
   $('sub-back').onclick = sessionSettingsSheet;
   if (session) paintGit(session);
@@ -2136,21 +2134,20 @@ async function paintGit(session) {
       <button class="ghost" id="g-connect" style="flex:0 0 80px">connect</button></div>`;
   } else {
     box.innerHTML = `
+      ${g.remote ? '' : `<label>Add a remote</label>
+        <div class="row"><input id="g-remote" placeholder="git@github.com:you/repo.git" spellcheck="false" />
+        <button class="ghost" id="g-connect" style="flex:0 0 80px">connect</button></div>`}
+      <details><summary>Repository settings</summary>
       <p class="dim">branch <span class="mono">${esc(g.branch ?? '?')}</span>
         · ${g.changed} uncommitted
         · ${g.remote ? `remote <span class="mono">${esc(g.remote)}</span>` : '<span class="warn-text">no remote</span>'}</p>
       ${g.lastCommit ? `<p class="dim">last: <span class="mono">${esc(g.lastCommit)}</span></p>` : '<p class="dim">no commits yet</p>'}
-      ${g.remote ? '' : `<label>Add a remote</label>
-        <div class="row"><input id="g-remote" placeholder="git@github.com:you/repo.git" spellcheck="false" />
-        <button class="ghost" id="g-connect" style="flex:0 0 80px">connect</button></div>`}
-      <div id="g-vis"></div>
+      <div id="g-vis"></div></details>
       <div class="actions"><button class="ghost" id="g-now">Push to GitHub</button></div>`;
   }
 
-  if (g.isolated) box.insertAdjacentHTML('afterbegin', '<p class="dim">This tab has its own working copy. Changes reach the project only after merging and passing integration checks.</p>');
-  box.insertAdjacentHTML('afterbegin', `<p class="dim">${esc(g.machine || 'This computer')} · ${g.busy ? 'Working' : g.pending ? 'Changes waiting to push' : 'No pending tab changes'}</p>
-    <p class="dim">Push fetches remote changes, merges, runs checks, then publishes. Conflicts preserve your work and show an error.</p>`);
-  box.insertAdjacentHTML('beforeend', `<label>Recent pushes · all machines</label>${(g.history || []).map(h => `<div class="item machine-item"><div class="grow"><div class="t">${esc(h.machine)} · ${esc(h.status)}</div><div class="s">${clock(h.ts)} · ${esc(h.session || '')} · ${esc(h.sha || '')}${h.error ? ' · ' + esc(h.error) : ''}</div></div></div>`).join('') || '<p class="dim">No push receipts yet.</p>'}`);
+  box.insertAdjacentHTML('afterbegin', `<p class="dim">${esc(g.machine || 'This computer')} · ${g.busy ? 'Working' : g.pending ? 'Ready to push' : 'Up to date'}<br>${esc(g.summary || 'No pending changes.')}</p>`);
+  box.insertAdjacentHTML('beforeend', `<details><summary>Recent project pushes</summary>${(g.history || []).map(h => `<div class="item machine-item"><div class="grow"><div class="s">${esc(h.machine)} · ${esc(h.status)} · ${clock(h.ts)} · ${esc(h.sha || '')}${h.error ? ' · ' + esc(h.error) : ''}</div></div></div>`).join('') || '<p class="dim">No pushes yet.</p>'}</details>`);
   if ($('g-connect')) {
     $('g-connect').onclick = async () => {
       const remote = $('g-remote').value.trim();
@@ -3248,7 +3245,7 @@ $('transcript').addEventListener('click', async (e) => {
  * whenever the tab comes back, and on a slow timer while it is open.
  */
 async function reconcile() {
-  if (document.hidden || !state.session) return;
+  if (document.hidden) return;
   try {
     await refreshState();
   } catch {

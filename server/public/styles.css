@@ -72,6 +72,11 @@ body {
 }
 .tap:active { background: var(--bg-3); }
 
+#update-notice {
+  padding: 8px 14px; font-size: 12px; color: var(--yellow);
+  background: var(--bg-2); border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
 #banner {
   flex: 0 0 auto;
   padding: 10px 14px;

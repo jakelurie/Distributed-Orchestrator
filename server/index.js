@@ -41,7 +41,7 @@ import { setSecret } from '../src/core/secrets.js';
 import { transcribe, transcriptionKey } from '../src/core/transcription.js';
 import * as attachments from '../src/core/attachments.js';
 import * as git from '../src/core/git.js';
-import { prepareTab, integrateTab, tabHasUnpublishedWork, syncHarnessCheckout } from '../src/core/tab-workspaces.js';
+import { prepareTab, integrateTab, tabHasUnpublishedWork, pendingSummary, syncHarnessCheckout } from '../src/core/tab-workspaces.js';
 import { configureGithub, createGithubAuth } from '../src/core/github-auth.js';
 import { loadNotify, saveNotify, send as sendNotify, summarise, notificationSetupError } from '../src/core/notify.js';
 import * as store from '../src/core/store.js';
@@ -1380,10 +1380,12 @@ const server = http.createServer(async (req, res) => {
       const history = [];
       for (const entry of url.searchParams.get('history') === '1' ? await store.list() : []) {
         const saved = await store.load(entry.id, { repair: false }).catch(() => null);
-        for (const event of saved?.events || []) if (event.pushReceipt) history.push({ ...event.pushReceipt, ts: event.ts, session: saved.name });
+        if (!saved || (session.appId ? saved.appId !== session.appId : saved.projectDir !== session.projectDir)) continue;
+        for (const event of saved.events || []) if (event.pushReceipt) history.push({ ...event.pushReceipt, ts: event.ts, session: saved.name });
       }
       return json(res, 200, { ...(await git.status(session.tabWorkspace?.dir ?? session.projectDir)),
         isolated: Boolean(session.tabWorkspace), enabled: false,
+        summary: url.searchParams.get('history') === '1' ? await pendingSummary(session) : undefined,
         pending: await tabHasUnpublishedWork(session), machine: cluster.self.name || cluster.self.id,
         busy: running.has(id), history: history.sort((a, b) => b.ts - a.ts).slice(0, 12) });
     }

@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import net from 'node:net';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
+import { prepareTab } from '../../src/core/tab-workspaces.js';
 import { once } from 'node:events';
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'execution-hosts-'));
 const hosts = [];
@@ -152,6 +153,31 @@ try {
       && !(await a.call('/api/state')).running.includes(s.id)) break;
     await pause();
   }
+  // Pending summaries include committed, unstaged and untracked session work.
+  const summaryDir = path.join(root, 'summary-project');
+  await fs.mkdir(summaryDir);
+  const git = (dir, ...args) => execFileSync('git', ['-c', 'user.name=test', '-c', 'user.email=test@localhost', ...args], { cwd: dir, stdio: 'pipe' });
+  git(summaryDir, 'init', '-b', 'main');
+  await fs.writeFile(path.join(summaryDir, 'README.md'), 'original');
+  git(summaryDir, 'add', '.'); git(summaryDir, 'commit', '-m', 'initial');
+  const summarySession = await a.call('/api/sessions', 'POST', { name: 'summary', projectDir: summaryDir, model: 'model-a' });
+  await prepareTab(summarySession);
+  const work = summarySession.tabWorkspace.dir;
+  await fs.writeFile(path.join(work, 'README.md'), 'saved documentation');
+  git(work, 'commit', '-am', 'documentation');
+  await fs.mkdir(path.join(work, 'server/public'), { recursive: true });
+  await fs.writeFile(path.join(work, 'server/public/app.js'), 'new interface');
+  const seededSummary = await fetch(a.status.hosts[0].url + '/api/cluster/command', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'x-cluster-key': identity.secret },
+    body: JSON.stringify({ type: 'session', id: summarySession.id, value: summarySession }),
+  });
+  assert.equal(seededSummary.status, 200);
+  const summary = await b.call(`/api/git?session=${summarySession.id}&history=1`);
+  assert.equal(summary.pending, true);
+  assert.match(summary.summary, /documentation/);
+  assert.match(summary.summary, /interface/);
+  assert.match(summary.summary, /2 files/);
+  assert.equal(summary.machine, 'model-a', 'summary comes from the session owner');
   await a.call(`/api/sessions/${s.id}`, 'DELETE');
   b.child.kill('SIGTERM');
   await b.closed;

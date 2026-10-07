@@ -115,6 +115,24 @@ export async function tabHasUnpublishedWork(session) {
   return (await git(ws.dir, 'rev-list', '--count', `${ws.target}..HEAD`)) !== '0';
 }
 
+/** Describe all pending edits, including saved commits and untracked files. */
+export async function pendingSummary(session) {
+  const ws = session.tabWorkspace;
+  if (!ws) return 'No pending changes.';
+  const base = await git(ws.dir, 'merge-base', ws.target, 'HEAD');
+  const tracked = await git(ws.dir, 'diff', '--name-only', '-z', base);
+  const untracked = await git(ws.dir, 'ls-files', '--others', '--exclude-standard', '-z');
+  const files = [...new Set([...tracked.split('\0'), ...untracked.split('\0')].filter(Boolean))];
+  if (!files.length) return await tabHasUnpublishedWork(session) ? 'Saved commits; no net file changes.' : 'No pending changes.';
+  const areas = new Set(files.map(file =>
+    /^(server\/public\/|.*\.(css|html)$)/.test(file) ? 'interface' :
+    /^(test\/|tests\/)/.test(file) ? 'tests' :
+    /^(docs\/|README|.*\.md$)/.test(file) ? 'documentation' :
+    /^scripts\//.test(file) ? 'startup and scripts' :
+    /^(server\/|src\/)/.test(file) ? 'application code' : 'project files'));
+  return 'Changes to ' + [...areas].join(', ') + ' · ' + files.length + ' file' + (files.length === 1 ? '' : 's') + '.';
+}
+
 async function validate(dir, log, base, signal) {
   await git(dir, 'diff', '--check', base, 'HEAD');
   let pkg;
